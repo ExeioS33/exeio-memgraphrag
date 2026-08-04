@@ -309,6 +309,198 @@ class ThreeLayerMemory:
             return None
         return self.get_schema_by_idx(fact.schema_idx)
 
+    def link_fact_to_schema(
+        self, fact_idx: int, ontology: Tuple[str, str, str]
+    ) -> int:
+        """Link a fact to a schema ontology triple; return schema index."""
+        if not (0 <= fact_idx < len(self.fact_layer)):
+            raise IndexError(f"fact_idx out of range: {fact_idx}")
+        ontology_tuple = (str(ontology[0]), str(ontology[1]), str(ontology[2]))
+        schema_idx = self._get_or_create_schema(ontology_tuple)
+        fact = self.fact_layer[fact_idx]
+        old_idx = fact.schema_idx
+        if old_idx >= 0 and old_idx != schema_idx and old_idx < len(self.schema_layer):
+            old = self.schema_layer[old_idx]
+            if fact_idx in old.fact_indices:
+                old.fact_indices.remove(fact_idx)
+            old.frequency = len(old.fact_indices)
+        fact.schema_idx = schema_idx
+        if fact_idx not in self.schema_layer[schema_idx].fact_indices:
+            self.schema_layer[schema_idx].fact_indices.append(fact_idx)
+        self.schema_layer[schema_idx].frequency = len(
+            self.schema_layer[schema_idx].fact_indices
+        )
+        return schema_idx
+
+    def recompute_schema_frequencies(self) -> None:
+        """Refresh schema.frequency from fact_indices length."""
+        for schema in self.schema_layer:
+            schema.frequency = len(schema.fact_indices)
+
+    def filter_schemas_by_frequency(self, min_frequency: int) -> dict[str, int]:
+        """Drop schemas below ``min_frequency`` and reindex survivors.
+
+        Facts linked to dropped schemas get ``schema_idx = -1``.
+        ``min_frequency <= 0`` disables filtering.
+        """
+        if min_frequency <= 0 or not self.schema_layer:
+            return {
+                "kept": len(self.schema_layer),
+                "dropped": 0,
+                "min_frequency": min_frequency,
+            }
+
+        kept_nodes: List[SchemaNode] = []
+        old_to_new: Dict[int, int] = {}
+        dropped = 0
+        for schema in self.schema_layer:
+            schema.frequency = len(schema.fact_indices)
+            if schema.frequency >= min_frequency:
+                new_idx = len(kept_nodes)
+                old_to_new[schema.idx] = new_idx
+                schema.idx = new_idx
+                kept_nodes.append(schema)
+            else:
+                dropped += 1
+
+        for fact in self.fact_layer:
+            if fact.schema_idx < 0:
+                continue
+            if fact.schema_idx in old_to_new:
+                fact.schema_idx = old_to_new[fact.schema_idx]
+            else:
+                fact.schema_idx = -1
+
+        # Rebuild fact_indices on kept schemas from facts (authoritative).
+        for schema in kept_nodes:
+            schema.fact_indices = []
+        for fact in self.fact_layer:
+            if fact.schema_idx >= 0:
+                kept_nodes[fact.schema_idx].fact_indices.append(fact.idx)
+        for schema in kept_nodes:
+            schema.frequency = len(schema.fact_indices)
+
+        self.schema_layer = kept_nodes
+        self._schema_to_idx = {s.content: s.idx for s in self.schema_layer}
+        return {
+            "kept": len(self.schema_layer),
+            "dropped": dropped,
+            "min_frequency": min_frequency,
+        }
+
+    def _rebuild_fact_indices(self) -> None:
+        """Reassign sequential fact.idx and rewrite all cross-layer references."""
+        old_to_new: Dict[int, int] = {}
+        for new_idx, fact in enumerate(self.fact_layer):
+            old_to_new[fact.idx] = new_idx
+            fact.idx = new_idx
+
+        self._fact_to_idx = {f.content: f.idx for f in self.fact_layer}
+
+        for schema in self.schema_layer:
+            schema.fact_indices = [
+                old_to_new[i] for i in schema.fact_indices if i in old_to_new
+            ]
+            schema.frequency = len(schema.fact_indices)
+
+        for passage in self.passage_layer:
+            passage.fact_indices = [
+                old_to_new[i] for i in passage.fact_indices if i in old_to_new
+            ]
+
+        for fact in self.fact_layer:
+            fact.frequency = len(fact.passage_indices)
+
+    def remove_fact(self, fact_idx: int) -> bool:
+        """Remove one fact and rebuild positional cross-layer indices."""
+        if not (0 <= fact_idx < len(self.fact_layer)):
+            return False
+        fact = self.fact_layer[fact_idx]
+        # Detach from schema / passages before deletion.
+        if 0 <= fact.schema_idx < len(self.schema_layer):
+            schema = self.schema_layer[fact.schema_idx]
+            if fact.idx in schema.fact_indices:
+                schema.fact_indices.remove(fact.idx)
+            schema.frequency = len(schema.fact_indices)
+        for pidx in list(fact.passage_indices):
+            if 0 <= pidx < len(self.passage_layer):
+                passage = self.passage_layer[pidx]
+                if fact.idx in passage.fact_indices:
+                    passage.fact_indices.remove(fact.idx)
+        del self.fact_layer[fact_idx]
+        self._rebuild_fact_indices()
+        return True
+
+    def replace_fact(
+        self, fact_idx: int, new_triple: Tuple[str, str, str]
+    ) -> int:
+        """Replace fact content or merge into an existing identical triple.
+
+        Returns the surviving fact index. Passage links are preserved/merged.
+        """
+        if not (0 <= fact_idx < len(self.fact_layer)):
+            raise IndexError(f"fact_idx out of range: {fact_idx}")
+        new_triple = (str(new_triple[0]), str(new_triple[1]), str(new_triple[2]))
+        fact = self.fact_layer[fact_idx]
+        if fact.content == new_triple:
+            return fact_idx
+
+        existing = self._fact_to_idx.get(new_triple)
+        if existing is not None and existing != fact_idx:
+            # Merge passages into the existing fact, then remove this one.
+            target = self.fact_layer[existing]
+            old_schema = fact.schema_idx
+            for pidx in fact.passage_indices:
+                if pidx not in target.passage_indices:
+                    target.passage_indices.append(pidx)
+                if 0 <= pidx < len(self.passage_layer):
+                    passage = self.passage_layer[pidx]
+                    if existing not in passage.fact_indices:
+                        passage.fact_indices.append(existing)
+            self.remove_fact(fact_idx)
+            surviving = self._fact_to_idx.get(new_triple)
+            if surviving is None:
+                return -1
+            if old_schema >= 0 and self.fact_layer[surviving].schema_idx < 0:
+                schema = self.get_schema_by_idx(old_schema)
+                # After remove_fact, schema indices are unchanged (only facts rebuild).
+                if schema is not None:
+                    self.link_fact_to_schema(surviving, schema.content)
+            return surviving
+
+        # Rename in place.
+        del self._fact_to_idx[fact.content]
+        fact.content = new_triple
+        self._fact_to_idx[new_triple] = fact_idx
+        return fact_idx
+
+    def add_fact_with_passages(
+        self,
+        triple: Tuple[str, str, str],
+        passage_indices: List[int],
+        schema_idx: int = -1,
+    ) -> int:
+        """Create or reuse a fact and attach the given passages."""
+        triple = (str(triple[0]), str(triple[1]), str(triple[2]))
+        fact_idx = self._get_or_create_fact(triple, schema_idx)
+        fact = self.fact_layer[fact_idx]
+        if schema_idx >= 0 and fact.schema_idx < 0:
+            fact.schema_idx = schema_idx
+            if fact_idx not in self.schema_layer[schema_idx].fact_indices:
+                self.schema_layer[schema_idx].fact_indices.append(fact_idx)
+            self.schema_layer[schema_idx].frequency = len(
+                self.schema_layer[schema_idx].fact_indices
+            )
+        for pidx in passage_indices:
+            if pidx not in fact.passage_indices:
+                fact.passage_indices.append(pidx)
+            if 0 <= pidx < len(self.passage_layer):
+                passage = self.passage_layer[pidx]
+                if fact_idx not in passage.fact_indices:
+                    passage.fact_indices.append(fact_idx)
+        fact.frequency = len(fact.passage_indices)
+        return fact_idx
+
     def to_dict(self) -> Dict[str, Any]:
         """Export to serializable dictionary."""
         return {
