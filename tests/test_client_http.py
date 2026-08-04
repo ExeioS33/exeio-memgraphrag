@@ -178,3 +178,47 @@ def test_http_error_raises() -> None:
         with pytest.raises(httpx.HTTPStatusError) as exc:
             client.health()
     assert "401" in str(exc.value)
+
+
+@pytest.mark.offline
+def test_upload_url_rejects_bad_schemes() -> None:
+    with MemGraphRAGClient(base_url="http://test", verify=False) as client:
+        with pytest.raises(ValueError, match="empty"):
+            client.upload_url("  ")
+        with pytest.raises(ValueError, match="Unsupported URL scheme"):
+            client.upload_url("ftp://example.com/a.pdf")
+
+
+@pytest.mark.offline
+def test_upload_url_wraps_ssl_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    from memgraphrag.client import http as http_mod
+    from memgraphrag.client.http import ClientSSLError
+
+    class _BoomClient:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self.verify = kwargs.get("verify")
+
+        def __enter__(self) -> "_BoomClient":
+            return self
+
+        def __exit__(self, *exc: Any) -> None:
+            return None
+
+        def get(self, url: str) -> Any:
+            raise httpx.ConnectError(
+                "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: "
+                "unable to get local issuer certificate (_ssl.c:1028)"
+            )
+
+    # Build the API client first (real httpx), then swap Client for URL download only.
+    client = MemGraphRAGClient(
+        base_url="http://test",
+        transport=httpx.MockTransport(lambda r: _json_response(r, {})),
+        verify=True,
+    )
+    try:
+        monkeypatch.setattr(http_mod.httpx, "Client", _BoomClient)
+        with pytest.raises(ClientSSLError, match="MEMGRAPHRAG_SSL_CERT_FILE"):
+            client.upload_url("https://example.com/paper.pdf")
+    finally:
+        client.close()

@@ -40,3 +40,9 @@ logs/
 # OS
 .DS_Store
 Thumbs.db
+
+# Local corporate TLS inspection CAs (not committed)
+certs/*.crt
+certs/*.pem
+certs/*.cer
+!certs/.gitkeep

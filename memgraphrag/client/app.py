@@ -15,6 +15,7 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
+from memgraphrag.client.env import load_client_env
 from memgraphrag.client.http import MemGraphRAGClient
 from memgraphrag.client.optimize import run_optimize
 from memgraphrag.client.params import (
@@ -25,6 +26,10 @@ from memgraphrag.client.params import (
     default_sweep_grid,
     defaults,
 )
+from memgraphrag.utils.http_ssl import describe_ssl_verify, reset_ssl_verify_cache
+
+load_client_env()
+reset_ssl_verify_cache()
 
 st.set_page_config(
     page_title="MemGraphRAG Playground",
@@ -54,6 +59,15 @@ def _init_state() -> None:
         )
     if "api_key" not in st.session_state:
         st.session_state.api_key = os.environ.get("MEMGRAPHRAG_API_KEY", "")
+    if "ssl_cert_file" not in st.session_state:
+        st.session_state.ssl_cert_file = (
+            os.environ.get("MEMGRAPHRAG_SSL_CERT_FILE")
+            or os.environ.get("SSL_CERT_FILE")
+            or ""
+        )
+    if "ssl_verify" not in st.session_state:
+        raw = (os.environ.get("SSL_VERIFY") or "true").strip().lower()
+        st.session_state.ssl_verify = raw not in {"0", "false", "no", "off"}
     if "last_answer" not in st.session_state:
         st.session_state.last_answer = None
     if "opt_report" not in st.session_state:
@@ -62,7 +76,22 @@ def _init_state() -> None:
         st.session_state.connected_once = False
 
 
+def _apply_ssl_env() -> None:
+    """Push sidebar TLS knobs into process env and refresh ssl_verify cache."""
+    cert = (st.session_state.get("ssl_cert_file") or "").strip()
+    if cert:
+        os.environ["MEMGRAPHRAG_SSL_CERT_FILE"] = cert
+        os.environ["SSL_CERT_FILE"] = cert
+    else:
+        os.environ.pop("MEMGRAPHRAG_SSL_CERT_FILE", None)
+        # Do not wipe SSL_CERT_FILE if it came from the shell and sidebar is empty
+        # only when user explicitly cleared the field after having set one in-session.
+    os.environ["SSL_VERIFY"] = "true" if st.session_state.get("ssl_verify", True) else "false"
+    reset_ssl_verify_cache()
+
+
 def get_client() -> MemGraphRAGClient:
+    _apply_ssl_env()
     return MemGraphRAGClient(
         base_url=st.session_state.server_url or None,
         api_key=st.session_state.api_key or None,
@@ -88,6 +117,25 @@ def render_sidebar() -> None:
         )
         st.session_state.api_key = st.text_input(
             "🔑 API key", value=st.session_state.api_key, type="password"
+        )
+
+        st.markdown("### 🔒 Outbound TLS")
+        st.session_state.ssl_cert_file = st.text_input(
+            "🏛️ Corporate CA PEM path",
+            value=st.session_state.ssl_cert_file,
+            help="Fortinet/Zscaler CA for URL downloads. Or place certs/corporate-ca.crt",
+            placeholder="/path/to/Fortinet_CA_SSL.crt",
+        )
+        st.session_state.ssl_verify = st.toggle(
+            "✅ Verify TLS certificates",
+            value=st.session_state.ssl_verify,
+            help="Turn off only in a lab (insecure). Maps to SSL_VERIFY.",
+        )
+        _apply_ssl_env()
+        info = describe_ssl_verify()
+        st.caption(
+            f"TLS mode: **{info['kind']}**"
+            + (f" · CA `{info['ca_path']}`" if info.get("ca_path") else "")
         )
 
         st.markdown("---")

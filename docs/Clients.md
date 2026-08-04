@@ -18,8 +18,17 @@ Pinned packages: `streamlit==1.60.0`, `typer==0.27.1`, `rich==15.0.0`.
 |----------|------|
 | `MEMGRAPHRAG_SERVER_URL` | Base URL (default `http://localhost:9621`) |
 | `MEMGRAPHRAG_API_KEY` | Sent as `X-API-Key` |
+| `MEMGRAPHRAG_SSL_CERT_FILE` / `SSL_CERT_FILE` | Corporate CA PEM for outbound HTTPS (URL ingest) |
+| `SSL_VERIFY` | `true` (default) or `false` (lab-only; insecure) |
 
-CLI flags `--server` / `--api-key` override the env vars. The Streamlit sidebar has the same fields.
+CLI flags `--server` / `--api-key` override the env vars. The Streamlit sidebar has the same fields plus TLS knobs.
+
+Both clients load the nearest `.env` (cwd / repo) on startup. For Fortinet/Zscaler TLS inspection on the **host** (Streamlit/CLI), either:
+
+1. Copy the inspection CA to `certs/corporate-ca.crt` (gitignored), or
+2. Set `MEMGRAPHRAG_SSL_CERT_FILE=/path/to/Fortinet_CA_SSL.crt` in `.env`.
+
+`memgraphrag.utils.http_ssl.ssl_verify()` merges that CA with certifi and clears OpenSSL 3 `VERIFY_X509_STRICT` (fixes `Missing Authority Key Identifier` on Python 3.13). The Docker service image merges CA separately via `docker-entrypoint.sh`.
 
 ## Coverage matrix
 

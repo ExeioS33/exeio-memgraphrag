@@ -14,6 +14,7 @@ from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
+from memgraphrag.client.env import load_client_env
 from memgraphrag.client.http import MemGraphRAGClient
 from memgraphrag.client.optimize import expand_grid, run_optimize
 from memgraphrag.client.params import (
@@ -22,6 +23,10 @@ from memgraphrag.client.params import (
     clean_params,
     default_sweep_grid,
 )
+from memgraphrag.utils.http_ssl import describe_ssl_verify, reset_ssl_verify_cache
+
+load_client_env()
+reset_ssl_verify_cache()
 
 app = typer.Typer(
     name="memgraphrag-cli",
