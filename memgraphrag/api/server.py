@@ -21,7 +21,8 @@ from memgraphrag.core import MemGraphRAG
 from memgraphrag.llm.openai_compatible import openai_complete, openai_embed
 
 # Prefer the mounted/project .env over stale process env after compose recreates.
-load_dotenv(dotenv_path=".env", override=True)
+# Do not override process env (Compose / k8s inject storage bindings).
+load_dotenv(dotenv_path=".env", override=False)
 
 logger = logging.getLogger("memgraphrag.api.server")
 

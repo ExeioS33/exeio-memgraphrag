@@ -104,6 +104,28 @@ QUERY_PARAMS: tuple[ParamSpec, ...] = (
         grid=(False, True),
     ),
     ParamSpec(
+        name="schema_top_k",
+        kind="int",
+        emoji="🧬",
+        help="How many ontology schemas to link from the query embedding",
+        default=5,
+        min=0,
+        max=50,
+        step=1,
+        grid=(0, 3, 5),
+    ),
+    ParamSpec(
+        name="schema_node_weight",
+        kind="float",
+        emoji="🧩",
+        help="Relative weight of schema-expanded seeds in the PPR seed vector",
+        default=0.1,
+        min=0.0,
+        max=1.0,
+        step=0.01,
+        grid=(0.05, 0.1, 0.2),
+    ),
+    ParamSpec(
         name="user_prompt",
         kind="str",
         emoji="📝",
@@ -125,6 +147,8 @@ PRESETS: dict[str, dict[str, Any]] = {
         "damping": 0.7,
         "fact_similarity_threshold": 0.7,
         "skip_fact_rerank": False,
+        "schema_top_k": 3,
+        "schema_node_weight": 0.1,
     },
     "⚖️ Balanced": {
         "mode": "ppr",
@@ -134,6 +158,8 @@ PRESETS: dict[str, dict[str, Any]] = {
         "damping": 0.5,
         "fact_similarity_threshold": 0.5,
         "skip_fact_rerank": False,
+        "schema_top_k": 5,
+        "schema_node_weight": 0.1,
     },
     "🌊 Broad": {
         "mode": "ppr",
@@ -143,6 +169,8 @@ PRESETS: dict[str, dict[str, Any]] = {
         "damping": 0.3,
         "fact_similarity_threshold": 0.3,
         "skip_fact_rerank": True,
+        "schema_top_k": 10,
+        "schema_node_weight": 0.15,
     },
     "🧲 Dense-only": {
         "mode": "naive",
@@ -152,6 +180,8 @@ PRESETS: dict[str, dict[str, Any]] = {
         "damping": 0.5,
         "fact_similarity_threshold": 0.5,
         "skip_fact_rerank": True,
+        "schema_top_k": 0,
+        "schema_node_weight": 0.0,
     },
 }
 

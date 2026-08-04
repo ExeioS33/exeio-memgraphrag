@@ -39,6 +39,8 @@ class QueryRequest(BaseModel):
     damping: Optional[float] = None
     fact_similarity_threshold: Optional[float] = None
     skip_fact_rerank: Optional[bool] = None
+    schema_top_k: Optional[int] = Field(default=None, ge=0)
+    schema_node_weight: Optional[float] = None
     only_need_context: Optional[bool] = False
     conversation_history: Optional[list[dict[str, str]]] = None
     user_prompt: Optional[str] = None
@@ -61,6 +63,10 @@ def _build_param(body: QueryRequest, rag: Any) -> QueryParam:
         kwargs["fact_similarity_threshold"] = body.fact_similarity_threshold
     if body.skip_fact_rerank is not None:
         kwargs["skip_fact_rerank"] = body.skip_fact_rerank
+    if body.schema_top_k is not None:
+        kwargs["schema_top_k"] = body.schema_top_k
+    if body.schema_node_weight is not None:
+        kwargs["schema_node_weight"] = body.schema_node_weight
     if body.only_need_context is not None:
         kwargs["only_need_context"] = body.only_need_context
     if body.conversation_history is not None:

@@ -168,6 +168,10 @@ def query_cmd(
         None, help="Fact similarity threshold"
     ),
     skip_fact_rerank: Optional[bool] = typer.Option(None, help="Skip fact rerank"),
+    schema_top_k: Optional[int] = typer.Option(None, help="Ontology schema linking top-k"),
+    schema_node_weight: Optional[float] = typer.Option(
+        None, help="Schema-expanded seed weight"
+    ),
     user_prompt: Optional[str] = typer.Option(None, help="Extra system prompt"),
     preset: Optional[str] = typer.Option(
         None, "--preset", help="Preset name (e.g. '⚖️ Balanced')"
@@ -193,6 +197,8 @@ def query_cmd(
         "damping": damping,
         "fact_similarity_threshold": fact_similarity_threshold,
         "skip_fact_rerank": skip_fact_rerank,
+        "schema_top_k": schema_top_k,
+        "schema_node_weight": schema_node_weight,
         "user_prompt": user_prompt,
     }.items():
         if val is not None:
@@ -477,6 +483,10 @@ def optimize_cmd(
     skip_fact_rerank: Optional[str] = typer.Option(
         None, help="Comma-separated bools, e.g. false,true"
     ),
+    schema_top_k: Optional[str] = typer.Option(None, help="Comma-separated ints"),
+    schema_node_weight: Optional[str] = typer.Option(
+        None, help="Comma-separated floats"
+    ),
     top_n: int = typer.Option(3, "--top-n", help="How many winners to LLM-judge"),
     judge: bool = typer.Option(True, "--judge/--no-judge"),
     output: Optional[Path] = typer.Option(None, "--output", "-o", help="Write JSON report"),
@@ -506,6 +516,8 @@ def optimize_cmd(
         "damping": _parse_list(damping, float),
         "fact_similarity_threshold": _parse_list(fact_similarity_threshold, float),
         "skip_fact_rerank": _parse_list(skip_fact_rerank, bool),
+        "schema_top_k": _parse_list(schema_top_k, int),
+        "schema_node_weight": _parse_list(schema_node_weight, float),
     }
     for key, vals in overrides.items():
         if vals is not None:
