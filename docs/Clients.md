@@ -103,7 +103,7 @@ Tabs:
 1. **Phase 1** — Cartesian sweep over the discrete grid; each combo scored via `/query/data` retrieval metrics (mean/max doc scores + soft coverage).
 2. **Phase 2** — Top-N winners get a full `/query` answer, then an LLM judge call with `mode=bypass` and `only_need_context=False` (server default). Final score blends retrieval (40%) and judge/10 (60%).
 
-Default grid axes: `mode`, `top_k`, `linking_top_k`, `passage_node_weight`, `damping`, `fact_similarity_threshold`, `skip_fact_rerank` (see `params.QUERY_PARAMS`). Use `--no-judge` / UI toggle for retrieval-only ranking.
+Default grid axes: `mode`, `top_k`, `linking_top_k`, `passage_node_weight`, `damping`, `fact_similarity_threshold`, `skip_fact_rerank`, `schema_top_k`, `schema_node_weight` (see `params.QUERY_PARAMS`). Use `--no-judge` / UI toggle for retrieval-only ranking.
 
 ## Library usage
 

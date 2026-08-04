@@ -41,8 +41,15 @@ Field values are appended as `key=value` pairs (no secrets, no full prompts, no 
 [MAIN] index.ainsert | chunks=16
 [STEP] index.ainsert.openie | chunks=16
 [STEP] index.ainsert.memory_build | openie_docs=16
+[STEP] index.schema.extract | batches=16 unlinked=42 cached_links=0 batch_size=20
+[DONE] index.schema.extract | linked=40 schemas=12 failed_batches=0 facts_untyped=2
+[STEP] index.ontology.filter | before=12 kept=8 dropped=4 min_frequency=2 noop=False
+[STEP] index.conflict.detect | groups=10 max_groups=50
+[DONE] index.conflict.detect | hard_conflicts=1 groups_checked=10
+[STEP] index.conflict.resolve | conflicts=1
+[DONE] index.conflict.resolve | resolved=1 discarded=1 modified=0 kept=0 facts=41
 [STEP] index.ainsert.graph_install
-[DONE] index.ainsert | passages=16 facts=42 schemas=0
+[DONE] index.ainsert | passages=16 facts=41 schemas=8
 [DONE] ingest.doc | doc_id=doc-abc chunks=16 status=processed
 [DONE] ingest.process | processed=1 failed=0
 [DONE] api.documents.upload | doc_id=doc-abc filename=report.pdf processed=1 failed=0
@@ -58,7 +65,9 @@ Field values are appended as `key=value` pairs (no secrets, no full prompts, no 
 [MAIN] retrieve.one | mode=ppr query=What is MemGraphRAG? top_k=5 linking_top_k=10
 [STEP] retrieve.one.fact_linking | linking_top_k=10
 [STEP] retrieve.one.fact_rerank | method=threshold hits=10 kept=4
-[STEP] retrieve.one.ppr | seed_nodes=12 damping=0.5
+[STEP] retrieve.one.schema_linking | schema_top_k=5
+[STEP] retrieve.one.schema_linking_done | schema_hits=3 seed_nodes=9
+[STEP] retrieve.one.ppr | seed_nodes=18 damping=0.5
 [DONE] retrieve.one | path=ppr docs=5 top_score=0.1832
 [STEP] query.aquery.rag_qa | docs=5 history_turns=0
 [DONE] query.aquery | mode=ppr docs=5 answer_chars=312

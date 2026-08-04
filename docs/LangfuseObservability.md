@@ -36,6 +36,7 @@ Root span: `memgraphrag.query`
 |-------------|------|------|
 | `memgraphrag.retrieve` | retriever | PPR / graph retrieval path |
 | `memgraphrag.fact_linking` | span | Query→fact embedding + filter |
+| `memgraphrag.schema_linking` | span | Query→schema embedding + fact/entity seed expansion |
 | `memgraphrag.passage_seed` | span | Dense passage seeds for PPR |
 | `memgraphrag.ppr` | span | Personalized PageRank run |
 | `memgraphrag.dense_retrieve` | retriever | Naive mode or PPR fallback |

@@ -4,8 +4,8 @@ Production FastAPI server for the MemGraphRAG memory-based GraphRAG engine.
 
 ## Features
 
-- Three-layer memory indexing (schema / fact / passage) with conflict-aware construction
-- Personalized PageRank retrieval (`PPR_ENGINE=igraph|neo4j_gds`)
+- Three-layer memory indexing (schema / fact / passage) with ontology extraction, frequency filter, and conflict-aware construction
+- Hierarchical PPR retrieval with schema linking (`SCHEMA_TOP_K`, `SCHEMA_NODE_WEIGHT`; `PPR_ENGINE=igraph|neo4j_gds`)
 - Pluggable storage via `MEMGRAPHRAG_*_STORAGE` (JSON/nano/igraph defaults or PostgreSQL + Neo4j)
 - OpenAI-compatible LLM and embedding bindings
 - Document upload/scan with legacy + Docling parsers and F/R/P chunkers

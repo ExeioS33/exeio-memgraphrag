@@ -61,8 +61,9 @@ This repository packages that engine as a production FastAPI service inspired by
 ## Adaptation Principles
 
 - Chunks become `PassageNode`s at the engine boundary; graph is the typed memory graph, not a flat entity/relation KG.
-- PROCESSING = `openie → memory_build → schema_extraction → ontology_filter → conflict_detection → conflict_resolution → graph_install`.
-- Query params are MemGraphRAG-native (`LINKING_TOP_K`, `PASSAGE_NODE_WEIGHT`, `DAMPING`, `FACT_SIMILARITY_THRESHOLD`, `SKIP_FACT_RERANK`, `PPR_ENGINE`).
+- PROCESSING = `openie → memory_build → schema_extraction → ontology_filter → conflict_detection → conflict_resolution → graph_install` (ontology + conflict stages are implemented; disable conflicts with `CONFLICT_ENABLED=false`).
+- Query params are MemGraphRAG-native (`LINKING_TOP_K`, `PASSAGE_NODE_WEIGHT`, `DAMPING`, `FACT_SIMILARITY_THRESHOLD`, `SKIP_FACT_RERANK`, `SCHEMA_TOP_K`, `SCHEMA_NODE_WEIGHT`, `PPR_ENGINE`).
+- Index-time ontology/conflict knobs: `ONTOLOGY_BATCH_SIZE`, `ONTOLOGY_MIN_FREQUENCY`, `CONFLICT_ENABLED`, `CONFLICT_MAX_GROUPS`.
 - Ollama prefixes: `/naive` dense passages; default PPR+QA; `/context` passages only; `/bypass` direct LLM.
 
 ## Development Workflow
