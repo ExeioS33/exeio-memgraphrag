@@ -53,6 +53,7 @@ api = [
     "langchain-text-splitters",
     "asyncpg",
     "neo4j",
+    "langfuse>=2.0.0,<4.0.0",
 ]
 pytest = [
     "pytest>=8.0.0",
