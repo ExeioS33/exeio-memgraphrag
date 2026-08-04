@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=64", "wheel"]
+requires = ["setuptools==80.9.0", "wheel==0.45.1"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -18,48 +18,53 @@ classifiers = [
     "Intended Audience :: Developers",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
+
+# Direct dependencies are pinned (==) to the versions resolved in uv.lock
+# (via `uv export` / `uv lock`). Re-run `uv lock` after any pin change.
 dependencies = [
-    "aiohttp",
-    "numpy>=1.24.0,<3.0.0",
-    "pandas>=2.0.0,<2.4.0",
-    "pydantic",
-    "python-dotenv",
-    "tenacity",
-    "tiktoken>=0.7.0",
-    "nano-vectordb",
-    "python-igraph>=0.11.0",
-    "openai>=1.0.0,<3.0.0",
-    "httpx",
-    "filelock",
-    "packaging",
-    "PyYAML>=6.0,<7.0",
+    "aiohttp==3.14.3",
+    "numpy==2.2.6 ; python_full_version < '3.11'",
+    "numpy==2.4.6 ; python_full_version == '3.11.*'",
+    "numpy==2.5.1 ; python_full_version >= '3.12'",
+    "pandas==2.3.3",
+    "pydantic==2.13.4",
+    "python-dotenv==1.2.2",
+    "tenacity==9.1.4",
+    "tiktoken==0.13.0",
+    "nano-vectordb==0.0.4.3",
+    "python-igraph==1.0.0",
+    "openai==2.53.0",
+    "httpx==0.28.1",
+    "filelock==3.32.2",
+    "packaging==25.0",
+    "PyYAML==6.0.3",
 ]
 
 [project.optional-dependencies]
 api = [
-    "fastapi",
-    "uvicorn[standard]",
-    "gunicorn",
-    "python-multipart",
-    "python-jose[cryptography]",
-    "passlib[bcrypt]",
-    "bcrypt<5.0.0",
-    "pypdf",
-    "python-docx",
-    "python-pptx",
-    "openpyxl",
-    "pycryptodome",
-    "defusedxml",
-    "langchain-text-splitters",
-    "asyncpg",
-    "neo4j",
-    "langfuse>=2.0.0,<4.0.0",
+    "fastapi==0.141.1",
+    "uvicorn[standard]==0.52.1",
+    "gunicorn==26.0.0",
+    "python-multipart==0.0.32",
+    "python-jose[cryptography]==3.5.0",
+    "passlib[bcrypt]==1.7.4",
+    "bcrypt==4.3.0",
+    "pypdf==6.14.2",
+    "python-docx==1.2.0",
+    "python-pptx==1.0.2",
+    "openpyxl==3.1.5",
+    "pycryptodome==3.23.0",
+    "defusedxml==0.7.1",
+    "langchain-text-splitters==1.1.2",
+    "asyncpg==0.31.0",
+    "neo4j==6.2.0",
+    "langfuse==3.15.0",
 ]
 pytest = [
-    "pytest>=8.0.0",
-    "pytest-asyncio>=0.23.0",
-    "httpx",
-    "ruff",
+    "pytest==9.1.1",
+    "pytest-asyncio==1.4.0",
+    "httpx==0.28.1",
+    "ruff==0.16.1",
 ]
 test = [
     "memgraphrag[api,pytest]",
@@ -88,3 +93,7 @@ markers = [
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+
+[tool.uv]
+# Prefer the locked set committed as uv.lock for reproducible installs/builds.
+package = true
