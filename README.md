@@ -111,6 +111,41 @@ Personalized PageRank over the memory graph:
 
 OpenAI-compatible bindings only (`LLM_*`, `EMBEDDING_*`) — point at OpenAI, Azure, vLLM, Ollama OpenAI shim, or any compatible gateway. No local torch/HF embedders in the service image for the POC path.
 
+## 📦 Code Structure
+
+High-level layout of this industrial server repo:
+
+```text
+memgraphrag/                 # repository root
+├── memgraphrag/             # Python package
+│   ├── api/                 # FastAPI app, auth, config, routers
+│   ├── chunker/             # Chunkers F / R / P
+│   ├── parser/              # Legacy + Docling parsers & registry
+│   ├── storage/             # KV / vector / graph / doc-status backends
+│   ├── ppr/                 # igraph & Neo4j GDS Personalized PageRank
+│   ├── llm/                 # OpenAI-compatible LLM / embedding bindings
+│   ├── openie/              # OpenIE fact extraction
+│   ├── prompts/             # Prompt templates
+│   ├── sidecar/             # Sidecar writer utilities
+│   ├── utils/               # Hashing, tokenizer, env helpers
+│   ├── core.py              # MemGraphRAG engine (index / retrieve / rag_qa)
+│   ├── memory.py            # Three-layer memory (schema / fact / passage)
+│   ├── pipeline.py          # Async ingestion pipeline
+│   ├── retrieval.py         # Retrieval orchestration
+│   ├── base.py              # Storage ABCs
+│   └── rerank.py            # Fact / passage reranking
+├── docs/                    # Deployment & API guides
+├── tests/                   # Unit / edge / gated integration tests
+├── scripts/                 # Helper scripts (e.g. test.sh)
+├── Dockerfile               # Service image
+├── docker-compose.yml       # Postgres + Neo4j + app (+ docling profile)
+├── docker-entrypoint.sh     # Container entrypoint
+├── pyproject.toml           # Packaging & extras
+├── env.example              # Environment template
+├── AGENTS.md                # Agent / contributor conventions
+└── README.md
+```
+
 ## 📚 Documentation
 
 Guides under [`docs/`](docs/), including:
