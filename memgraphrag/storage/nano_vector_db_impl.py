@@ -129,3 +129,17 @@ class NanoVectorDBStorage(BaseVectorStorage):
         async with self._lock:
             self._client.delete(ids)
             self._client.save()
+
+    async def drop(self) -> None:
+        async with self._lock:
+            if os.path.exists(self._file_name):
+                try:
+                    os.remove(self._file_name)
+                except OSError as exc:
+                    logger.warning(
+                        "Failed to remove vector file %s: %s", self._file_name, exc
+                    )
+            self._client = NanoVectorDB(
+                self._embedding_dim,
+                storage_file=self._file_name,
+            )

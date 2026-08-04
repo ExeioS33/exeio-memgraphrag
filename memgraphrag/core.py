@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping, Sequence, Union
 
 import numpy as np
@@ -19,6 +20,7 @@ from memgraphrag.base import (
     BaseGraphStorage,
     BaseKVStorage,
     BaseVectorStorage,
+    DocStatus,
     DocStatusStorage,
     QueryParam,
 )
@@ -798,37 +800,223 @@ class MemGraphRAG:
     # Indexing
     # ------------------------------------------------------------------
 
-    async def ainsert(self, chunks: Sequence[str] | Sequence[dict[str, str]]) -> dict[str, Any]:
-        """Index already-chunked texts: OpenIE → memory → vectors → graph."""
+    def _normalize_chunks(
+        self, chunks: Sequence[str] | Sequence[dict[str, str]]
+    ) -> list[dict[str, str]]:
+        """Normalize inputs to ``{idx: chunk-…, content: …}`` dicts."""
+        prepared: list[dict[str, str]] = []
+        for i, chunk in enumerate(chunks):
+            if isinstance(chunk, str):
+                content = chunk.strip()
+                if not content:
+                    continue
+                prepared.append(
+                    {
+                        "idx": compute_mdhash_id(content, prefix="chunk-"),
+                        "content": content,
+                    }
+                )
+                continue
+            if isinstance(chunk, dict):
+                content = str(chunk.get("content") or chunk.get("passage") or "").strip()
+                if not content:
+                    continue
+                idx = str(chunk.get("idx") or chunk.get("id") or "")
+                if not idx.startswith("chunk-"):
+                    idx = compute_mdhash_id(content, prefix="chunk-")
+                prepared.append({"idx": idx, "content": content})
+                continue
+            content = str(chunk).strip()
+            if content:
+                prepared.append(
+                    {
+                        "idx": compute_mdhash_id(content, prefix="chunk-"),
+                        "content": content,
+                    }
+                )
+        return prepared
+
+    async def _doc_status_all(self) -> dict[str, dict[str, Any]]:
+        """Return all doc-status records (fallback when get_all is missing)."""
+        try:
+            return await self.doc_status.get_all()
+        except NotImplementedError:
+            docs: dict[str, dict[str, Any]] = {}
+            for status in DocStatus:
+                try:
+                    part = await self.doc_status.get_docs_by_statuses([status])
+                    docs.update(part)
+                except Exception:
+                    pass
+            return docs
+
+    async def _load_corpus_openie_docs(
+        self,
+        *,
+        extra_chunk_ids: Sequence[str] | None = None,
+        exclude_doc_ids: set[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Load cached OpenIE docs for all PROCESSED corpus chunks (+ extras)."""
+        chunk_ids: set[str] = set(str(c) for c in (extra_chunk_ids or []) if c)
+        all_docs = await self._doc_status_all()
+        for doc_id, record in all_docs.items():
+            if exclude_doc_ids and doc_id in exclude_doc_ids:
+                continue
+            if str(record.get("status") or "") != DocStatus.PROCESSED.value:
+                continue
+            for cid in record.get("chunk_ids") or []:
+                if cid:
+                    chunk_ids.add(str(cid))
+
+        if not chunk_ids:
+            try:
+                cached = await self.openie_kv.get_all()
+            except Exception:
+                cached = {}
+            return [dict(v) for v in cached.values() if isinstance(v, dict)]
+
+        id_list = sorted(chunk_ids)
+        records = await self.openie_kv.get_by_ids(id_list)
+        docs: list[dict[str, Any]] = []
+        for cid, rec in zip(id_list, records):
+            if not isinstance(rec, dict):
+                continue
+            doc = dict(rec)
+            doc.setdefault("idx", cid)
+            docs.append(doc)
+        return docs
+
+    async def _previous_vector_ids(self) -> dict[str, set[str]]:
+        """Ids currently reflected in memory / in-memory caches."""
+        if self._passage_ids or self._fact_ids or self._entity_ids or self._schema_ids:
+            return {
+                "passages": set(self._passage_ids),
+                "facts": set(self._fact_ids),
+                "entities": set(self._entity_ids),
+                "schemas": set(self._schema_ids),
+            }
+        mem = await self.memory_kv.get_by_id("memory")
+        if not isinstance(mem, dict):
+            return {
+                "passages": set(),
+                "facts": set(),
+                "entities": set(),
+                "schemas": set(),
+            }
+        passages = mem.get("passage_layer") or mem.get("passages") or []
+        facts = mem.get("fact_layer") or mem.get("facts") or []
+        schemas = mem.get("schema_layer") or mem.get("schemas") or []
+        passage_ids: set[str] = set()
+        for p in passages:
+            if not isinstance(p, dict):
+                continue
+            content = str(p.get("content") or "")
+            cid = str(p.get("chunk_id") or "")
+            if cid.startswith("chunk-"):
+                passage_ids.add(cid)
+            elif content:
+                passage_ids.add(compute_mdhash_id(content, prefix="chunk-"))
+        fact_ids = {
+            compute_mdhash_id(_triple_str(f.get("content") or ()), prefix="fact-")
+            for f in facts
+            if isinstance(f, dict) and f.get("content")
+        }
+        schema_ids = {
+            compute_mdhash_id(_triple_str(s.get("content") or ()), prefix="schema-")
+            for s in schemas
+            if isinstance(s, dict) and s.get("content")
+        }
+        entity_ids: set[str] = set()
+        for f in facts:
+            if not isinstance(f, dict):
+                continue
+            content = f.get("content") or ()
+            if isinstance(content, (list, tuple)) and len(content) == 3:
+                for ent in (content[0], content[2]):
+                    e = str(ent).strip().lower()
+                    if e:
+                        entity_ids.add(compute_mdhash_id(e, prefix="entity-"))
+        return {
+            "passages": passage_ids,
+            "facts": fact_ids,
+            "entities": entity_ids,
+            "schemas": schema_ids,
+        }
+
+    async def _rebuild_memory_from_openie(
+        self,
+        openie_docs: list[dict[str, Any]],
+        *,
+        run_conflicts: bool = True,
+    ) -> tuple[ThreeLayerMemory, dict[str, Any], dict[str, Any]]:
+        """Build three-layer memory from OpenIE docs (optionally skip conflicts)."""
+        memory = ThreeLayerMemory()
+        sub_step(
+            logger,
+            "index.memory_build",
+            openie_docs=len(openie_docs),
+            run_conflicts=run_conflicts,
+        )
+        memory.build_from_raw_openie_results({"docs": openie_docs})
+        memory = await self.extract_schema(memory)
+        memory = await self.filter_ontology(memory)
+        if run_conflicts:
+            conflicts = await self.detect_conflicts(memory)
+            memory, resolution = await self.resolve_conflicts(memory, conflicts)
+        else:
+            conflicts = {"summary": {"skipped": True}}
+            resolution = {"summary": {"skipped": True}}
+            sub_step(logger, "index.conflict.skip", reason="delete_rebuild")
+        return memory, conflicts, resolution
+
+    async def ainsert(
+        self,
+        chunks: Sequence[str] | Sequence[dict[str, str]],
+        *,
+        run_conflicts: bool = True,
+    ) -> dict[str, Any]:
+        """Index already-chunked texts into the accumulating corpus memory."""
         main_step(logger, "index.ainsert", chunks=len(chunks))
         if not self._initialized:
             await self.initialize_storages()
-        if not chunks:
+        prepared = self._normalize_chunks(chunks)
+        if not prepared:
             raise ValueError("ainsert requires at least one chunk")
         if self.llm_model_func is None or self.embedding_func is None:
             raise PipelineError("ainsert requires llm_model_func and embedding_func")
 
         assert self.openie is not None
-        sub_step(logger, "index.ainsert.openie", chunks=len(chunks))
-        openie_docs = await self.openie.batch_openie(chunks)
-        await self.openie_kv.upsert(
-            {d["idx"]: d for d in openie_docs}
+        batch_ids = [c["idx"] for c in prepared]
+        existing = await self.openie_kv.get_by_ids(batch_ids)
+        missing_chunks = [
+            prepared[i]
+            for i, rec in enumerate(existing)
+            if not isinstance(rec, dict)
+            or not (rec.get("extracted_triples") or rec.get("extracted_entities"))
+        ]
+        sub_step(
+            logger,
+            "index.ainsert.openie",
+            chunks=len(prepared),
+            cached=len(prepared) - len(missing_chunks),
+            extract=len(missing_chunks),
         )
-        sub_step(logger, "index.ainsert.openie_done", docs=len(openie_docs))
+        if missing_chunks:
+            new_docs = await self.openie.batch_openie(missing_chunks)
+            await self.openie_kv.upsert({d["idx"]: d for d in new_docs})
+        sub_step(logger, "index.ainsert.openie_done", docs=len(batch_ids))
 
-        memory = ThreeLayerMemory()
-        sub_step(logger, "index.ainsert.memory_build", openie_docs=len(openie_docs))
-        memory.build_from_raw_openie_results({"docs": openie_docs})
-        memory = await self.extract_schema(memory)
-        memory = await self.filter_ontology(memory)
-        conflicts = await self.detect_conflicts(memory)
-        memory, resolution = await self.resolve_conflicts(memory, conflicts)
+        openie_docs = await self._load_corpus_openie_docs(extra_chunk_ids=batch_ids)
+        memory, conflicts, resolution = await self._rebuild_memory_from_openie(
+            openie_docs, run_conflicts=run_conflicts
+        )
 
         sub_step(
             logger,
             "index.ainsert.embed_store",
             passages=len(memory.passage_layer),
             facts=len(memory.fact_layer),
+            corpus_openie=len(openie_docs),
         )
         await self._embed_and_store_memory(memory, openie_docs)
         sub_step(logger, "index.ainsert.graph_install")
@@ -858,58 +1046,83 @@ class MemGraphRAG:
         """Sync wrapper around :meth:`ainsert`."""
         return _run_sync(self.ainsert(chunks))
 
+    async def _embed_batch(
+        self, texts: list[str]
+    ) -> np.ndarray:
+        if not texts:
+            return np.zeros((0, 0))
+        emb = await self.embedding_func(texts)
+        return np.asarray(emb)
+
     async def _embed_and_store_memory(
         self, memory: ThreeLayerMemory, openie_docs: list[dict[str, Any]]
     ) -> None:
-        # Passages
-        passage_texts = [p.content for p in memory.passage_layer]
-        passage_ids = [
-            compute_mdhash_id(p.chunk_id or p.content, prefix="chunk-")
-            if not str(p.chunk_id).startswith("chunk-")
-            else str(p.chunk_id)
-            for p in memory.passage_layer
-        ]
-        # Prefer stable hash of content when chunk_id is numeric index
-        passage_ids = []
-        for p in memory.passage_layer:
-            pid = compute_mdhash_id(p.content, prefix="chunk-")
-            passage_ids.append(pid)
-            p.chunk_id = pid  # normalize for graph install
+        """Embed / store memory layers, deleting orphans and skipping known ids."""
+        old_ids = await self._previous_vector_ids()
 
-        if passage_texts:
-            emb = await self.embedding_func(passage_texts)
-            emb = np.asarray(emb)
+        # Passages — prefer existing chunk- ids; else hash content
+        passage_texts: list[str] = []
+        passage_ids: list[str] = []
+        for p in memory.passage_layer:
+            content = p.content
+            cid = str(p.chunk_id or "")
+            if not cid.startswith("chunk-"):
+                cid = compute_mdhash_id(content, prefix="chunk-")
+            p.chunk_id = cid
+            passage_ids.append(cid)
+            passage_texts.append(content)
+
+        new_passage = set(passage_ids)
+        orphan_passages = sorted(old_ids["passages"] - new_passage)
+        add_passages = [
+            i for i, pid in enumerate(passage_ids) if pid not in old_ids["passages"]
+        ]
+        if orphan_passages:
+            await self.chunks_vdb.delete(orphan_passages)
+            await self.chunks_kv.delete(orphan_passages)
+        if add_passages:
+            texts = [passage_texts[i] for i in add_passages]
+            emb = await self._embed_batch(texts)
             chunk_payload = {
-                passage_ids[i]: {
-                    "content": passage_texts[i],
-                    "embedding": emb[i].tolist(),
+                passage_ids[add_passages[j]]: {
+                    "content": texts[j],
+                    "embedding": emb[j].tolist(),
                 }
-                for i in range(len(passage_ids))
+                for j in range(len(add_passages))
             }
             await self.chunks_vdb.upsert(chunk_payload)
             await self.chunks_kv.upsert(
                 {
-                    passage_ids[i]: {"content": passage_texts[i], "idx": i}
-                    for i in range(len(passage_ids))
+                    passage_ids[add_passages[j]]: {
+                        "content": texts[j],
+                        "idx": add_passages[j],
+                    }
+                    for j in range(len(add_passages))
                 }
             )
 
         # Facts
-        fact_texts = ["\t".join(f.content) for f in memory.fact_layer]
         fact_ids = [
             compute_mdhash_id(_triple_str(f.content), prefix="fact-")
             for f in memory.fact_layer
         ]
-        if fact_texts:
-            emb = await self.embedding_func(fact_texts)
-            emb = np.asarray(emb)
+        new_facts = set(fact_ids)
+        orphan_facts = sorted(old_ids["facts"] - new_facts)
+        add_facts = [
+            i for i, fid in enumerate(fact_ids) if fid not in old_ids["facts"]
+        ]
+        if orphan_facts:
+            await self.facts_vdb.delete(orphan_facts)
+        if add_facts:
+            texts = ["\t".join(memory.fact_layer[i].content) for i in add_facts]
+            emb = await self._embed_batch(texts)
             fact_payload = {
-                fact_ids[i]: {
-                    "content": _triple_str(memory.fact_layer[i].content),
-                    "embedding": emb[i].tolist(),
-                    "triple": list(memory.fact_layer[i].content),
+                fact_ids[add_facts[j]]: {
+                    "content": _triple_str(memory.fact_layer[add_facts[j]].content),
+                    "embedding": emb[j].tolist(),
+                    "triple": list(memory.fact_layer[add_facts[j]].content),
                 }
-                for i in range(len(fact_ids))
+                for j in range(len(add_facts))
             }
             await self.facts_vdb.upsert(fact_payload)
 
@@ -930,37 +1143,63 @@ class MemGraphRAG:
                     entities.append(e)
 
         entity_ids = [compute_mdhash_id(e, prefix="entity-") for e in entities]
-        if entities:
-            emb = await self.embedding_func(entities)
-            emb = np.asarray(emb)
+        new_entities = set(entity_ids)
+        orphan_entities = sorted(old_ids["entities"] - new_entities)
+        add_entities = [
+            i for i, eid in enumerate(entity_ids) if eid not in old_ids["entities"]
+        ]
+        if orphan_entities:
+            await self.entities_vdb.delete(orphan_entities)
+        if add_entities:
+            texts = [entities[i] for i in add_entities]
+            emb = await self._embed_batch(texts)
             ent_payload = {
-                entity_ids[i]: {
-                    "content": entities[i],
-                    "embedding": emb[i].tolist(),
+                entity_ids[add_entities[j]]: {
+                    "content": texts[j],
+                    "embedding": emb[j].tolist(),
                 }
-                for i in range(len(entities))
+                for j in range(len(add_entities))
             }
             await self.entities_vdb.upsert(ent_payload)
 
-        # Schemas (ontology type triples)
-        schema_texts = ["\t".join(s.content) for s in memory.schema_layer]
+        # Schemas
         schema_ids = [
             compute_mdhash_id(_triple_str(s.content), prefix="schema-")
             for s in memory.schema_layer
         ]
-        if schema_texts:
-            emb = await self.embedding_func(schema_texts)
-            emb = np.asarray(emb)
+        new_schemas = set(schema_ids)
+        orphan_schemas = sorted(old_ids["schemas"] - new_schemas)
+        add_schemas = [
+            i for i, sid in enumerate(schema_ids) if sid not in old_ids["schemas"]
+        ]
+        if orphan_schemas:
+            await self.schemas_vdb.delete(orphan_schemas)
+        if add_schemas:
+            texts = ["\t".join(memory.schema_layer[i].content) for i in add_schemas]
+            emb = await self._embed_batch(texts)
             schema_payload = {
-                schema_ids[i]: {
-                    "content": _triple_str(memory.schema_layer[i].content),
-                    "embedding": emb[i].tolist(),
-                    "triple": list(memory.schema_layer[i].content),
-                    "schema_idx": memory.schema_layer[i].idx,
+                schema_ids[add_schemas[j]]: {
+                    "content": _triple_str(memory.schema_layer[add_schemas[j]].content),
+                    "embedding": emb[j].tolist(),
+                    "triple": list(memory.schema_layer[add_schemas[j]].content),
+                    "schema_idx": memory.schema_layer[add_schemas[j]].idx,
                 }
-                for i in range(len(schema_ids))
+                for j in range(len(add_schemas))
             }
             await self.schemas_vdb.upsert(schema_payload)
+
+        sub_step(
+            logger,
+            "index.embed.diff",
+            add_passages=len(add_passages),
+            del_passages=len(orphan_passages),
+            add_facts=len(add_facts),
+            del_facts=len(orphan_facts),
+            add_entities=len(add_entities),
+            del_entities=len(orphan_entities),
+            add_schemas=len(add_schemas),
+            del_schemas=len(orphan_schemas),
+        )
 
         self._passage_ids = passage_ids
         self._fact_ids = fact_ids
@@ -1088,6 +1327,286 @@ class MemGraphRAG:
                     )
 
         self._entity_to_passages = entity_to_passages
+
+    # ------------------------------------------------------------------
+    # Document admin (delete / clear)
+    # ------------------------------------------------------------------
+
+    async def _chunk_refcount(
+        self, exclude_doc_ids: set[str] | None = None
+    ) -> dict[str, int]:
+        """Count how many docs reference each chunk id."""
+        exclude = exclude_doc_ids or set()
+        counts: dict[str, int] = {}
+        for doc_id, record in (await self._doc_status_all()).items():
+            if doc_id in exclude:
+                continue
+            for cid in record.get("chunk_ids") or []:
+                key = str(cid)
+                if key:
+                    counts[key] = counts.get(key, 0) + 1
+        return counts
+
+    @staticmethod
+    def _safe_unlink(path: str | Path | None) -> bool:
+        if not path:
+            return False
+        text = str(path)
+        if text.startswith("inline:"):
+            return False
+        try:
+            p = Path(text)
+            if p.is_file():
+                p.unlink()
+                return True
+        except OSError as exc:
+            logger.warning("Failed to delete file %s: %s", path, exc)
+        return False
+
+    async def _clear_empty_corpus(self) -> None:
+        """Wipe derived memory/graph/vectors when no OpenIE docs remain."""
+        old_ids = await self._previous_vector_ids()
+        for ids, store in (
+            (sorted(old_ids["passages"]), self.chunks_vdb),
+            (sorted(old_ids["passages"]), self.chunks_kv),
+            (sorted(old_ids["facts"]), self.facts_vdb),
+            (sorted(old_ids["entities"]), self.entities_vdb),
+            (sorted(old_ids["schemas"]), self.schemas_vdb),
+        ):
+            if ids:
+                await store.delete(ids)
+        await self.memory_kv.delete(["memory"])
+        await self.graph.clear()
+        self.memory = None
+        self.ready_to_retrieve = False
+        self._passage_ids = []
+        self._fact_ids = []
+        self._entity_ids = []
+        self._schema_ids = []
+        self._passage_id_to_content = {}
+        self._fact_id_to_triple = {}
+        self._schema_id_to_idx = {}
+        self._entity_to_passages = {}
+
+    async def _rebuild_corpus_after_delete(
+        self, *, exclude_doc_ids: set[str]
+    ) -> dict[str, Any]:
+        """Rebuild memory/graph from remaining docs' cached OpenIE (no LLM)."""
+        openie_docs = await self._load_corpus_openie_docs(
+            exclude_doc_ids=exclude_doc_ids
+        )
+        if not openie_docs:
+            await self._clear_empty_corpus()
+            return {
+                "num_passages": 0,
+                "num_facts": 0,
+                "num_schemas": 0,
+                "openie_docs": 0,
+            }
+
+        memory, _conflicts, _resolution = await self._rebuild_memory_from_openie(
+            openie_docs, run_conflicts=False
+        )
+        await self._embed_and_store_memory(memory, openie_docs)
+        await self._install_memory_graph(memory)
+        await self.memory_kv.upsert({"memory": memory.to_dict()})
+        self.memory = memory
+        self.ready_to_retrieve = False
+        return {
+            "num_passages": len(memory.passage_layer),
+            "num_facts": len(memory.fact_layer),
+            "num_schemas": len(memory.schema_layer),
+            "openie_docs": len(openie_docs),
+        }
+
+    async def adelete_by_doc_ids(
+        self,
+        doc_ids: Sequence[str],
+        *,
+        delete_file: bool = False,
+    ) -> dict[str, Any]:
+        """Delete documents and rebuild corpus memory from remaining OpenIE cache.
+
+        Returns LightRAG-style per-id results plus a rebuild summary.
+        """
+        if not self._initialized:
+            await self.initialize_storages()
+        ids = [str(d) for d in doc_ids if d]
+        main_step(logger, "admin.delete", docs=len(ids), delete_file=delete_file)
+
+        results: dict[str, dict[str, Any]] = {}
+        to_remove_status: list[str] = []
+        chunks_to_drop: set[str] = set()
+        processed_removed: set[str] = set()
+        files_deleted: list[str] = []
+
+        all_docs = await self._doc_status_all()
+        refcounts = await self._chunk_refcount(exclude_doc_ids=set(ids))
+
+        for doc_id in ids:
+            record = all_docs.get(doc_id)
+            if record is None:
+                results[doc_id] = {
+                    "status": "not_found",
+                    "message": "Document not found",
+                }
+                continue
+
+            status = str(record.get("status") or "")
+            chunk_ids = [str(c) for c in (record.get("chunk_ids") or []) if c]
+            dropped_chunks: list[str] = []
+            for cid in chunk_ids:
+                if refcounts.get(cid, 0) > 0:
+                    continue
+                chunks_to_drop.add(cid)
+                dropped_chunks.append(cid)
+
+            if delete_file:
+                fp = record.get("file_path")
+                if self._safe_unlink(fp):
+                    files_deleted.append(str(fp))
+                bp = record.get("blocks_path")
+                if self._safe_unlink(bp):
+                    files_deleted.append(str(bp))
+
+            to_remove_status.append(doc_id)
+            if status == DocStatus.PROCESSED.value:
+                processed_removed.add(doc_id)
+            results[doc_id] = {
+                "status": "deleted",
+                "message": f"Removed ({status or 'unknown'})",
+                "previous_status": status,
+                "chunks_dropped": dropped_chunks,
+                "chunks_shared": [c for c in chunk_ids if c not in dropped_chunks],
+            }
+
+        if chunks_to_drop:
+            drop_list = sorted(chunks_to_drop)
+            await self.openie_kv.delete(drop_list)
+            await self.chunks_kv.delete(drop_list)
+            await self.chunks_vdb.delete(drop_list)
+            sub_step(logger, "admin.delete.chunks", dropped=len(drop_list))
+
+        if to_remove_status:
+            await self.doc_status.delete(to_remove_status)
+
+        rebuild: dict[str, Any] = {"skipped": True}
+        if processed_removed or any(
+            r.get("status") == "deleted"
+            and r.get("previous_status")
+            in {
+                DocStatus.PROCESSED.value,
+                DocStatus.PROCESSING.value,
+                DocStatus.FAILED.value,
+            }
+            for r in results.values()
+        ):
+            # Rebuild whenever any doc with possible corpus impact was removed.
+            rebuild = await self._rebuild_corpus_after_delete(
+                exclude_doc_ids=set(to_remove_status)
+            )
+            rebuild["skipped"] = False
+
+        done_step(
+            logger,
+            "admin.delete",
+            deleted=sum(1 for r in results.values() if r.get("status") == "deleted"),
+            not_found=sum(
+                1 for r in results.values() if r.get("status") == "not_found"
+            ),
+            chunks_dropped=len(chunks_to_drop),
+            files_deleted=len(files_deleted),
+        )
+        return {
+            "status": "ok",
+            "results": results,
+            "chunks_dropped": sorted(chunks_to_drop),
+            "files_deleted": files_deleted,
+            "rebuild": rebuild,
+        }
+
+    async def aclear_all(
+        self,
+        *,
+        delete_files: bool = False,
+        input_dir: str | Path | None = None,
+    ) -> dict[str, Any]:
+        """Drop all storages (and optionally input/parsed files) for this workspace."""
+        if not self._initialized:
+            await self.initialize_storages()
+        main_step(logger, "admin.clear_all", delete_files=delete_files)
+
+        files_deleted = 0
+        if delete_files:
+            all_docs = await self._doc_status_all()
+            for record in all_docs.values():
+                if self._safe_unlink(record.get("file_path")):
+                    files_deleted += 1
+                if self._safe_unlink(record.get("blocks_path")):
+                    files_deleted += 1
+            if input_dir:
+                root = Path(input_dir)
+                if root.is_dir():
+                    for path in root.rglob("*"):
+                        if path.is_file() and not path.name.startswith("."):
+                            if self._safe_unlink(path):
+                                files_deleted += 1
+
+        dropped: list[str] = []
+        for store in self._storages:
+            name = getattr(store, "namespace", type(store).__name__)
+            drop_fn = getattr(store, "drop", None)
+            if callable(drop_fn):
+                await drop_fn()
+            elif hasattr(store, "clear") and callable(store.clear):
+                await store.clear()
+            else:
+                # Best-effort: delete all known keys when get_all exists
+                get_all = getattr(store, "get_all", None)
+                if callable(get_all):
+                    try:
+                        data = await get_all()
+                        if data:
+                            await store.delete(list(data.keys()))
+                    except Exception as exc:
+                        logger.warning("clear_all fallback failed for %s: %s", name, exc)
+            dropped.append(str(name))
+
+        self.memory = None
+        self.ready_to_retrieve = False
+        self._passage_ids = []
+        self._fact_ids = []
+        self._entity_ids = []
+        self._schema_ids = []
+        self._passage_id_to_content = {}
+        self._fact_id_to_triple = {}
+        self._schema_id_to_idx = {}
+        self._entity_to_passages = {}
+        self._ppr = None
+
+        done_step(
+            logger,
+            "admin.clear_all",
+            storages=len(dropped),
+            files_deleted=files_deleted,
+        )
+        return {
+            "status": "ok",
+            "dropped": dropped,
+            "files_deleted": files_deleted,
+        }
+
+    def delete_by_doc_ids(
+        self, doc_ids: Sequence[str], *, delete_file: bool = False
+    ) -> dict[str, Any]:
+        return _run_sync(self.adelete_by_doc_ids(doc_ids, delete_file=delete_file))
+
+    def clear_all(
+        self, *, delete_files: bool = False, input_dir: str | Path | None = None
+    ) -> dict[str, Any]:
+        return _run_sync(
+            self.aclear_all(delete_files=delete_files, input_dir=input_dir)
+        )
 
     # ------------------------------------------------------------------
     # Retrieval prep

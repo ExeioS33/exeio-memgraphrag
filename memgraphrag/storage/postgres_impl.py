@@ -184,6 +184,10 @@ class PGKVStorage(BaseKVStorage):
             out[row["id"]] = record
         return out
 
+    async def drop(self) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(f"DELETE FROM {self._table}")
+
 
 @dataclass
 class PGVectorStorage(BaseVectorStorage):
@@ -298,6 +302,10 @@ class PGVectorStorage(BaseVectorStorage):
                 f"DELETE FROM {self._table} WHERE id = ANY($1::text[])",
                 ids,
             )
+
+    async def drop(self) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(f"DELETE FROM {self._table}")
 
 
 @dataclass
@@ -433,3 +441,21 @@ class PGDocStatusStorage(DocStatusStorage):
             record["_id"] = row["id"]
             result[row["id"]] = record
         return result
+
+    async def get_all(self) -> dict[str, dict[str, Any]]:
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(f"SELECT id, status, data FROM {self._table}")
+        result: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            data = row["data"]
+            if isinstance(data, str):
+                data = json.loads(data)
+            record = dict(data)
+            record["status"] = row["status"]
+            record["_id"] = row["id"]
+            result[row["id"]] = record
+        return result
+
+    async def drop(self) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(f"DELETE FROM {self._table}")

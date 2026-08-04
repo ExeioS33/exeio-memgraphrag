@@ -139,6 +139,12 @@ class BaseKVStorage(StorageNameSpace, ABC):
             f"{type(self).__name__} does not implement get_all()"
         )
 
+    async def drop(self) -> None:
+        """Optional: wipe all records in this namespace."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement drop()"
+        )
+
 
 @dataclass
 class BaseVectorStorage(StorageNameSpace, ABC):
@@ -160,6 +166,12 @@ class BaseVectorStorage(StorageNameSpace, ABC):
     @abstractmethod
     async def delete(self, ids: list[str]) -> None:
         """Delete vectors by id."""
+
+    async def drop(self) -> None:
+        """Optional: wipe all vectors in this namespace."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement drop()"
+        )
 
 
 @dataclass
@@ -208,6 +220,10 @@ class BaseGraphStorage(StorageNameSpace, ABC):
     @abstractmethod
     async def clear(self) -> None:
         """Remove all nodes and edges."""
+
+    async def drop(self) -> None:
+        """Wipe the graph namespace (default: :meth:`clear`)."""
+        await self.clear()
 
     async def node_degree(self, node_id: str) -> int:
         """Optional: return the degree of ``node_id``."""
