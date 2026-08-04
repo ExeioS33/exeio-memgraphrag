@@ -145,8 +145,12 @@ def params_cmd() -> None:
         ("POST /documents/upload", "docs upload|upload-dir|upload-url", "📥 Ingest"),
         ("POST /documents/text", "docs text", "📥 Ingest"),
         ("GET /documents/", "docs list", "📥 Ingest"),
+        ("GET /documents/{id}", "docs get", "📥 Ingest"),
+        ("DELETE /documents/{id}", "docs delete", "📥 Ingest"),
+        ("POST /documents/delete", "docs delete --batch", "📥 Ingest"),
+        ("POST /documents/{id}/requeue", "docs requeue", "📥 Ingest"),
         ("POST /documents/scan", "docs scan", "📥 Ingest"),
-        ("DELETE /documents/", "docs clear (stub)", "📥 Ingest"),
+        ("DELETE /documents/?confirm=true", "docs clear --yes", "📥 Ingest"),
         ("GET /graphs", "graph show", "🕸️ Graph"),
         ("GET /graph/label/list", "graph labels", "🕸️ Graph"),
         ("(client-side)", "optimize", "🧪 Optimize"),
@@ -394,21 +398,90 @@ def docs_scan(
     )
 
 
+@docs_app.command("get")
+def docs_get(
+    doc_id: str = typer.Argument(..., help="Document id"),
+    server: Optional[str] = ServerOpt,
+    api_key: Optional[str] = ApiKeyOpt,
+) -> None:
+    """🔎 Fetch one document status record."""
+    try:
+        with _client(server, api_key) as c:
+            data = c.get_document(doc_id)
+    except Exception as exc:  # noqa: BLE001
+        _err(exc)
+    _print_json(data)
+
+
+@docs_app.command("delete")
+def docs_delete(
+    doc_ids: list[str] = typer.Argument(..., help="One or more document ids"),
+    delete_file: bool = typer.Option(
+        False, "--delete-file", help="Also remove source/parsed files"
+    ),
+    server: Optional[str] = ServerOpt,
+    api_key: Optional[str] = ApiKeyOpt,
+) -> None:
+    """🗑️  Delete document(s) and rebuild corpus memory from remaining OpenIE."""
+    try:
+        with _client(server, api_key) as c:
+            with console.status("🗑️  Deleting…"):
+                if len(doc_ids) == 1:
+                    data = c.delete_document(doc_ids[0], delete_file=delete_file)
+                else:
+                    data = c.delete_documents(doc_ids, delete_file=delete_file)
+    except Exception as exc:  # noqa: BLE001
+        _err(exc)
+    results = data.get("results") or {}
+    deleted = sum(1 for r in results.values() if r.get("status") == "deleted")
+    missing = sum(1 for r in results.values() if r.get("status") == "not_found")
+    console.print(
+        f"[green]✅ Delete done[/] deleted={deleted} not_found={missing} "
+        f"chunks_dropped={len(data.get('chunks_dropped') or [])}"
+    )
+    _print_json(data)
+
+
+@docs_app.command("requeue")
+def docs_requeue(
+    doc_id: str = typer.Argument(..., help="Failed/stuck document id"),
+    server: Optional[str] = ServerOpt,
+    api_key: Optional[str] = ApiKeyOpt,
+) -> None:
+    """🔁 Reset a failed/stuck document to PENDING and re-index."""
+    try:
+        with _client(server, api_key) as c:
+            data = c.requeue_document(doc_id)
+    except Exception as exc:  # noqa: BLE001
+        _err(exc)
+    console.print(f"[green]✅ Requeued[/] {data.get('doc_id')} — {data.get('message')}")
+
+
 @docs_app.command("clear")
 def docs_clear(
     server: Optional[str] = ServerOpt,
     api_key: Optional[str] = ApiKeyOpt,
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
+    delete_files: bool = typer.Option(
+        False, "--delete-files", help="Also wipe input/parsed files"
+    ),
 ) -> None:
-    """🗑️  Call DELETE /documents/ (POC stub — may be not_implemented)."""
-    if not yes and not typer.confirm("Really call DELETE /documents/?"):
+    """💣 Clear all documents and storages (requires --yes)."""
+    if not yes and not typer.confirm(
+        "Really CLEAR ALL documents, memory, vectors, and graph?"
+    ):
         raise typer.Abort()
     try:
         with _client(server, api_key) as c:
-            data = c.clear_documents()
+            with console.status("💣 Clearing…"):
+                data = c.clear_documents(confirm=True, delete_files=delete_files)
     except Exception as exc:  # noqa: BLE001
         _err(exc)
-    console.print(f"[yellow]⚠️  Server says:[/] {data}")
+    console.print(
+        f"[green]✅ Cleared[/] storages={len(data.get('dropped') or [])} "
+        f"files_deleted={data.get('files_deleted')}"
+    )
+    _print_json(data)
 
 
 # --------------------------------------------------------------------------- #

@@ -1,10 +1,11 @@
-"""Document ingestion routes for MemGraphRAG.
+"""Document ingestion and admin routes for MemGraphRAG.
 
-Adapted from LightRAG ``lightrag/api/routers/document_routes.py`` (heavily slimmed).
+Adapted from LightRAG ``lightrag/api/routers/document_routes.py``.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from pathlib import Path
@@ -24,6 +25,7 @@ try:
         Depends,
         File,
         HTTPException,
+        Query,
         Request,
         UploadFile,
     )
@@ -34,6 +36,7 @@ except ImportError:  # pragma: no cover
     Depends = None  # type: ignore[misc, assignment]
     File = None  # type: ignore[misc, assignment]
     HTTPException = None  # type: ignore[misc, assignment]
+    Query = None  # type: ignore[misc, assignment]
     Request = None  # type: ignore[misc, assignment]
     UploadFile = None  # type: ignore[misc, assignment]
     BaseModel = object  # type: ignore[misc, assignment]
@@ -45,7 +48,41 @@ class TextInsertRequest(BaseModel):
     doc_id: Optional[str] = Field(default=None, description="Optional document id")
 
 
-async def _run_pipeline(rag: Any, input_dir: Path) -> dict[str, Any]:
+class BatchDeleteRequest(BaseModel):
+    doc_ids: list[str] = Field(..., min_length=1, description="Document ids to delete")
+    delete_file: bool = Field(
+        default=False, description="Also delete source/parsed files when present"
+    )
+
+
+def _pipeline_lock(request: Request) -> asyncio.Lock:
+    lock = getattr(request.app.state, "pipeline_lock", None)
+    if lock is None:
+        lock = asyncio.Lock()
+        request.app.state.pipeline_lock = lock
+    return lock
+
+
+async def _acquire_pipeline(request: Request) -> None:
+    """Non-blocking acquire; raises 409 if already held."""
+    lock = _pipeline_lock(request)
+    if lock.locked() or bool(getattr(request.app.state, "pipeline_busy", False)):
+        raise HTTPException(
+            status_code=409,
+            detail="Pipeline busy; retry when /health reports pipeline_busy=false",
+        )
+    await lock.acquire()
+    request.app.state.pipeline_busy = True
+
+
+def _release_pipeline(request: Request) -> None:
+    lock = _pipeline_lock(request)
+    request.app.state.pipeline_busy = False
+    if lock.locked():
+        lock.release()
+
+
+async def _run_pipeline(rag: Any, input_dir: Path | None) -> dict[str, Any]:
     """Drain PENDING docs through parse → chunk → index."""
     return await process_pending(rag, rag.doc_status, input_dir=input_dir)
 
@@ -78,25 +115,29 @@ def create_documents_router(api_key: Optional[str] = None) -> Any:
         background_tasks: BackgroundTasks,
         file: UploadFile = File(...),
     ):
-        rag = request.app.state.rag
-        input_dir = Path(getattr(request.app.state, "input_dir", "./data/inputs"))
-        input_dir.mkdir(parents=True, exist_ok=True)
-        safe_name = Path(file.filename or f"upload-{uuid.uuid4().hex}").name
-        dest = input_dir / safe_name
-        content = await file.read()
-        dest.write_bytes(content)
-        doc_id = compute_mdhash_id(f"{safe_name}:{len(content)}", prefix="doc-")
-        main_step(
-            logger,
-            "api.documents.upload",
-            doc_id=doc_id,
-            filename=safe_name,
-            bytes=len(content),
-        )
+        await _acquire_pipeline(request)
+        try:
+            rag = request.app.state.rag
+            input_dir = Path(getattr(request.app.state, "input_dir", "./data/inputs"))
+            input_dir.mkdir(parents=True, exist_ok=True)
+            safe_name = Path(file.filename or f"upload-{uuid.uuid4().hex}").name
+            dest = input_dir / safe_name
+            content = await file.read()
+            dest.write_bytes(content)
+            doc_id = compute_mdhash_id(f"{safe_name}:{len(content)}", prefix="doc-")
+            main_step(
+                logger,
+                "api.documents.upload",
+                doc_id=doc_id,
+                filename=safe_name,
+                bytes=len(content),
+            )
+        except Exception:
+            _release_pipeline(request)
+            raise
 
         async def _bg() -> None:
             try:
-                request.app.state.pipeline_busy = True
                 sub_step(
                     logger,
                     "api.documents.upload.enqueue",
@@ -127,7 +168,7 @@ def create_documents_router(api_key: Optional[str] = None) -> Any:
                     exc_info=True,
                 )
             finally:
-                request.app.state.pipeline_busy = False
+                _release_pipeline(request)
 
         background_tasks.add_task(_bg)
         return {
@@ -149,7 +190,10 @@ def create_documents_router(api_key: Optional[str] = None) -> Any:
             chars=len(body.text),
             preview=truncate(body.text),
         )
+        acquired = False
         try:
+            await _acquire_pipeline(request)
+            acquired = True
             result = await _index_inline_text(rag, body.text, doc_id)
             done_step(
                 logger,
@@ -159,6 +203,8 @@ def create_documents_router(api_key: Optional[str] = None) -> Any:
                 failed=result.get("failed"),
             )
             return {"status": "ok", "doc_id": doc_id, "result": result}
+        except HTTPException:
+            raise
         except Exception as exc:
             fail_step(
                 logger,
@@ -168,6 +214,9 @@ def create_documents_router(api_key: Optional[str] = None) -> Any:
                 exc_info=True,
             )
             raise
+        finally:
+            if acquired:
+                _release_pipeline(request)
 
     @router.get("/", dependencies=[Depends(combined_auth)])
     async def list_documents(request: Request):
@@ -184,36 +233,67 @@ def create_documents_router(api_key: Optional[str] = None) -> Any:
                     pass
         return {"statuses": docs}
 
-    @router.delete("/", dependencies=[Depends(combined_auth)])
-    async def clear_documents(request: Request):
-        # Optional stub — full wipe not wired for POC safety
-        return {
-            "status": "not_implemented",
-            "message": "DELETE /documents clear is a stub in this POC",
-        }
+    @router.post("/delete", dependencies=[Depends(combined_auth)])
+    async def batch_delete_documents(request: Request, body: BatchDeleteRequest):
+        main_step(
+            logger,
+            "api.documents.delete_batch",
+            docs=len(body.doc_ids),
+            delete_file=body.delete_file,
+        )
+        acquired = False
+        try:
+            await _acquire_pipeline(request)
+            acquired = True
+            result = await request.app.state.rag.adelete_by_doc_ids(
+                body.doc_ids, delete_file=body.delete_file
+            )
+            done_step(
+                logger,
+                "api.documents.delete_batch",
+                docs=len(body.doc_ids),
+            )
+            return result
+        except HTTPException:
+            raise
+        except Exception as exc:
+            fail_step(
+                logger,
+                "api.documents.delete_batch",
+                exc=exc,
+                exc_info=True,
+            )
+            raise
+        finally:
+            if acquired:
+                _release_pipeline(request)
 
     @router.post("/scan", dependencies=[Depends(combined_auth)])
     async def scan_input_dir(request: Request, background_tasks: BackgroundTasks):
-        rag = request.app.state.rag
-        input_dir = Path(getattr(request.app.state, "input_dir", "./data/inputs"))
-        input_dir.mkdir(parents=True, exist_ok=True)
-        files = [
-            p
-            for p in input_dir.rglob("*")
-            if p.is_file()
-            and not p.name.startswith(".")
-            and "__parsed__" not in p.parts
-        ]
-        main_step(
-            logger,
-            "api.documents.scan",
-            files_found=len(files),
-            input_dir=str(input_dir),
-        )
+        await _acquire_pipeline(request)
+        try:
+            rag = request.app.state.rag
+            input_dir = Path(getattr(request.app.state, "input_dir", "./data/inputs"))
+            input_dir.mkdir(parents=True, exist_ok=True)
+            files = [
+                p
+                for p in input_dir.rglob("*")
+                if p.is_file()
+                and not p.name.startswith(".")
+                and "__parsed__" not in p.parts
+            ]
+            main_step(
+                logger,
+                "api.documents.scan",
+                files_found=len(files),
+                input_dir=str(input_dir),
+            )
+        except Exception:
+            _release_pipeline(request)
+            raise
 
         async def _bg() -> None:
             try:
-                request.app.state.pipeline_busy = True
                 for path in files:
                     try:
                         doc_id = compute_mdhash_id(
@@ -253,13 +333,171 @@ def create_documents_router(api_key: Optional[str] = None) -> Any:
                     exc_info=True,
                 )
             finally:
-                request.app.state.pipeline_busy = False
+                _release_pipeline(request)
 
         background_tasks.add_task(_bg)
         return {
             "status": "queued",
             "files_found": len(files),
             "input_dir": str(input_dir),
+        }
+
+    @router.delete("/", dependencies=[Depends(combined_auth)])
+    async def clear_documents(
+        request: Request,
+        confirm: bool = Query(False),
+        delete_files: bool = Query(False),
+    ):
+        if not confirm:
+            raise HTTPException(
+                status_code=400,
+                detail="Pass confirm=true to clear all documents and storages",
+            )
+        main_step(
+            logger,
+            "api.documents.clear",
+            delete_files=delete_files,
+        )
+        input_dir = Path(getattr(request.app.state, "input_dir", "./data/inputs"))
+        acquired = False
+        try:
+            await _acquire_pipeline(request)
+            acquired = True
+            result = await request.app.state.rag.aclear_all(
+                delete_files=delete_files,
+                input_dir=input_dir if delete_files else None,
+            )
+            done_step(
+                logger,
+                "api.documents.clear",
+                files_deleted=result.get("files_deleted"),
+            )
+            return result
+        except HTTPException:
+            raise
+        except Exception as exc:
+            fail_step(logger, "api.documents.clear", exc=exc, exc_info=True)
+            raise
+        finally:
+            if acquired:
+                _release_pipeline(request)
+
+    @router.get("/{doc_id}", dependencies=[Depends(combined_auth)])
+    async def get_document(request: Request, doc_id: str):
+        rag = request.app.state.rag
+        record = await rag.doc_status.get_by_id(doc_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail=f"Document not found: {doc_id}")
+        return {"doc_id": doc_id, "document": record}
+
+    @router.delete("/{doc_id}", dependencies=[Depends(combined_auth)])
+    async def delete_document(
+        request: Request,
+        doc_id: str,
+        delete_file: bool = Query(False),
+    ):
+        main_step(
+            logger,
+            "api.documents.delete",
+            doc_id=doc_id,
+            delete_file=delete_file,
+        )
+        acquired = False
+        try:
+            await _acquire_pipeline(request)
+            acquired = True
+            result = await request.app.state.rag.adelete_by_doc_ids(
+                [doc_id], delete_file=delete_file
+            )
+            done_step(
+                logger,
+                "api.documents.delete",
+                doc_id=doc_id,
+                status=(result.get("results") or {}).get(doc_id, {}).get("status"),
+            )
+            return result
+        except HTTPException:
+            raise
+        except Exception as exc:
+            fail_step(
+                logger,
+                "api.documents.delete",
+                doc_id=doc_id,
+                exc=exc,
+                exc_info=True,
+            )
+            raise
+        finally:
+            if acquired:
+                _release_pipeline(request)
+
+    @router.post("/{doc_id}/requeue", dependencies=[Depends(combined_auth)])
+    async def requeue_document(
+        request: Request,
+        doc_id: str,
+        background_tasks: BackgroundTasks,
+    ):
+        rag = request.app.state.rag
+        record = await rag.doc_status.get_by_id(doc_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail=f"Document not found: {doc_id}")
+
+        status = str(record.get("status") or "")
+        if status not in {
+            DocStatus.FAILED.value,
+            DocStatus.PROCESSING.value,
+            DocStatus.PARSING.value,
+            DocStatus.PENDING.value,
+        }:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot requeue document in status={status!r}",
+            )
+
+        await _acquire_pipeline(request)
+        try:
+            input_dir = Path(getattr(request.app.state, "input_dir", "./data/inputs"))
+            updated = dict(record)
+            updated["status"] = DocStatus.PENDING.value
+            meta = dict(updated.get("metadata") or {})
+            meta["memory_sub_stage"] = None
+            meta.pop("error", None)
+            updated["metadata"] = meta
+            updated.pop("chunk_ids", None)
+            await rag.doc_status.upsert({doc_id: updated})
+            main_step(
+                logger, "api.documents.requeue", doc_id=doc_id, from_status=status
+            )
+        except Exception:
+            _release_pipeline(request)
+            raise
+
+        async def _bg() -> None:
+            try:
+                summary = await _run_pipeline(rag, input_dir)
+                done_step(
+                    logger,
+                    "api.documents.requeue",
+                    doc_id=doc_id,
+                    processed=summary.get("processed"),
+                    failed=summary.get("failed"),
+                )
+            except Exception as exc:
+                fail_step(
+                    logger,
+                    "api.documents.requeue",
+                    doc_id=doc_id,
+                    exc=exc,
+                    exc_info=True,
+                )
+            finally:
+                _release_pipeline(request)
+
+        background_tasks.add_task(_bg)
+        return {
+            "status": "queued",
+            "doc_id": doc_id,
+            "message": f"Requeued from {status}; indexing started in background",
         }
 
     return router

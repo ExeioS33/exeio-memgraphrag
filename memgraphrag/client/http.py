@@ -176,6 +176,30 @@ class MemGraphRAGClient:
     def list_documents(self) -> dict[str, Any]:
         return self._get("/documents/")
 
+    def get_document(self, doc_id: str) -> dict[str, Any]:
+        return self._get(f"/documents/{doc_id}")
+
+    def delete_document(
+        self, doc_id: str, *, delete_file: bool = False
+    ) -> dict[str, Any]:
+        resp = self._client.delete(
+            f"/documents/{doc_id}",
+            params={"delete_file": str(delete_file).lower()},
+        )
+        self._raise(resp)
+        return resp.json()
+
+    def delete_documents(
+        self, doc_ids: list[str], *, delete_file: bool = False
+    ) -> dict[str, Any]:
+        return self._post(
+            "/documents/delete",
+            json={"doc_ids": list(doc_ids), "delete_file": delete_file},
+        )
+
+    def requeue_document(self, doc_id: str) -> dict[str, Any]:
+        return self._post(f"/documents/{doc_id}/requeue")
+
     def upload_file(self, path: str | Path, filename: Optional[str] = None) -> dict[str, Any]:
         path = Path(path)
         if not path.is_file():
@@ -295,8 +319,16 @@ class MemGraphRAGClient:
     def scan_input_dir(self) -> dict[str, Any]:
         return self._post("/documents/scan")
 
-    def clear_documents(self) -> dict[str, Any]:
-        resp = self._client.delete("/documents/")
+    def clear_documents(
+        self, *, confirm: bool = True, delete_files: bool = False
+    ) -> dict[str, Any]:
+        resp = self._client.delete(
+            "/documents/",
+            params={
+                "confirm": str(confirm).lower(),
+                "delete_files": str(delete_files).lower(),
+            },
+        )
         self._raise(resp)
         return resp.json()
 

@@ -405,7 +405,8 @@ def tab_ingest() -> None:
         return
 
     data = st.session_state.get("doc_statuses") or {}
-    df = _status_rows(data.get("statuses"))
+    statuses = data.get("statuses") or {}
+    df = _status_rows(statuses)
     if df.empty:
         st.info("No documents yet — feed me! 🍽️")
     else:
@@ -413,6 +414,58 @@ def tab_ingest() -> None:
         busy_like = df["status"].str.lower().isin(["pending", "parsing", "processing"])
         if busy_like.any():
             st.caption("⏳ Indexing in progress — hit Refresh to update.")
+
+        doc_ids = list(statuses.keys()) if isinstance(statuses, dict) else []
+        st.markdown("### 🛠️ Document admin")
+        selected = st.selectbox("Document", options=doc_ids, key="admin_doc_id")
+        col_a, col_b, col_c = st.columns(3)
+        with col_a:
+            del_file = st.checkbox("Also delete source file", value=False)
+            if st.button("🗑️ Delete selected", disabled=not selected):
+                try:
+                    with get_client() as c, st.spinner("Deleting…"):
+                        result = c.delete_document(selected, delete_file=del_file)
+                    st.success(
+                        f"Deleted `{selected}` "
+                        f"(chunks_dropped={len(result.get('chunks_dropped') or [])})"
+                    )
+                    st.session_state.pop("doc_statuses", None)
+                    st.rerun()
+                except Exception as exc:  # noqa: BLE001
+                    st.error(f"💥 {exc}")
+        with col_b:
+            if st.button("🔁 Requeue selected", disabled=not selected):
+                try:
+                    with get_client() as c:
+                        result = c.requeue_document(selected)
+                    st.info(result.get("message") or "Requeued")
+                    st.session_state.pop("doc_statuses", None)
+                except Exception as exc:  # noqa: BLE001
+                    st.error(f"💥 {exc}")
+        with col_c:
+            if st.button("🔎 Show detail", disabled=not selected):
+                try:
+                    with get_client() as c:
+                        detail = c.get_document(selected)
+                    st.json(detail)
+                except Exception as exc:  # noqa: BLE001
+                    st.error(f"💥 {exc}")
+
+        st.markdown("#### Danger zone")
+        confirm_clear = st.checkbox("I understand this wipes the whole corpus")
+        wipe_files = st.checkbox("Also wipe input files", value=False)
+        if st.button("💣 Clear all documents", disabled=not confirm_clear, type="primary"):
+            try:
+                with get_client() as c, st.spinner("Clearing…"):
+                    result = c.clear_documents(confirm=True, delete_files=wipe_files)
+                st.success(
+                    f"Cleared {len(result.get('dropped') or [])} storages "
+                    f"(files_deleted={result.get('files_deleted')})"
+                )
+                st.session_state.pop("doc_statuses", None)
+                st.rerun()
+            except Exception as exc:  # noqa: BLE001
+                st.error(f"💥 {exc}")
 
 
 def tab_optimize() -> None:

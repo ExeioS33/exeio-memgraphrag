@@ -5,6 +5,7 @@ Adapted from LightRAG ``lightrag/api/lightrag_server.py`` — slim create_app + 
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -157,6 +158,8 @@ def create_app(
     app.state.args = cfg
     app.state.input_dir = getattr(cfg, "input_dir", "./data/inputs")
     app.state.testing = testing
+    app.state.pipeline_lock = asyncio.Lock()
+    app.state.pipeline_busy = False
     os.makedirs(app.state.input_dir, exist_ok=True)
 
     app.include_router(create_documents_router(api_key))
