@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-MemGraphRAG is an industrialized memory-based GraphRAG API server. The research engine builds a three-layer memory (schema / fact / passage), detects and resolves conflicts, then retrieves with embedding similarity and Personalized PageRank (PPR).
+MemGraphRAG is an industrialized memory-based GraphRAG API server inspired by [Wu et al., arXiv:2606.00610](https://arxiv.org/abs/2606.00610); ownership of this repo remains EXEIO. The research engine builds a three-layer memory (schema / fact / passage), detects and resolves conflicts, then retrieves with embedding similarity and Personalized PageRank (PPR).
 
 This repository packages that engine as a production FastAPI service inspired by LightRAG patterns (pluggable storage, env-driven bindings, parser/chunker engines, Docker Compose) while remaining MemGraphRAG-native in its data model and retrieval semantics.
 

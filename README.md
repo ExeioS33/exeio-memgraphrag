@@ -124,6 +124,21 @@ Guides under [`docs/`](docs/), including:
 
 This repository is maintained by AI agents. Conventions, tech stack, and architecture decisions live in [`AGENTS.md`](AGENTS.md).
 
+## 📚 Citation
+
+This industrial API server is based on / inspired by the MemGraphRAG research paper. Ownership of **this** repository remains with **EXEIO** / [ExeioS33](https://github.com/ExeioS33).
+
+Paper: [arXiv:2606.00610](https://arxiv.org/abs/2606.00610)
+
+```bibtex
+@article{wu2026memgraphrag,
+  title={MemGraphRAG: Memory-based Multi-Agent System for Graph Retrieval-Augmented Generation},
+  author={Wu, Chuanjie and Xiang, Zhishang and Tang, Yunbo and Chen, Zerui and Zhang, Qinggang and Su, Jinsong},
+  journal={arXiv preprint arXiv:2606.00610},
+  year={2026}
+}
+```
+
 ## 📄 License
 
 MIT — see [LICENSE](LICENSE). Copyright © 2026 EXEIO / ExeioS33.
