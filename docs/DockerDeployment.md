@@ -1,0 +1,43 @@
+# Docker Deployment
+
+## Services
+
+| Service | Image / build | Role |
+|---------|---------------|------|
+| `memgraphrag` | local `Dockerfile` | API server on port 9621 |
+| `postgres` | `pgvector/pgvector:pg16` | KV, vectors (pgvector), doc-status |
+| `neo4j` | `neo4j:5-community` + GDS plugin | Memory graph |
+| `docling` (profile) | `ghcr.io/docling-project/docling-serve` | Optional remote parser |
+
+## Bring up
+
+```bash
+cp env.example .env
+# set LLM_* / EMBEDDING_* / secrets
+docker compose up -d --build
+docker compose logs -f memgraphrag
+```
+
+With Docling:
+
+```bash
+# in .env:
+# DOCLING_ENDPOINT=http://docling:5001
+docker compose --profile docling up -d --build
+```
+
+## Volumes
+
+- `./data/rag_storage` — working dir / caches
+- `./data/inputs` — uploads
+- `postgres_data`, `neo4j_data` — named volumes
+
+## Healthchecks
+
+Postgres uses `pg_isready`; Neo4j probes HTTP `:7474`. The app waits for both via `depends_on` conditions.
+
+## Security notes
+
+- Bind `HOST=0.0.0.0` only with `MEMGRAPHRAG_API_KEY` or `AUTH_ACCOUNTS`.
+- Do not commit `.env`. Prefer secrets managers in production.
+- Entrypoint drops to UID 1000 after fixing bind-mount ownership.
