@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+*.tgz
+*.tar.gz
+dist/
+build/
+site/
+
+# Virtual Environment
+.venv/
+venv/
+
+# Environment
+.env
+.env.backup.*
+
+# IDE / tooling
+.idea/
+.vscode/
+*.swp
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+.cursor/
+
+# Runtime data
+data/rag_storage/**
+!data/rag_storage/.gitkeep
+data/inputs/**
+!data/inputs/.gitkeep
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db

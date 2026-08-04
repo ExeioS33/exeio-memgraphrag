@@ -1,0 +1,89 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "memgraphrag"
+version = "0.1.0"
+description = "Industrialized MemGraphRAG: memory-based GraphRAG API server"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [{name = "MemGraphRAG Contributors"}]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "aiohttp",
+    "numpy>=1.24.0,<3.0.0",
+    "pandas>=2.0.0,<2.4.0",
+    "pydantic",
+    "python-dotenv",
+    "tenacity",
+    "tiktoken>=0.7.0",
+    "nano-vectordb",
+    "python-igraph>=0.11.0",
+    "openai>=1.0.0,<3.0.0",
+    "httpx",
+    "filelock",
+    "packaging",
+    "PyYAML>=6.0,<7.0",
+]
+
+[project.optional-dependencies]
+api = [
+    "fastapi",
+    "uvicorn[standard]",
+    "gunicorn",
+    "python-multipart",
+    "python-jose[cryptography]",
+    "passlib[bcrypt]",
+    "bcrypt<5.0.0",
+    "pypdf",
+    "python-docx",
+    "python-pptx",
+    "openpyxl",
+    "pycryptodome",
+    "defusedxml",
+    "langchain-text-splitters",
+    "asyncpg",
+    "neo4j",
+]
+pytest = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "httpx",
+    "ruff",
+]
+test = [
+    "memgraphrag[api,pytest]",
+]
+
+[project.scripts]
+memgraphrag-server = "memgraphrag.api.server:main"
+memgraphrag-gunicorn = "memgraphrag.api.gunicorn_runner:main"
+
+[tool.setuptools.packages.find]
+include = ["memgraphrag*"]
+
+[tool.setuptools.package-data]
+memgraphrag = ["py.typed", "prompts/**/*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "offline: tests that need no external services",
+    "integration: tests that need Docker Compose backends",
+    "requires_db: needs PostgreSQL or Neo4j",
+    "requires_api: needs a running API server",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
