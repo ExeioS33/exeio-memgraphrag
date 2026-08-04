@@ -63,16 +63,31 @@ def _pipeline_lock(request: Request) -> asyncio.Lock:
     return lock
 
 
-async def _acquire_pipeline(request: Request) -> None:
-    """Non-blocking acquire; raises 409 if already held."""
+def _pipeline_is_busy(request: Request) -> bool:
     lock = _pipeline_lock(request)
-    if lock.locked() or bool(getattr(request.app.state, "pipeline_busy", False)):
+    return lock.locked() or bool(getattr(request.app.state, "pipeline_busy", False))
+
+
+async def _acquire_pipeline(request: Request) -> None:
+    """Non-blocking acquire; raises 409 if already held (delete/clear)."""
+    if _pipeline_is_busy(request):
         raise HTTPException(
             status_code=409,
             detail="Pipeline busy; retry when /health reports pipeline_busy=false",
         )
+    lock = _pipeline_lock(request)
     await lock.acquire()
     request.app.state.pipeline_busy = True
+
+
+async def _try_acquire_pipeline(request: Request) -> bool:
+    """Non-blocking acquire; returns False if busy (upload/scan drain)."""
+    if _pipeline_is_busy(request):
+        return False
+    lock = _pipeline_lock(request)
+    await lock.acquire()
+    request.app.state.pipeline_busy = True
+    return True
 
 
 def _release_pipeline(request: Request) -> None:
@@ -87,16 +102,59 @@ async def _run_pipeline(rag: Any, input_dir: Path | None) -> dict[str, Any]:
     return await process_pending(rag, rag.doc_status, input_dir=input_dir)
 
 
-async def _index_inline_text(rag: Any, text: str, doc_id: str) -> dict[str, Any]:
-    """Enqueue inline text with legacy engine and process immediately."""
-    await enqueue_document(
-        doc_id=doc_id,
-        file_path=f"inline:{doc_id}",
-        doc_status_storage=rag.doc_status,
-        content=text,
-        parse_engine="legacy",
-    )
-    return await process_pending(rag, rag.doc_status, input_dir=None)
+async def _drain_until_idle(
+    request: Request, input_dir: Path | None
+) -> dict[str, Any]:
+    """Serialize process_pending until no PENDING remain (or defer if busy)."""
+    request.app.state.drain_requested = True
+    last: dict[str, Any] = {"processed": 0, "failed": 0, "doc_ids": []}
+    while getattr(request.app.state, "drain_requested", False):
+        if not await _try_acquire_pipeline(request):
+            return {"status": "deferred", **last}
+        request.app.state.drain_requested = False
+        try:
+            rag = request.app.state.rag
+            while True:
+                last = await _run_pipeline(rag, input_dir)
+                pending = await rag.doc_status.get_docs_by_statuses(
+                    [DocStatus.PENDING]
+                )
+                if not pending:
+                    break
+                # New docs were enqueued while we indexed — keep draining.
+                request.app.state.drain_requested = False
+        finally:
+            _release_pipeline(request)
+    return last
+
+
+def _schedule_drain(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    input_dir: Path | None,
+    *,
+    log_name: str,
+    extra: dict[str, Any] | None = None,
+) -> None:
+    """Mark drain requested and run a background worker when the lock is free."""
+    request.app.state.drain_requested = True
+    extra = extra or {}
+
+    async def _bg() -> None:
+        try:
+            summary = await _drain_until_idle(request, input_dir)
+            done_step(
+                logger,
+                log_name,
+                processed=summary.get("processed"),
+                failed=summary.get("failed"),
+                status=summary.get("status"),
+                **{k: v for k, v in extra.items() if v is not None},
+            )
+        except Exception as exc:
+            fail_step(logger, log_name, exc=exc, exc_info=True, **extra)
+
+    background_tasks.add_task(_bg)
 
 
 def create_documents_router(api_key: Optional[str] = None) -> Any:
@@ -115,72 +173,60 @@ def create_documents_router(api_key: Optional[str] = None) -> Any:
         background_tasks: BackgroundTasks,
         file: UploadFile = File(...),
     ):
-        await _acquire_pipeline(request)
-        try:
-            rag = request.app.state.rag
-            input_dir = Path(getattr(request.app.state, "input_dir", "./data/inputs"))
-            input_dir.mkdir(parents=True, exist_ok=True)
-            safe_name = Path(file.filename or f"upload-{uuid.uuid4().hex}").name
-            dest = input_dir / safe_name
-            content = await file.read()
-            dest.write_bytes(content)
-            doc_id = compute_mdhash_id(f"{safe_name}:{len(content)}", prefix="doc-")
-            main_step(
-                logger,
-                "api.documents.upload",
-                doc_id=doc_id,
-                filename=safe_name,
-                bytes=len(content),
-            )
-        except Exception:
-            _release_pipeline(request)
-            raise
-
-        async def _bg() -> None:
-            try:
-                sub_step(
-                    logger,
-                    "api.documents.upload.enqueue",
-                    doc_id=doc_id,
-                    filename=safe_name,
-                )
-                await enqueue_document(
-                    doc_id=doc_id,
-                    file_path=str(dest),
-                    doc_status_storage=rag.doc_status,
-                )
-                summary = await _run_pipeline(rag, input_dir)
-                done_step(
-                    logger,
-                    "api.documents.upload",
-                    doc_id=doc_id,
-                    filename=safe_name,
-                    processed=summary.get("processed"),
-                    failed=summary.get("failed"),
-                )
-            except Exception as exc:
-                fail_step(
-                    logger,
-                    "api.documents.upload",
-                    doc_id=doc_id,
-                    filename=safe_name,
-                    exc=exc,
-                    exc_info=True,
-                )
-            finally:
-                _release_pipeline(request)
-
-        background_tasks.add_task(_bg)
+        rag = request.app.state.rag
+        input_dir = Path(getattr(request.app.state, "input_dir", "./data/inputs"))
+        input_dir.mkdir(parents=True, exist_ok=True)
+        safe_name = Path(file.filename or f"upload-{uuid.uuid4().hex}").name
+        dest = input_dir / safe_name
+        content = await file.read()
+        dest.write_bytes(content)
+        doc_id = compute_mdhash_id(f"{safe_name}:{len(content)}", prefix="doc-")
+        busy = _pipeline_is_busy(request)
+        main_step(
+            logger,
+            "api.documents.upload",
+            doc_id=doc_id,
+            filename=safe_name,
+            bytes=len(content),
+            pipeline_busy=busy,
+        )
+        sub_step(
+            logger,
+            "api.documents.upload.enqueue",
+            doc_id=doc_id,
+            filename=safe_name,
+        )
+        await enqueue_document(
+            doc_id=doc_id,
+            file_path=str(dest),
+            doc_status_storage=rag.doc_status,
+        )
+        _schedule_drain(
+            request,
+            background_tasks,
+            input_dir,
+            log_name="api.documents.upload",
+            extra={"doc_id": doc_id, "filename": safe_name},
+        )
         return {
             "status": "queued",
             "filename": safe_name,
             "path": str(dest),
             "doc_id": doc_id,
-            "message": "File saved; indexing started in background",
+            "message": (
+                "File saved and enqueued; indexing will start when the pipeline is idle"
+                if busy
+                else "File saved; indexing started in background"
+            ),
+            "pipeline_busy": busy,
         }
 
     @router.post("/text", dependencies=[Depends(combined_auth)])
-    async def insert_text(request: Request, body: TextInsertRequest):
+    async def insert_text(
+        request: Request,
+        background_tasks: BackgroundTasks,
+        body: TextInsertRequest,
+    ):
         rag = request.app.state.rag
         doc_id = body.doc_id or compute_mdhash_id(body.text, prefix="doc-")
         main_step(
@@ -190,11 +236,42 @@ def create_documents_router(api_key: Optional[str] = None) -> Any:
             chars=len(body.text),
             preview=truncate(body.text),
         )
+        await enqueue_document(
+            doc_id=doc_id,
+            file_path=f"inline:{doc_id}",
+            doc_status_storage=rag.doc_status,
+            content=body.text,
+            parse_engine="legacy",
+        )
+        busy = _pipeline_is_busy(request)
+        if busy:
+            _schedule_drain(
+                request,
+                background_tasks,
+                None,
+                log_name="api.documents.text",
+                extra={"doc_id": doc_id},
+            )
+            return {
+                "status": "queued",
+                "doc_id": doc_id,
+                "message": "Enqueued; indexing will start when the pipeline is idle",
+                "pipeline_busy": True,
+            }
         acquired = False
         try:
             await _acquire_pipeline(request)
             acquired = True
-            result = await _index_inline_text(rag, body.text, doc_id)
+            request.app.state.drain_requested = False
+            result = await _run_pipeline(rag, None)
+            # Drain any docs enqueued while we ran.
+            while True:
+                pending = await rag.doc_status.get_docs_by_statuses(
+                    [DocStatus.PENDING]
+                )
+                if not pending:
+                    break
+                result = await _run_pipeline(rag, None)
             done_step(
                 logger,
                 "api.documents.text",
@@ -217,6 +294,14 @@ def create_documents_router(api_key: Optional[str] = None) -> Any:
         finally:
             if acquired:
                 _release_pipeline(request)
+            if getattr(request.app.state, "drain_requested", False):
+                _schedule_drain(
+                    request,
+                    background_tasks,
+                    None,
+                    log_name="api.documents.text.drain",
+                    extra={"doc_id": doc_id},
+                )
 
     @router.get("/", dependencies=[Depends(combined_auth)])
     async def list_documents(request: Request):
@@ -270,76 +355,67 @@ def create_documents_router(api_key: Optional[str] = None) -> Any:
 
     @router.post("/scan", dependencies=[Depends(combined_auth)])
     async def scan_input_dir(request: Request, background_tasks: BackgroundTasks):
-        await _acquire_pipeline(request)
-        try:
-            rag = request.app.state.rag
-            input_dir = Path(getattr(request.app.state, "input_dir", "./data/inputs"))
-            input_dir.mkdir(parents=True, exist_ok=True)
-            files = [
-                p
-                for p in input_dir.rglob("*")
-                if p.is_file()
-                and not p.name.startswith(".")
-                and "__parsed__" not in p.parts
-            ]
-            main_step(
-                logger,
-                "api.documents.scan",
-                files_found=len(files),
-                input_dir=str(input_dir),
-            )
-        except Exception:
-            _release_pipeline(request)
-            raise
-
-        async def _bg() -> None:
+        rag = request.app.state.rag
+        input_dir = Path(getattr(request.app.state, "input_dir", "./data/inputs"))
+        input_dir.mkdir(parents=True, exist_ok=True)
+        files = [
+            p
+            for p in input_dir.rglob("*")
+            if p.is_file()
+            and not p.name.startswith(".")
+            and "__parsed__" not in p.parts
+        ]
+        busy = _pipeline_is_busy(request)
+        main_step(
+            logger,
+            "api.documents.scan",
+            files_found=len(files),
+            input_dir=str(input_dir),
+            pipeline_busy=busy,
+        )
+        enqueued = 0
+        for path in files:
             try:
-                for path in files:
-                    try:
-                        doc_id = compute_mdhash_id(
-                            f"{path}:{path.stat().st_size}", prefix="doc-"
-                        )
-                        sub_step(
-                            logger,
-                            "api.documents.scan.enqueue",
-                            doc_id=doc_id,
-                            file=path.name,
-                        )
-                        await enqueue_document(
-                            doc_id=doc_id,
-                            file_path=str(path),
-                            doc_status_storage=rag.doc_status,
-                        )
-                    except Exception as exc:
-                        fail_step(
-                            logger,
-                            "api.documents.scan.enqueue",
-                            file=path.name,
-                            exc=exc,
-                        )
-                summary = await _run_pipeline(rag, input_dir)
-                done_step(
-                    logger,
-                    "api.documents.scan",
-                    processed=summary.get("processed"),
-                    failed=summary.get("failed"),
-                    files_found=len(files),
+                doc_id = compute_mdhash_id(
+                    f"{path}:{path.stat().st_size}", prefix="doc-"
                 )
+                sub_step(
+                    logger,
+                    "api.documents.scan.enqueue",
+                    doc_id=doc_id,
+                    file=path.name,
+                )
+                await enqueue_document(
+                    doc_id=doc_id,
+                    file_path=str(path),
+                    doc_status_storage=rag.doc_status,
+                )
+                enqueued += 1
             except Exception as exc:
                 fail_step(
                     logger,
-                    "api.documents.scan",
+                    "api.documents.scan.enqueue",
+                    file=path.name,
                     exc=exc,
-                    exc_info=True,
                 )
-            finally:
-                _release_pipeline(request)
-
-        background_tasks.add_task(_bg)
+        _schedule_drain(
+            request,
+            background_tasks,
+            input_dir,
+            log_name="api.documents.scan",
+            extra={"files_found": len(files)},
+        )
         return {
             "status": "queued",
             "files_found": len(files),
+            "enqueued": enqueued,
             "input_dir": str(input_dir),
+            "pipeline_busy": busy,
+            "message": (
+                "Files enqueued; indexing will start when the pipeline is idle"
+                if busy
+                else "Files enqueued; indexing started in background"
+            ),
         }
 
     @router.delete("/", dependencies=[Depends(combined_auth)])
@@ -454,50 +530,39 @@ def create_documents_router(api_key: Optional[str] = None) -> Any:
                 detail=f"Cannot requeue document in status={status!r}",
             )
 
-        await _acquire_pipeline(request)
-        try:
-            input_dir = Path(getattr(request.app.state, "input_dir", "./data/inputs"))
-            updated = dict(record)
-            updated["status"] = DocStatus.PENDING.value
-            meta = dict(updated.get("metadata") or {})
-            meta["memory_sub_stage"] = None
-            meta.pop("error", None)
-            updated["metadata"] = meta
-            updated.pop("chunk_ids", None)
-            await rag.doc_status.upsert({doc_id: updated})
-            main_step(
-                logger, "api.documents.requeue", doc_id=doc_id, from_status=status
-            )
-        except Exception:
-            _release_pipeline(request)
-            raise
-
-        async def _bg() -> None:
-            try:
-                summary = await _run_pipeline(rag, input_dir)
-                done_step(
-                    logger,
-                    "api.documents.requeue",
-                    doc_id=doc_id,
-                    processed=summary.get("processed"),
-                    failed=summary.get("failed"),
-                )
-            except Exception as exc:
-                fail_step(
-                    logger,
-                    "api.documents.requeue",
-                    doc_id=doc_id,
-                    exc=exc,
-                    exc_info=True,
-                )
-            finally:
-                _release_pipeline(request)
-
-        background_tasks.add_task(_bg)
+        input_dir = Path(getattr(request.app.state, "input_dir", "./data/inputs"))
+        updated = dict(record)
+        updated["status"] = DocStatus.PENDING.value
+        meta = dict(updated.get("metadata") or {})
+        meta["memory_sub_stage"] = None
+        meta.pop("error", None)
+        updated["metadata"] = meta
+        updated.pop("chunk_ids", None)
+        await rag.doc_status.upsert({doc_id: updated})
+        busy = _pipeline_is_busy(request)
+        main_step(
+            logger,
+            "api.documents.requeue",
+            doc_id=doc_id,
+            from_status=status,
+            pipeline_busy=busy,
+        )
+        _schedule_drain(
+            request,
+            background_tasks,
+            input_dir,
+            log_name="api.documents.requeue",
+            extra={"doc_id": doc_id},
+        )
         return {
             "status": "queued",
             "doc_id": doc_id,
-            "message": f"Requeued from {status}; indexing started in background",
+            "pipeline_busy": busy,
+            "message": (
+                f"Requeued from {status}; indexing will start when the pipeline is idle"
+                if busy
+                else f"Requeued from {status}; indexing started in background"
+            ),
         }
 
     return router

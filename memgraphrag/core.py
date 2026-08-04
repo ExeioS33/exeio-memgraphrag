@@ -80,6 +80,63 @@ LLMFunc = Callable[..., Awaitable[str]]
 EmbedFunc = Callable[..., Awaitable[np.ndarray]]
 
 
+# #region agent log
+def _agent_dbg(
+    hypothesis_id: str,
+    location: str,
+    message: str,
+    data: dict[str, Any] | None = None,
+    *,
+    run_id: str = "pre-fix",
+) -> None:
+    """NDJSON debug probe for Cursor debug mode (session 4b92ea)."""
+    import json
+    import time
+    import urllib.error
+    import urllib.request
+
+    payload = {
+        "sessionId": "4b92ea",
+        "runId": run_id,
+        "hypothesisId": hypothesis_id,
+        "location": location,
+        "message": message,
+        "data": data or {},
+        "timestamp": int(time.time() * 1000),
+    }
+    line = json.dumps(payload, ensure_ascii=False, default=str)
+    for path in (
+        "/home/sanda/Desktop/project/cf_memgraphrag/.cursor/debug-4b92ea.log",
+        "/app/data/rag_storage/debug-4b92ea.log",
+    ):
+        try:
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write(line + "\n")
+        except Exception:
+            pass
+    for url in (
+        "http://127.0.0.1:7708/ingest/a48e6528-061d-4ca6-869a-c9e1bf92fc7b",
+        "http://host.docker.internal:7708/ingest/a48e6528-061d-4ca6-869a-c9e1bf92fc7b",
+    ):
+        try:
+            req = urllib.request.Request(
+                url,
+                data=line.encode("utf-8"),
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Debug-Session-Id": "4b92ea",
+                },
+                method="POST",
+            )
+            urllib.request.urlopen(req, timeout=0.5)
+            break
+        except Exception:
+            continue
+
+
+# #endregion
+
+
 def _min_max_normalize(scores: np.ndarray) -> np.ndarray:
     scores = np.asarray(scores, dtype=np.float64)
     if scores.size == 0:
@@ -511,6 +568,22 @@ class MemGraphRAG:
             failed_batches=failed_batches,
             facts_untyped=sum(1 for f in memory.fact_layer if f.schema_idx < 0),
         )
+        # #region agent log
+        _agent_dbg(
+            "H3",
+            "core.py:extract_schema",
+            "schema extract done",
+            {
+                "linked": linked,
+                "schemas": len(memory.schema_layer),
+                "failed_batches": failed_batches,
+                "facts_untyped": sum(
+                    1 for f in memory.fact_layer if f.schema_idx < 0
+                ),
+                "facts": len(memory.fact_layer),
+            },
+        )
+        # #endregion
         return memory
 
     async def filter_ontology(self, memory: ThreeLayerMemory) -> ThreeLayerMemory:
@@ -520,6 +593,19 @@ class MemGraphRAG:
         )
         before = len(memory.schema_layer)
         stats = memory.filter_schemas_by_frequency(min_freq)
+        # #region agent log
+        _agent_dbg(
+            "H3",
+            "core.py:filter_ontology",
+            "ontology filter applied",
+            {
+                "min_freq": min_freq,
+                "before": before,
+                "kept": stats.get("kept"),
+                "dropped": stats.get("dropped"),
+            },
+        )
+        # #endregion
         sub_step(
             logger,
             "index.ontology.filter",
@@ -1025,6 +1111,19 @@ class MemGraphRAG:
         await self.memory_kv.upsert({"memory": memory.to_dict()})
         self.memory = memory
         self.ready_to_retrieve = False
+        # #region agent log
+        _agent_dbg(
+            "H1",
+            "core.py:ainsert",
+            "ainsert persisted memory; retrieval invalidated",
+            {
+                "passages": len(memory.passage_layer),
+                "facts": len(memory.fact_layer),
+                "schemas": len(memory.schema_layer),
+                "ready_to_retrieve": self.ready_to_retrieve,
+            },
+        )
+        # #endregion
 
         stats = {
             "num_passages": len(memory.passage_layer),
@@ -1625,6 +1724,35 @@ class MemGraphRAG:
                 sub_step(logger, "retrieve.prepare.load_memory", loaded=True)
             else:
                 sub_step(logger, "retrieve.prepare.load_memory", loaded=False)
+        else:
+            # Refresh from KV when in-memory object is empty but KV may have caught up
+            # (e.g. concurrent ingest finished after a stale prepare).
+            if not self.memory.passage_layer:
+                stored = await self.memory_kv.get_by_id("memory")
+                if stored:
+                    self.memory = ThreeLayerMemory.from_dict(stored)
+                    sub_step(
+                        logger,
+                        "retrieve.prepare.load_memory",
+                        loaded=True,
+                        refreshed=True,
+                    )
+
+        # #region agent log
+        _agent_dbg(
+            "H1",
+            "core.py:prepare_retrieval",
+            "prepare entry",
+            {
+                "memory_is_none": self.memory is None,
+                "ready_before": self.ready_to_retrieve,
+                "schema_layer": (
+                    len(self.memory.schema_layer) if self.memory is not None else 0
+                ),
+            },
+            run_id="post-fix",
+        )
+        # #endregion
 
         self._passage_id_to_content = {}
         self._passage_ids = []
@@ -1689,7 +1817,9 @@ class MemGraphRAG:
                 edges=edges, edge_weights=weights, passage_ids=self._passage_ids
             )
 
-        self.ready_to_retrieve = True
+        # Mark ready only when we have passage content to return; otherwise force
+        # future queries to re-prepare (avoids sticky empty mid-ingest prepares).
+        self.ready_to_retrieve = bool(self._passage_id_to_content)
         done_step(
             logger,
             "retrieve.prepare",
@@ -1697,7 +1827,25 @@ class MemGraphRAG:
             facts=len(self._fact_ids),
             schemas=len(self._schema_ids),
             edges=len(edges),
+            ready=self.ready_to_retrieve,
         )
+        # #region agent log
+        _agent_dbg(
+            "H1",
+            "core.py:prepare_retrieval",
+            "prepare exit",
+            {
+                "passages": len(self._passage_ids),
+                "facts": len(self._fact_ids),
+                "schemas": len(self._schema_ids),
+                "edges": len(edges),
+                "content_map": len(self._passage_id_to_content),
+                "ready_after": self.ready_to_retrieve,
+                "empty_prepare": len(self._passage_ids) == 0,
+            },
+            run_id="post-fix",
+        )
+        # #endregion
 
     # ------------------------------------------------------------------
     # Retrieve / query
@@ -1724,7 +1872,34 @@ class MemGraphRAG:
             mode=param.mode,
             top_k=param.top_k,
         )
-        if not self.ready_to_retrieve:
+        # #region agent log
+        _agent_dbg(
+            "H2",
+            "core.py:aretrieve",
+            "aretrieve entry",
+            {
+                "ready_to_retrieve": self.ready_to_retrieve,
+                "memory_is_none": self.memory is None,
+                "passage_ids": len(self._passage_ids),
+                "content_map": len(self._passage_id_to_content),
+                "schema_ids": len(self._schema_ids),
+            },
+            run_id="post-fix",
+        )
+        # #endregion
+        need_prepare = not self.ready_to_retrieve
+        if self.ready_to_retrieve and not self._passage_id_to_content:
+            # Sticky empty prepare — reload if memory_kv has caught up.
+            need_prepare = True
+            sub_step(
+                logger,
+                "retrieve.aretrieve.reprepare",
+                reason="empty_content_map",
+            )
+        if need_prepare:
+            # Drop stale empty in-memory handle so prepare reloads from KV.
+            if self.memory is not None and not self.memory.passage_layer:
+                self.memory = None
             await self.prepare_retrieval()
         if self.embedding_func is None:
             raise PipelineError("aretrieve requires embedding_func")
@@ -2037,12 +2212,59 @@ class MemGraphRAG:
 
             ranked = sorted(passage_scores.items(), key=lambda x: x[1], reverse=True)
             top = ranked[: param.top_k]
-            docs = [
-                self._passage_id_to_content.get(pid, "")
-                for pid, _ in top
-                if self._passage_id_to_content.get(pid)
-            ]
-            doc_scores = [float(s) for _, s in top[: len(docs)]]
+            docs: list[str] = []
+            doc_scores: list[float] = []
+            missing_ids: list[str] = []
+            for pid, score in top:
+                content = self._passage_id_to_content.get(pid, "")
+                if not content:
+                    missing_ids.append(pid)
+                    continue
+                docs.append(content)
+                doc_scores.append(float(score))
+            # Fallback: resolve PPR hits via chunks_kv when content map is incomplete
+            if missing_ids:
+                try:
+                    records = await self.chunks_kv.get_by_ids(missing_ids)
+                except Exception:
+                    records = []
+                by_id = {
+                    missing_ids[i]: records[i]
+                    for i in range(min(len(missing_ids), len(records)))
+                    if isinstance(records[i], dict)
+                }
+                for pid, score in top:
+                    if self._passage_id_to_content.get(pid):
+                        continue
+                    rec = by_id.get(pid)
+                    content = str((rec or {}).get("content") or "")
+                    if not content:
+                        continue
+                    self._passage_id_to_content[pid] = content
+                    docs.append(content)
+                    doc_scores.append(float(score))
+            # #region agent log
+            _agent_dbg(
+                "H2",
+                "core.py:_retrieve_one",
+                "ppr to docs mapping",
+                {
+                    "scored_passages": len(passage_scores),
+                    "top_k": param.top_k,
+                    "top_with_content": len(docs),
+                    "content_map": len(self._passage_id_to_content),
+                    "memory_is_none": self.memory is None,
+                    "chunks_kv_fallback": len(missing_ids),
+                    "schema_linking_eligible": bool(
+                        self.memory is not None
+                        and self.memory.schema_layer
+                        and getattr(param, "schema_top_k", 0)
+                    ),
+                    "dropped_no_content": max(0, len(top) - len(docs)),
+                },
+                run_id="post-fix",
+            )
+            # #endregion
             sol = QuerySolution(question=query, docs=docs, doc_scores=doc_scores)
             update_observation(
                 root_span,
