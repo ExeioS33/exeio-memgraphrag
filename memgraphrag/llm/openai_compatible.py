@@ -28,7 +28,6 @@ from tenacity import (
 )
 
 from memgraphrag.constants import EMBEDDING_DIM
-from memgraphrag.utils.debug_log import agent_dbg
 from memgraphrag.utils.env import get_env_value
 from memgraphrag.utils.http_ssl import ssl_verify
 
@@ -47,15 +46,6 @@ def _http_client():
     import httpx
 
     verify = ssl_verify()
-    # #region agent log
-    agent_dbg(
-        "E",
-        "openai_compatible.py:_http_client",
-        "ssl verify for OpenAI client",
-        {"verify": verify if isinstance(verify, bool) else str(verify)},
-        run_id="post-fix",
-    )
-    # #endregion
     _httpx_client = httpx.AsyncClient(
         verify=verify, timeout=httpx.Timeout(150.0, connect=30.0)
     )
@@ -230,15 +220,6 @@ def _truncate_for_embedding(texts: list[str], max_tokens: int) -> list[str]:
         else:
             out.append(t)
     if truncated:
-        # #region agent log
-        agent_dbg(
-            "F",
-            "openai_compatible.py:_truncate_for_embedding",
-            "truncated embed inputs",
-            {"truncated": truncated, "total": len(texts), "max_tokens": max_tokens},
-            run_id="post-fix",
-        )
-        # #endregion
         logger.warning(
             "Truncated %d/%d embed inputs to %d tokens",
             truncated,

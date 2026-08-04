@@ -24,7 +24,6 @@ from memgraphrag.parser.routing import (
     parse_chunking_strategy,
     resolve_parser_directives,
 )
-from memgraphrag.utils.debug_log import agent_dbg
 from memgraphrag.utils.tokenizer import TiktokenTokenizer
 
 logger = logging.getLogger(__name__)
@@ -221,23 +220,6 @@ async def process_pending(
             )
             if not chunks:
                 raise ValueError("chunker produced no chunks")
-
-            # #region agent log
-            _lens = [len(c.get("content") or "") for c in chunks]
-            agent_dbg(
-                "B",
-                "pipeline.py:process_pending",
-                "chunks produced",
-                {
-                    "doc_id": doc_id,
-                    "strategy": strategy,
-                    "n_chunks": len(chunks),
-                    "max_chunk_chars": max(_lens) if _lens else 0,
-                    "parse_content_len": len(parse_result.content or ""),
-                    "parse_format": parse_result.parse_format,
-                },
-            )
-            # #endregion
 
             record = await _set_status(
                 doc_status_storage,

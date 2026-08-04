@@ -13,7 +13,6 @@ import re
 from typing import Any, Awaitable, Callable, Sequence
 
 from memgraphrag.prompts.templates import render_ner, render_triple_extraction
-from memgraphrag.utils.debug_log import agent_dbg
 
 logger = logging.getLogger(__name__)
 
@@ -118,17 +117,6 @@ class OpenIE:
             data = _extract_json_object(str(response))
             return _normalize_entities(data)
         except Exception as exc:
-            # #region agent log
-            agent_dbg(
-                "C",
-                "openai_openie.py:ner",
-                "NER failed",
-                {
-                    "passage_len": len(passage or ""),
-                    "error": str(exc)[:300],
-                },
-            )
-            # #endregion
             logger.warning("NER failed: %s", exc)
             return []
 

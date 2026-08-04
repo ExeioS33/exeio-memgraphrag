@@ -21,7 +21,6 @@ from memgraphrag.parser.base import BaseParser, ParseContext, ParseResult
 from memgraphrag.parser.external._zip import safe_extract_zip
 from memgraphrag.parser.registry import PARSER_ENGINE_DOCLING
 from memgraphrag.sidecar.writer import FULL_DOCS_FORMAT_LIGHTRAG, write_sidecar
-from memgraphrag.utils.debug_log import agent_dbg
 from memgraphrag.utils.http_ssl import ssl_verify
 
 logger = logging.getLogger(__name__)
@@ -168,36 +167,9 @@ class DoclingParser(BaseParser):
         body = resp.content or b""
         is_zip = "zip" in ctype or body[:2] == b"PK"
 
-        # #region agent log
-        agent_dbg(
-            "A",
-            "docling/parser.py:_fetch_result",
-            "docling result received",
-            {
-                "ctype": ctype,
-                "body_len": len(body),
-                "is_zip": is_zip,
-                "magic": body[:4].hex() if body else "",
-                "filename": filename,
-            },
-        )
-        # #endregion
-
         # Docling Serve returns a ZIP bundle when target_type=zip (LightRAG path).
         if is_zip:
             markdown, blocks = self._extract_from_zip(body, filename)
-            # #region agent log
-            agent_dbg(
-                "A",
-                "docling/parser.py:_extract_from_zip",
-                "zip extracted",
-                {
-                    "markdown_len": len(markdown),
-                    "blocks": len(blocks),
-                    "filename": filename,
-                },
-            )
-            # #endregion
             return markdown, blocks
 
         # Prefer JSON envelope when available; otherwise treat body as markdown.
