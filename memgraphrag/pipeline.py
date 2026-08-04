@@ -24,6 +24,7 @@ from memgraphrag.parser.routing import (
     parse_chunking_strategy,
     resolve_parser_directives,
 )
+from memgraphrag.utils.hashing import compute_mdhash_id
 from memgraphrag.utils.step_log import done_step, fail_step, main_step, sub_step
 from memgraphrag.utils.tokenizer import TiktokenTokenizer
 
@@ -132,28 +133,56 @@ async def enqueue_document(
     return record
 
 
-async def _index_chunks(rag_engine: Any, chunks: list[dict[str, Any]]) -> Any:
-    """Call ``aindex_with_memory`` / ``ainsert`` on the engine."""
-    texts = [c["content"] for c in chunks if c.get("content")]
-    if not texts:
-        raise ValueError("no chunks to index")
+def _assign_chunk_ids(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Ensure each chunk has a content-hash ``idx`` (``chunk-…``) for OpenIE/KV keys."""
+    prepared: list[dict[str, Any]] = []
+    for chunk in chunks:
+        content = str(chunk.get("content") or "").strip()
+        if not content:
+            continue
+        chunk_id = str(chunk.get("idx") or chunk.get("id") or "")
+        if not chunk_id.startswith("chunk-"):
+            chunk_id = compute_mdhash_id(content, prefix="chunk-")
+        prepared.append(
+            {
+                **chunk,
+                "idx": chunk_id,
+                "content": content,
+            }
+        )
+    return prepared
 
-    sub_step(logger, "ingest.index.call", chunks=len(texts))
+
+async def _index_chunks(rag_engine: Any, chunks: list[dict[str, Any]]) -> list[str]:
+    """Call ``aindex_with_memory`` / ``ainsert`` with chunk-id keyed dicts.
+
+    Returns the content-hash chunk ids that were indexed.
+    """
+    prepared = _assign_chunk_ids(chunks)
+    if not prepared:
+        raise ValueError("no chunks to index")
+    chunk_ids = [c["idx"] for c in prepared]
+
+    sub_step(logger, "ingest.index.call", chunks=len(prepared))
     async_fn = getattr(rag_engine, "aindex_with_memory", None)
     if callable(async_fn):
-        return await async_fn(texts)
+        await async_fn(prepared)
+        return chunk_ids
 
     async_insert = getattr(rag_engine, "ainsert", None)
     if callable(async_insert):
-        return await async_insert(texts)
+        await async_insert(prepared)
+        return chunk_ids
 
     sync_fn = getattr(rag_engine, "index_with_memory", None)
     if callable(sync_fn):
-        return sync_fn(texts)
+        sync_fn(prepared)
+        return chunk_ids
 
     sync_insert = getattr(rag_engine, "insert", None)
     if callable(sync_insert):
-        return sync_insert(texts)
+        sync_insert(prepared)
+        return chunk_ids
 
     raise AttributeError(
         "rag_engine has no aindex_with_memory / ainsert / index_with_memory / insert"
@@ -312,7 +341,7 @@ async def process_pending(
                 await doc_status_storage.upsert({doc_id: record})
 
             sub_step(logger, "ingest.doc.index", doc_id=doc_id, chunks=len(chunks))
-            await _index_chunks(rag_engine, chunks)
+            chunk_ids = await _index_chunks(rag_engine, chunks)
 
             record = await _set_status(
                 doc_status_storage,
@@ -320,7 +349,8 @@ async def process_pending(
                 record,
                 DocStatus.PROCESSED,
                 memory_sub_stage="done",
-                chunk_count=len(chunks),
+                chunk_count=len(chunk_ids),
+                chunk_ids=chunk_ids,
             )
             summary["processed"] += 1
             summary["doc_ids"].append(doc_id)
@@ -328,7 +358,7 @@ async def process_pending(
                 logger,
                 "ingest.doc",
                 doc_id=doc_id,
-                chunks=len(chunks),
+                chunks=len(chunk_ids),
                 status="processed",
             )
 
