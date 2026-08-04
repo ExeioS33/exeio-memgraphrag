@@ -19,6 +19,27 @@ from memgraphrag.constants import EMBEDDING_DIM
 logger = logging.getLogger(__name__)
 
 
+def _strip_nul(obj: Any) -> Any:
+    """Remove NULs so asyncpg can store values as PostgreSQL text/jsonb."""
+    if isinstance(obj, str):
+        return obj.replace("\x00", "") if "\x00" in obj else obj
+    if isinstance(obj, dict):
+        return {
+            (_strip_nul(k) if isinstance(k, str) else k): _strip_nul(v)
+            for k, v in obj.items()
+        }
+    if isinstance(obj, list):
+        return [_strip_nul(v) for v in obj]
+    if isinstance(obj, tuple):
+        return tuple(_strip_nul(v) for v in obj)
+    return obj
+
+
+def _json_dumps_safe(obj: Any) -> str:
+    return json.dumps(_strip_nul(obj), ensure_ascii=False)
+
+
+
 def _pg_dsn() -> dict[str, Any]:
     return {
         "host": os.environ.get("POSTGRES_HOST", "localhost"),
@@ -138,7 +159,7 @@ class PGKVStorage(BaseKVStorage):
                         ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data
                         """,
                         key,
-                        json.dumps(record),
+                        _json_dumps_safe(record),
                     )
 
     async def delete(self, ids: list[str]) -> None:
@@ -253,7 +274,7 @@ class PGVectorStorage(BaseVectorStorage):
                         doc_id,
                         content,
                         vector_literal,
-                        json.dumps(meta),
+                        _json_dumps_safe(meta),
                     )
 
     async def delete(self, ids: list[str]) -> None:
@@ -366,7 +387,7 @@ class PGDocStatusStorage(DocStatusStorage):
                         """,
                         key,
                         status,
-                        json.dumps(record),
+                        _json_dumps_safe(record),
                     )
 
     async def delete(self, ids: list[str]) -> None:
