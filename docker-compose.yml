@@ -46,6 +46,10 @@ services:
       REQUESTS_CA_BUNDLE: "/app/certs/corporate-ca.crt"
       CURL_CA_BUNDLE: "/app/certs/corporate-ca.crt"
       SSL_VERIFY: "${SSL_VERIFY:-true}"
+      CHUNK_SIZE: "${CHUNK_SIZE:-400}"
+      CHUNK_OVERLAP_SIZE: "${CHUNK_OVERLAP_SIZE:-40}"
+      EMBEDDING_MAX_TOKENS: "${EMBEDDING_MAX_TOKENS:-480}"
+      EMBEDDING_SEND_DIMENSIONS: "${EMBEDDING_SEND_DIMENSIONS:-false}"
 
   postgres:
     image: pgvector/pgvector:pg16

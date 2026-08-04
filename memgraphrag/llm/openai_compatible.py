@@ -181,6 +181,73 @@ async def openai_complete(
     ),
     reraise=True,
 )
+def _embedding_max_tokens() -> int | None:
+    """Optional hard cap for embed inputs (e.g. e5 family = 512)."""
+    raw = (os.getenv("EMBEDDING_MAX_TOKENS") or "").strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
+def _truncate_for_embedding(texts: list[str], max_tokens: int) -> list[str]:
+    """Truncate texts to ``max_tokens`` using tiktoken when available.
+
+    Providers like Together's e5 endpoints reject inputs above 512 tokens.
+    Tiktoken is an approximation of the model tokenizer but keeps us under the
+    hard limit when ``CHUNK_SIZE`` is also aligned.
+    """
+    try:
+        from memgraphrag.utils.tokenizer import TiktokenTokenizer
+
+        tok = TiktokenTokenizer("gpt-4o-mini")
+    except Exception:
+        # ~3 chars/token is conservative for scientific English vs WordPiece.
+        char_limit = max(max_tokens * 3, 64)
+        out = []
+        for t in texts:
+            if len(t) > char_limit:
+                logger.warning(
+                    "Truncating embed input from %d to %d chars (no tokenizer)",
+                    len(t),
+                    char_limit,
+                )
+                out.append(t[:char_limit])
+            else:
+                out.append(t)
+        return out
+
+    out = []
+    truncated = 0
+    for t in texts:
+        ids = tok.encode(t)
+        if len(ids) > max_tokens:
+            truncated += 1
+            out.append(tok.decode(ids[:max_tokens]))
+        else:
+            out.append(t)
+    if truncated:
+        # #region agent log
+        agent_dbg(
+            "F",
+            "openai_compatible.py:_truncate_for_embedding",
+            "truncated embed inputs",
+            {"truncated": truncated, "total": len(texts), "max_tokens": max_tokens},
+            run_id="post-fix",
+        )
+        # #endregion
+        logger.warning(
+            "Truncated %d/%d embed inputs to %d tokens",
+            truncated,
+            len(texts),
+            max_tokens,
+        )
+    return out
+
+
 async def openai_embed(
     texts: Sequence[str],
     model: str | None = None,
@@ -203,6 +270,10 @@ async def openai_embed(
         texts = [f"{instruction} {t}" for t in texts]
 
     texts_list = [t if t is not None else "" for t in texts]
+    max_tokens = _embedding_max_tokens()
+    if max_tokens is not None:
+        texts_list = _truncate_for_embedding(texts_list, max_tokens)
+
     dim = _embed_dim(embedding_dim)
     model_name = _embed_model(model)
 
@@ -213,8 +284,9 @@ async def openai_embed(
         "model": model_name,
         "input": texts_list,
     }
-    # Many OpenAI-compatible servers accept dimensions; ignore if unsupported upstream.
-    if dim:
+    # Many OpenAI-compatible servers accept dimensions; ignore if unsupported.
+    send_dims = get_env_value("EMBEDDING_SEND_DIMENSIONS", True, bool)
+    if dim and send_dims:
         create_kwargs["dimensions"] = dim
     create_kwargs.update({k: v for k, v in kwargs.items() if v is not None})
 
