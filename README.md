@@ -31,6 +31,12 @@ API docs: `http://localhost:9621/docs`
 Clients guide: [`docs/Clients.md`](docs/Clients.md).  
 Compose image: `exeio-memgraphrag:0.1.0` (also `:latest`). Direct deps are exact-pinned in `pyproject.toml`; full tree is locked in `uv.lock`.
 
+### 🎮 Streamlit playground
+
+Optional emoji-heavy UI for query, ingest, param optimization, and graph exploration (talks to the running API — not baked into the service image):
+
+![MemGraphRAG Playground Streamlit UI](docs/images/memgraphrag_webui.png)
+
 ## 🏗 Architecture overview
 
 ```mermaid

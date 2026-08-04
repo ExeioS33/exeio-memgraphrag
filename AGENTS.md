@@ -13,7 +13,7 @@ This repository packages that engine as a production FastAPI service inspired by
 | Language / packaging | Python >= 3.10, **uv**, exact-pinned direct deps in `pyproject.toml` + `uv.lock`, extras `[api]` / `[pytest]` / `[client]` / `[test]` |
 | Container image | Compose build tags **`exeio-memgraphrag:<MEMGRAPHRAG_VERSION>`** and `:latest` |
 | API | FastAPI + Uvicorn / Gunicorn |
-| Clients | `memgraphrag-cli` (Typer+Rich) + Streamlit playground (`memgraphrag/client/`) — see `docs/Clients.md` |
+| Clients | `memgraphrag-cli` (Typer+Rich) + Streamlit playground (`memgraphrag/client/`) — see `docs/Clients.md` and screenshot `docs/images/memgraphrag_webui.png` |
 | Auth | JWT (`AUTH_ACCOUNTS`) and/or API key (`MEMGRAPHRAG_API_KEY`) |
 | LLM / embeddings | OpenAI-compatible bindings only (`LLM_*`, `EMBEDDING_*`) |
 | Vector / KV / doc-status | PostgreSQL + pgvector (`PG*Storage`) or JSON / nano-vectordb defaults |

@@ -75,6 +75,10 @@ Tunable query flags include `--mode`, `--top-k`, `--linking-top-k`, `--passage-n
 uv run --extra client streamlit run memgraphrag/client/app.py
 ```
 
+Opens at `http://localhost:8501` by default. Sidebar: server URL, API key, presets, and query-param knobs. Main area: tabbed Home / Query / Ingest / Optimize / Graph.
+
+![MemGraphRAG Playground — Query tab with presets and streamed answer](images/memgraphrag_webui.png)
+
 Tabs:
 
 1. **Home** — connect / health (core + API versions, pipeline busy).

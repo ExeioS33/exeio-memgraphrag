@@ -52,6 +52,19 @@ docker compose --profile docling up -d --build
 
 Postgres uses `pg_isready`; Neo4j probes HTTP `:7474`. The app waits for both via `depends_on` conditions.
 
+## Clients against the container
+
+The Streamlit / CLI clients run on the host (or another machine) and call the published API port — they are **not** part of the Compose image. After `docker compose up`:
+
+```bash
+uv sync --extra client
+export MEMGRAPHRAG_SERVER_URL=http://localhost:9621
+uv run memgraphrag-cli health
+uv run streamlit run memgraphrag/client/app.py
+```
+
+See [Clients.md](Clients.md) and the playground screenshot [images/memgraphrag_webui.png](images/memgraphrag_webui.png).
+
 ## Security notes
 
 - Bind `HOST=0.0.0.0` only with `MEMGRAPHRAG_API_KEY` or `AUTH_ACCOUNTS`.

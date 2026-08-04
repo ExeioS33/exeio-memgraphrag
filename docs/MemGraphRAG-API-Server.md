@@ -88,8 +88,20 @@ MEMGRAPHRAG_DOC_STATUS_STORAGE=JsonDocStatusStorage|PGDocStatusStorage
 
 Always call `await rag.initialize_storages()` after constructing `MemGraphRAG` in Python.
 
+## Clients (CLI + Streamlit)
+
+Optional lightweight clients talk to this API over HTTP (not embedded in the service image). Install with `uv sync --extra client`, then:
+
+```bash
+uv run memgraphrag-cli health
+uv run streamlit run memgraphrag/client/app.py
+```
+
+Full coverage matrix, optimizer notes, and UI screenshot: [Clients.md](Clients.md) / [images/memgraphrag_webui.png](images/memgraphrag_webui.png).
+
 ## See also
 
+- [Clients.md](Clients.md)
 - [DockerDeployment.md](DockerDeployment.md)
 - [FileProcessingPipeline.md](FileProcessingPipeline.md)
 - [LangfuseObservability.md](LangfuseObservability.md)
