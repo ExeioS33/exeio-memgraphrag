@@ -62,6 +62,8 @@ This repository packages that engine as a production FastAPI service inspired by
 
 - Chunks become `PassageNode`s at the engine boundary; graph is the typed memory graph, not a flat entity/relation KG.
 - PROCESSING = `openie → memory_build → schema_extraction → ontology_filter → conflict_detection → conflict_resolution → graph_install` (ontology + conflict stages are implemented; disable conflicts with `CONFLICT_ENABLED=false`).
+- Ingest accumulates corpus memory: OpenIE is keyed by content-hash `chunk-…` ids stored on doc_status; each `ainsert` rebuilds memory from all PROCESSED docs' cached OpenIE (new chunks only hit the LLM).
+- Document admin: `DELETE /documents/{id}`, `POST /documents/delete`, `DELETE /documents/?confirm=true`, `POST /documents/{id}/requeue`. Delete drops exclusive chunks (shared-chunk refcount), then rebuilds memory/graph from remaining OpenIE without conflict LLM. Concurrent ingest/delete share `pipeline_lock` (409 when busy).
 - Query params are MemGraphRAG-native (`LINKING_TOP_K`, `PASSAGE_NODE_WEIGHT`, `DAMPING`, `FACT_SIMILARITY_THRESHOLD`, `SKIP_FACT_RERANK`, `SCHEMA_TOP_K`, `SCHEMA_NODE_WEIGHT`, `PPR_ENGINE`).
 - Index-time ontology/conflict knobs: `ONTOLOGY_BATCH_SIZE`, `ONTOLOGY_MIN_FREQUENCY`, `CONFLICT_ENABLED`, `CONFLICT_MAX_GROUPS`.
 - Ollama prefixes: `/naive` dense passages; default PPR+QA; `/context` passages only; `/bypass` direct LLM.

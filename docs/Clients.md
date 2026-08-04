@@ -41,8 +41,12 @@ Both clients load the nearest `.env` (cwd / repo) on startup. For Fortinet/Zscal
 | `POST /documents/upload` | `docs upload` / `upload-dir` / `upload-url` | 📥 Ingest |
 | `POST /documents/text` | `docs text` | 📥 Ingest |
 | `GET /documents/` | `docs list` | 📥 Ingest |
+| `GET /documents/{id}` | `docs get` | 📥 Ingest |
+| `DELETE /documents/{id}` | `docs delete` | 📥 Ingest |
+| `POST /documents/delete` | `docs delete` (batch) | 📥 Ingest |
+| `POST /documents/{id}/requeue` | `docs requeue` | 📥 Ingest |
 | `POST /documents/scan` | `docs scan` | 📥 Ingest |
-| `DELETE /documents/` | `docs clear` (POC stub) | — |
+| `DELETE /documents/?confirm=true` | `docs clear --yes` | 📥 Ingest |
 | `GET /graphs` | `graph show` | 🕸️ Graph |
 | `GET /graph/label/list` | `graph labels` | 🕸️ Graph |
 | (client-side) | `optimize` | 🧪 Optimize |
@@ -67,6 +71,10 @@ uv run memgraphrag-cli docs upload-dir ./corpus --recursive
 uv run memgraphrag-cli docs upload-url https://arxiv.org/pdf/2606.00610
 uv run memgraphrag-cli docs text "Inline note to index"
 uv run memgraphrag-cli docs list
+uv run memgraphrag-cli docs get doc-abc123
+uv run memgraphrag-cli docs delete doc-abc123
+uv run memgraphrag-cli docs requeue doc-abc123
+uv run memgraphrag-cli docs clear --yes
 uv run memgraphrag-cli docs scan
 
 uv run memgraphrag-cli graph labels
@@ -92,7 +100,7 @@ Tabs:
 
 1. **Home** — connect / health (core + API versions, pipeline busy).
 2. **Query** — full answer, context-only, or SSE stream; sidebar presets + sliders.
-3. **Ingest** — file upload, local directory, URL, inline text, server inbox scan; document status with manual refresh.
+3. **Ingest** — file upload, local directory, URL, inline text, server inbox scan; document status with per-doc delete/requeue/detail and guarded clear-all.
 4. **Optimize** — hybrid param lab (see below); apply winners back to the Query tab.
 5. **Graph** — label filter + node/edge explorer.
 

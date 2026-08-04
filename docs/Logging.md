@@ -55,6 +55,23 @@ Field values are appended as `key=value` pairs (no secrets, no full prompts, no 
 [DONE] api.documents.upload | doc_id=doc-abc filename=report.pdf processed=1 failed=0
 ```
 
+## Example: document delete / clear
+
+```text
+[MAIN] api.documents.delete | doc_id=doc-abc delete_file=False
+[MAIN] admin.delete | docs=1 delete_file=False
+[STEP] admin.delete.chunks | dropped=12
+[STEP] index.memory_build | openie_docs=4 run_conflicts=False
+[STEP] index.embed.diff | add_passages=0 del_passages=12 add_facts=0 del_facts=8 …
+[DONE] admin.delete | deleted=1 not_found=0 chunks_dropped=12 files_deleted=0
+[DONE] api.documents.delete | doc_id=doc-abc status=deleted
+
+[MAIN] api.documents.clear | delete_files=False
+[MAIN] admin.clear_all | delete_files=False
+[DONE] admin.clear_all | storages=9 files_deleted=0
+[DONE] api.documents.clear | files_deleted=0
+```
+
 ## Example: query
 
 ```text

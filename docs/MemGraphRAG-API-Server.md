@@ -8,7 +8,8 @@ Production FastAPI server for the MemGraphRAG memory-based GraphRAG engine.
 - Hierarchical PPR retrieval with schema linking (`SCHEMA_TOP_K`, `SCHEMA_NODE_WEIGHT`; `PPR_ENGINE=igraph|neo4j_gds`)
 - Pluggable storage via `MEMGRAPHRAG_*_STORAGE` (JSON/nano/igraph defaults or PostgreSQL + Neo4j)
 - OpenAI-compatible LLM and embedding bindings
-- Document upload/scan with legacy + Docling parsers and F/R/P chunkers
+- Document upload/scan/delete/clear with legacy + Docling parsers and F/R/P chunkers
+- Corpus-accumulating memory: each ingest merges OpenIE from all PROCESSED docs; delete rebuilds from cached OpenIE (no LLM re-run)
 - JWT and/or API-key authentication
 - Ollama-compatible `/api` emulation
 
@@ -73,10 +74,17 @@ Keep a **separate** embedding endpoint (`EMBEDDING_BINDING_*`); the Mistral vLLM
 |--------|------|---------|
 | GET | `/health` | Liveness |
 | POST | `/login` | JWT login |
-| POST | `/documents/upload` | Upload file |
-| POST | `/documents/text` | Insert raw text |
+| POST | `/documents/upload` | Upload file (locks pipeline) |
+| POST | `/documents/text` | Insert raw text (locks pipeline) |
 | GET | `/documents` | List doc statuses |
+| GET | `/documents/{doc_id}` | Document detail (chunk ids, paths) |
+| DELETE | `/documents/{doc_id}` | Delete one doc + rebuild corpus |
+| POST | `/documents/delete` | Batch delete `{doc_ids, delete_file}` |
+| POST | `/documents/{doc_id}/requeue` | Reset failed/stuck doc to PENDING |
+| DELETE | `/documents/?confirm=true` | Clear all storages (optional `delete_files`) |
 | POST | `/documents/scan` | Scan `INPUT_DIR` |
+
+Admin mutate endpoints return **409** while `/health` reports `pipeline_busy=true`. Clear-all requires `confirm=true` (400 otherwise). Per-doc delete needs content-hash `chunk_ids` on the status record (re-ingest legacy docs, or use clear-all).
 | POST | `/query` | Retrieve + QA |
 | POST | `/query/data` | Retrieval evidence only |
 | POST | `/query/stream` | SSE answer stream |
