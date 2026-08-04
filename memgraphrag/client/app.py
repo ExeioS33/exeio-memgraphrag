@@ -304,13 +304,18 @@ def _status_rows(statuses: Any) -> pd.DataFrame:
             if isinstance(meta, dict):
                 st_name = str(meta.get("status") or meta.get("doc_status") or "?")
                 path = str(meta.get("file_path") or "")
+                chunk_ids = meta.get("chunk_ids") or []
+                chunk_count = meta.get("chunk_count")
+                if chunk_count is None:
+                    chunk_count = len(chunk_ids) if isinstance(chunk_ids, list) else 0
             else:
-                st_name, path = str(meta), ""
+                st_name, path, chunk_count = str(meta), "", 0
             rows.append(
                 {
                     "emoji": STATUS_EMOJI.get(st_name.lower(), "📄"),
                     "doc_id": str(doc_id),
                     "status": st_name,
+                    "chunks": int(chunk_count or 0),
                     "file": path,
                 }
             )
@@ -417,36 +422,51 @@ def tab_ingest() -> None:
 
         doc_ids = list(statuses.keys()) if isinstance(statuses, dict) else []
         st.markdown("### 🛠️ Document admin")
-        selected = st.selectbox("Document", options=doc_ids, key="admin_doc_id")
+        selected_ids = st.multiselect(
+            "Select document(s)",
+            options=doc_ids,
+            key="admin_doc_ids",
+            help="Pick one or more docs for delete / requeue / detail",
+        )
+        primary = selected_ids[0] if selected_ids else None
         col_a, col_b, col_c = st.columns(3)
         with col_a:
-            del_file = st.checkbox("Also delete source file", value=False)
-            if st.button("🗑️ Delete selected", disabled=not selected):
+            del_file = st.checkbox("Also delete source file(s)", value=False)
+            if st.button("🗑️ Delete selected", disabled=not selected_ids):
                 try:
                     with get_client() as c, st.spinner("Deleting…"):
-                        result = c.delete_document(selected, delete_file=del_file)
+                        if len(selected_ids) == 1:
+                            result = c.delete_document(
+                                selected_ids[0], delete_file=del_file
+                            )
+                        else:
+                            result = c.delete_documents(
+                                selected_ids, delete_file=del_file
+                            )
+                    dropped = len(result.get("chunks_dropped") or [])
                     st.success(
-                        f"Deleted `{selected}` "
-                        f"(chunks_dropped={len(result.get('chunks_dropped') or [])})"
+                        f"Deleted {len(selected_ids)} doc(s) "
+                        f"(chunks_dropped={dropped})"
                     )
                     st.session_state.pop("doc_statuses", None)
                     st.rerun()
                 except Exception as exc:  # noqa: BLE001
                     st.error(f"💥 {exc}")
         with col_b:
-            if st.button("🔁 Requeue selected", disabled=not selected):
+            if st.button("🔁 Requeue selected", disabled=not primary):
                 try:
                     with get_client() as c:
-                        result = c.requeue_document(selected)
+                        # Requeue first selection (pipeline locks after one)
+                        result = c.requeue_document(primary)
                     st.info(result.get("message") or "Requeued")
                     st.session_state.pop("doc_statuses", None)
                 except Exception as exc:  # noqa: BLE001
                     st.error(f"💥 {exc}")
         with col_c:
-            if st.button("🔎 Show detail", disabled=not selected):
+            if st.button("🔎 Show detail", disabled=not primary):
                 try:
                     with get_client() as c:
-                        detail = c.get_document(selected)
+                        detail = c.get_document(primary)
                     st.json(detail)
                 except Exception as exc:  # noqa: BLE001
                     st.error(f"💥 {exc}")
@@ -454,7 +474,9 @@ def tab_ingest() -> None:
         st.markdown("#### Danger zone")
         confirm_clear = st.checkbox("I understand this wipes the whole corpus")
         wipe_files = st.checkbox("Also wipe input files", value=False)
-        if st.button("💣 Clear all documents", disabled=not confirm_clear, type="primary"):
+        if st.button(
+            "💣 Clear all documents", disabled=not confirm_clear, type="primary"
+        ):
             try:
                 with get_client() as c, st.spinner("Clearing…"):
                     result = c.clear_documents(confirm=True, delete_files=wipe_files)

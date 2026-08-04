@@ -121,6 +121,15 @@ from memgraphrag.client import MemGraphRAGClient
 with MemGraphRAGClient() as client:
     print(client.health())
     print(client.query("What is PPR retrieval?", mode="ppr", top_k=5))
+
+    # Document admin
+    client.insert_text("Alice lives in Paris.", doc_id="doc-demo")
+    print(client.list_documents())
+    print(client.get_document("doc-demo"))
+    client.delete_document("doc-demo")              # rebuild corpus from remaining OpenIE
+    # client.delete_documents(["doc-a", "doc-b"])  # batch
+    # client.requeue_document("doc-failed")
+    # client.clear_documents(confirm=True)         # wipe workspace storages
 ```
 
 Pass `transport=` (e.g. `httpx.MockTransport`) for offline tests.
