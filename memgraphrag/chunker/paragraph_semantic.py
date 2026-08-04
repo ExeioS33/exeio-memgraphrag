@@ -70,6 +70,25 @@ def _merge_blocks_by_token_size(
         if not text:
             continue
         n = len(tokenizer.encode(text))
+        # Oversized single blocks must be window-split (Docling/P path).
+        if n > target:
+            flush()
+            from memgraphrag.chunker.token_size import chunking_by_token_size
+
+            for piece in chunking_by_token_size(
+                tokenizer,
+                text,
+                chunk_token_size=target,
+                chunk_overlap_token_size=min(100, max(target // 10, 0)),
+            ):
+                piece["chunk_order_index"] = len(results)
+                piece["heading"] = {
+                    "level": int(row.get("level") or 0),
+                    "heading": str(row.get("heading") or ""),
+                    "parent_headings": list(row.get("parent_headings") or []),
+                }
+                results.append(piece)
+            continue
         if buf and buf_tokens + n > target:
             flush()
         if not buf:

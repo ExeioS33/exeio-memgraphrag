@@ -11,14 +11,17 @@ import asyncio
 import json
 import logging
 import os
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
 from memgraphrag.parser.base import BaseParser, ParseContext, ParseResult
+from memgraphrag.parser.external._zip import safe_extract_zip
 from memgraphrag.parser.registry import PARSER_ENGINE_DOCLING
 from memgraphrag.sidecar.writer import FULL_DOCS_FORMAT_LIGHTRAG, write_sidecar
+from memgraphrag.utils.debug_log import agent_dbg
 
 logger = logging.getLogger(__name__)
 
@@ -161,17 +164,136 @@ class DoclingParser(BaseParser):
         resp = await client.get(url)
         resp.raise_for_status()
         ctype = (resp.headers.get("content-type") or "").lower()
+        body = resp.content or b""
+        is_zip = "zip" in ctype or body[:2] == b"PK"
+
+        # #region agent log
+        agent_dbg(
+            "A",
+            "docling/parser.py:_fetch_result",
+            "docling result received",
+            {
+                "ctype": ctype,
+                "body_len": len(body),
+                "is_zip": is_zip,
+                "magic": body[:4].hex() if body else "",
+                "filename": filename,
+            },
+        )
+        # #endregion
+
+        # Docling Serve returns a ZIP bundle when target_type=zip (LightRAG path).
+        if is_zip:
+            markdown, blocks = self._extract_from_zip(body, filename)
+            # #region agent log
+            agent_dbg(
+                "A",
+                "docling/parser.py:_extract_from_zip",
+                "zip extracted",
+                {
+                    "markdown_len": len(markdown),
+                    "blocks": len(blocks),
+                    "filename": filename,
+                },
+            )
+            # #endregion
+            return markdown, blocks
 
         # Prefer JSON envelope when available; otherwise treat body as markdown.
-        if "json" in ctype or resp.content.lstrip().startswith((b"{", b"[")):
+        if "json" in ctype or body.lstrip().startswith((b"{", b"[")):
             try:
                 payload = resp.json()
             except Exception:
-                payload = json.loads(resp.content)
+                payload = json.loads(body)
             return self._extract_from_json(payload, filename)
 
-        text = resp.text or ""
+        # Refuse binary non-zip bodies that would become garbage "text" chunks.
+        if b"\x00" in body[:4096]:
+            raise RuntimeError(
+                f"Docling result {task_id} looks binary (content-type={ctype!r}); "
+                "expected zip or JSON/markdown"
+            )
+
+        text = body.decode("utf-8", errors="replace")
         return text, [{"content": text, "heading": "", "level": 0}] if text.strip() else []
+
+    def _extract_from_zip(
+        self, payload: bytes, filename: str
+    ) -> tuple[str, list[dict[str, Any]]]:
+        """Unpack Docling zip and prefer markdown / DoclingDocument JSON."""
+        stem = Path(filename).stem
+        with tempfile.TemporaryDirectory(prefix="memgraphrag-docling-") as tmp:
+            raw_dir = Path(tmp)
+            names = safe_extract_zip(payload, raw_dir)
+            md_path = self._pick_extracted_file(raw_dir, names, stem, (".md", ".markdown"))
+            json_path = self._pick_extracted_file(raw_dir, names, stem, (".json",))
+
+            markdown = ""
+            if md_path and md_path.is_file():
+                markdown = md_path.read_text(encoding="utf-8", errors="replace")
+
+            document: dict[str, Any] | None = None
+            if json_path and json_path.is_file():
+                try:
+                    loaded = json.loads(json_path.read_text(encoding="utf-8"))
+                except json.JSONDecodeError:
+                    loaded = None
+                if isinstance(loaded, dict):
+                    # ConvertDocumentResponse envelope or bare DoclingDocument
+                    nested = loaded.get("document")
+                    if isinstance(nested, dict):
+                        if not markdown and isinstance(nested.get("md_content"), str):
+                            markdown = nested["md_content"]
+                        jc = nested.get("json_content")
+                        if isinstance(jc, dict):
+                            document = jc
+                        elif any(k in nested for k in ("texts", "body", "tables")):
+                            document = nested
+                    elif any(k in loaded for k in ("texts", "body", "tables", "schema_name")):
+                        document = loaded
+                    if not markdown and isinstance(loaded.get("md_content"), str):
+                        markdown = loaded["md_content"]
+
+            if document is not None:
+                envelope: dict[str, Any] = {
+                    "document": {
+                        "md_content": markdown,
+                        "json_content": document,
+                    }
+                }
+                md2, blocks = self._extract_from_json(envelope, filename)
+                return (md2 or markdown), blocks
+
+            if markdown.strip():
+                return markdown, [{"content": markdown, "heading": "", "level": 0}]
+
+            raise RuntimeError(
+                f"Docling zip for {filename} had no usable .md/.json "
+                f"(entries={names[:20]!r})"
+            )
+
+    @staticmethod
+    def _pick_extracted_file(
+        raw_dir: Path,
+        names: list[str],
+        stem: str,
+        suffixes: tuple[str, ...],
+    ) -> Path | None:
+        candidates: list[Path] = []
+        for name in names:
+            path = raw_dir / name
+            if not path.is_file():
+                continue
+            if path.suffix.lower() not in suffixes:
+                continue
+            candidates.append(path)
+        if not candidates:
+            return None
+        # Prefer filename matching the upload stem.
+        for path in candidates:
+            if path.stem == stem or stem in path.stem:
+                return path
+        return candidates[0]
 
     def _extract_from_json(
         self, payload: Any, filename: str

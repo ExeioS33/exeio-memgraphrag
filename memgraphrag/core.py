@@ -330,6 +330,26 @@ class MemGraphRAG:
             {d["idx"]: d for d in openie_docs}
         )
 
+        # #region agent log
+        from memgraphrag.utils.debug_log import agent_dbg
+
+        _with_triples = sum(
+            1 for d in openie_docs if d.get("extracted_triples")
+        )
+        agent_dbg(
+            "D",
+            "core.py:ainsert",
+            "openie docs before memory build",
+            {
+                "n_docs": len(openie_docs),
+                "n_with_triples": _with_triples,
+                "sample_passage_len": len((openie_docs[0].get("passage") or ""))
+                if openie_docs
+                else 0,
+            },
+        )
+        # #endregion
+
         memory = ThreeLayerMemory()
         memory.build_from_raw_openie_results({"docs": openie_docs})
         memory = await self.extract_schema(memory)
