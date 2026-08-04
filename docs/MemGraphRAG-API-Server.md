@@ -96,6 +96,14 @@ Unlike LightRAG's local/global/hybrid modes:
 
 Ollama chat messages may prefix `/naive`, `/context`, or `/bypass`.
 
+## Structured server logging
+
+Ingest and query flows emit grep-friendly `[MAIN]` / `[STEP]` / `[DONE]` / `[FAIL]` lines (see [Logging.md](Logging.md)). Filter with:
+
+```bash
+docker compose logs memgraphrag 2>&1 | grep -E '\[(MAIN|STEP|DONE|FAIL)\]'
+```
+
 ## Langfuse observability
 
 Optional retrieval tracing: set `LANGFUSE_ENABLE_TRACE=true` plus `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` and `LANGFUSE_BASE_URL` (or `LANGFUSE_HOST`). Each `/query` emits nested spans for fact linking, PPR, dense retrieval, and RAG generation. Details: [LangfuseObservability.md](LangfuseObservability.md).
@@ -127,5 +135,6 @@ Full coverage matrix, optimizer notes, and UI screenshot: [Clients.md](Clients.m
 - [Clients.md](Clients.md)
 - [DockerDeployment.md](DockerDeployment.md)
 - [FileProcessingPipeline.md](FileProcessingPipeline.md)
+- [Logging.md](Logging.md)
 - [LangfuseObservability.md](LangfuseObservability.md)
 - [ProgramingWithCore.md](ProgramingWithCore.md)

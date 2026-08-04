@@ -22,6 +22,7 @@ from memgraphrag.parser.external._zip import safe_extract_zip
 from memgraphrag.parser.registry import PARSER_ENGINE_DOCLING
 from memgraphrag.sidecar.writer import FULL_DOCS_FORMAT_LIGHTRAG, write_sidecar
 from memgraphrag.utils.http_ssl import ssl_verify
+from memgraphrag.utils.step_log import done_step, fail_step, main_step, sub_step
 
 logger = logging.getLogger(__name__)
 
@@ -51,15 +52,28 @@ class DoclingParser(BaseParser):
         if not endpoint:
             raise RuntimeError("DOCLING_ENDPOINT is required for DoclingParser")
 
+        main_step(
+            logger,
+            "parse.docling",
+            doc_id=ctx.doc_id,
+            file=Path(ctx.file_path).name,
+        )
         try:
             import httpx
         except ImportError as exc:
+            fail_step(logger, "parse.docling", doc_id=ctx.doc_id, error="httpx_missing")
             raise RuntimeError(
                 "httpx is required for Docling parsing but is not installed"
             ) from exc
 
         source = ctx.source_path()
         if not source.is_file():
+            fail_step(
+                logger,
+                "parse.docling",
+                doc_id=ctx.doc_id,
+                error="source_not_found",
+            )
             raise FileNotFoundError(f"docling source file not found: {source}")
 
         parsed_dir = ctx.resolve_parsed_dir()
@@ -72,13 +86,33 @@ class DoclingParser(BaseParser):
 
         timeout = httpx.Timeout(120.0, connect=30.0)
         async with httpx.AsyncClient(timeout=timeout, verify=ssl_verify()) as client:
+            sub_step(
+                logger,
+                "parse.docling.submit",
+                doc_id=ctx.doc_id,
+                bytes=source.stat().st_size,
+            )
             task_id = await self._submit(client, endpoint, source)
+            sub_step(
+                logger,
+                "parse.docling.poll",
+                task_id=task_id,
+                poll_wait=poll_wait,
+                max_polls=max_polls,
+            )
             await self._poll_until_done(client, endpoint, task_id, poll_wait, max_polls)
+            sub_step(logger, "parse.docling.fetch", task_id=task_id)
             content, blocks = await self._fetch_result(
                 client, endpoint, task_id, source.name
             )
 
         if not content.strip() and not blocks:
+            fail_step(
+                logger,
+                "parse.docling",
+                doc_id=ctx.doc_id,
+                error="empty_content",
+            )
             raise ValueError(
                 f"Docling produced empty content for {ctx.file_path} (doc_id={ctx.doc_id})"
             )
@@ -86,6 +120,13 @@ class DoclingParser(BaseParser):
         if not blocks:
             blocks = [{"content": content, "heading": "", "level": 0}]
 
+        sub_step(
+            logger,
+            "parse.docling.sidecar",
+            doc_id=ctx.doc_id,
+            blocks=len(blocks),
+            content_chars=len(content),
+        )
         sidecar = write_sidecar(
             parsed_dir,
             blocks,
@@ -94,6 +135,14 @@ class DoclingParser(BaseParser):
             engine=self.engine_name,
         )
 
+        done_step(
+            logger,
+            "parse.docling",
+            doc_id=ctx.doc_id,
+            blocks=len(blocks),
+            content_chars=len(sidecar["content"] or content),
+            has_blocks_path=bool(sidecar["blocks_path"]),
+        )
         return ParseResult(
             doc_id=ctx.doc_id,
             file_path=ctx.file_path,
@@ -319,5 +368,12 @@ class DoclingParser(BaseParser):
 
         logger.debug(
             "[docling] extracted %d blocks from %s", len(blocks), filename
+        )
+        sub_step(
+            logger,
+            "parse.docling.extract_blocks",
+            filename=filename,
+            blocks=len(blocks),
+            markdown_chars=len(markdown),
         )
         return markdown, blocks

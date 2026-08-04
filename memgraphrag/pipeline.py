@@ -24,6 +24,7 @@ from memgraphrag.parser.routing import (
     parse_chunking_strategy,
     resolve_parser_directives,
 )
+from memgraphrag.utils.step_log import done_step, fail_step, main_step, sub_step
 from memgraphrag.utils.tokenizer import TiktokenTokenizer
 
 logger = logging.getLogger(__name__)
@@ -77,6 +78,13 @@ async def enqueue_document(
     chunk_options: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Enqueue a document as ``PENDING`` for later :func:`process_pending`."""
+    main_step(
+        logger,
+        "ingest.enqueue",
+        doc_id=doc_id,
+        file=Path(file_path).name,
+        content_chars=len(content) if content else 0,
+    )
     directives = None
     engine = parse_engine
     process_options = ""
@@ -85,8 +93,21 @@ async def enqueue_document(
             directives = resolve_parser_directives(file_path)
             engine = directives.engine
             process_options = directives.process_options
+            sub_step(
+                logger,
+                "ingest.enqueue.route",
+                doc_id=doc_id,
+                engine=engine,
+                process_options=process_options or "-",
+            )
         except Exception as exc:
-            logger.warning("enqueue_document: routing failed for %s: %s", file_path, exc)
+            fail_step(
+                logger,
+                "ingest.enqueue.route",
+                doc_id=doc_id,
+                file=Path(file_path).name,
+                exc=exc,
+            )
             engine = "legacy"
 
     record: dict[str, Any] = {
@@ -101,7 +122,13 @@ async def enqueue_document(
         "metadata": {"memory_sub_stage": None},
     }
     await doc_status_storage.upsert({doc_id: record})
-    logger.info("Enqueued doc_id=%s engine=%s status=pending", doc_id, engine)
+    done_step(
+        logger,
+        "ingest.enqueue",
+        doc_id=doc_id,
+        engine=engine,
+        status="pending",
+    )
     return record
 
 
@@ -111,6 +138,7 @@ async def _index_chunks(rag_engine: Any, chunks: list[dict[str, Any]]) -> Any:
     if not texts:
         raise ValueError("no chunks to index")
 
+    sub_step(logger, "ingest.index.call", chunks=len(texts))
     async_fn = getattr(rag_engine, "aindex_with_memory", None)
     if callable(async_fn):
         return await async_fn(texts)
@@ -143,6 +171,7 @@ async def process_pending(
     """
     pending = await doc_status_storage.get_docs_by_statuses([DocStatus.PENDING])
     summary: dict[str, Any] = {"processed": 0, "failed": 0, "doc_ids": []}
+    main_step(logger, "ingest.process", pending=len(pending))
 
     tokenizer_model = os.getenv("TIKTOKEN_MODEL", "gpt-4o-mini")
     try:
@@ -152,11 +181,18 @@ async def process_pending(
 
     for doc_id, record in list(pending.items()):
         file_path = str(record.get("file_path") or "")
+        main_step(
+            logger,
+            "ingest.doc",
+            doc_id=doc_id,
+            file=Path(file_path).name or file_path,
+        )
         try:
             record = await _set_status(
                 doc_status_storage, doc_id, record, DocStatus.PARSING,
                 memory_sub_stage=None,
             )
+            sub_step(logger, "ingest.doc.status", doc_id=doc_id, status="parsing")
 
             # Resolve source path (prefer input_dir join for relative paths)
             source = Path(file_path)
@@ -181,7 +217,22 @@ async def process_pending(
                 rag=rag_engine,
             )
             parser = get_parser(engine_name)
+            sub_step(
+                logger,
+                "ingest.doc.parse",
+                doc_id=doc_id,
+                engine=engine_name,
+                source_exists=source.is_file(),
+            )
             parse_result = await parser.parse(ctx)
+            sub_step(
+                logger,
+                "ingest.doc.parse_result",
+                doc_id=doc_id,
+                format=parse_result.parse_format,
+                content_chars=len(parse_result.content or ""),
+                blocks_path=bool(parse_result.blocks_path),
+            )
 
             process_options = str(record.get("process_options") or "")
             strategy = parse_chunking_strategy(process_options)
@@ -212,6 +263,14 @@ async def process_pending(
             elif strategy == "R" and "separators" in chunk_opts:
                 chunk_kwargs["separators"] = chunk_opts["separators"]
 
+            sub_step(
+                logger,
+                "ingest.doc.chunk",
+                doc_id=doc_id,
+                strategy=strategy,
+                chunk_token_size=chunk_token_size,
+                overlap=chunk_overlap,
+            )
             chunks = chunker(
                 tokenizer,
                 parse_result.content,
@@ -220,6 +279,12 @@ async def process_pending(
             )
             if not chunks:
                 raise ValueError("chunker produced no chunks")
+            sub_step(
+                logger,
+                "ingest.doc.chunk_result",
+                doc_id=doc_id,
+                chunks=len(chunks),
+            )
 
             record = await _set_status(
                 doc_status_storage,
@@ -231,6 +296,12 @@ async def process_pending(
                 blocks_path=parse_result.blocks_path,
                 chunk_count=len(chunks),
             )
+            sub_step(
+                logger,
+                "ingest.doc.status",
+                doc_id=doc_id,
+                status="processing",
+            )
 
             # Track sub-stages around the index call (engine owns the real work).
             for stage in _MEMORY_SUB_STAGES:
@@ -240,6 +311,7 @@ async def process_pending(
                 record["updated_at"] = _now()
                 await doc_status_storage.upsert({doc_id: record})
 
+            sub_step(logger, "ingest.doc.index", doc_id=doc_id, chunks=len(chunks))
             await _index_chunks(rag_engine, chunks)
 
             record = await _set_status(
@@ -252,10 +324,23 @@ async def process_pending(
             )
             summary["processed"] += 1
             summary["doc_ids"].append(doc_id)
-            logger.info("Processed doc_id=%s chunks=%d", doc_id, len(chunks))
+            done_step(
+                logger,
+                "ingest.doc",
+                doc_id=doc_id,
+                chunks=len(chunks),
+                status="processed",
+            )
 
         except Exception as exc:
-            logger.exception("Failed processing doc_id=%s: %s", doc_id, exc)
+            fail_step(
+                logger,
+                "ingest.doc",
+                doc_id=doc_id,
+                file=Path(file_path).name or file_path,
+                exc=exc,
+                exc_info=True,
+            )
             await _set_status(
                 doc_status_storage,
                 doc_id,
@@ -267,4 +352,10 @@ async def process_pending(
             summary["failed"] += 1
             summary["doc_ids"].append(doc_id)
 
+    done_step(
+        logger,
+        "ingest.process",
+        processed=summary["processed"],
+        failed=summary["failed"],
+    )
     return summary

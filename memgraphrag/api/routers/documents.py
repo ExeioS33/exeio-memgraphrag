@@ -13,6 +13,7 @@ from typing import Any, Optional
 from memgraphrag.base import DocStatus
 from memgraphrag.pipeline import enqueue_document, process_pending
 from memgraphrag.utils.hashing import compute_mdhash_id
+from memgraphrag.utils.step_log import done_step, fail_step, main_step, sub_step, truncate
 
 logger = logging.getLogger("memgraphrag.api.documents")
 
@@ -85,19 +86,46 @@ def create_documents_router(api_key: Optional[str] = None) -> Any:
         content = await file.read()
         dest.write_bytes(content)
         doc_id = compute_mdhash_id(f"{safe_name}:{len(content)}", prefix="doc-")
+        main_step(
+            logger,
+            "api.documents.upload",
+            doc_id=doc_id,
+            filename=safe_name,
+            bytes=len(content),
+        )
 
         async def _bg() -> None:
             try:
                 request.app.state.pipeline_busy = True
+                sub_step(
+                    logger,
+                    "api.documents.upload.enqueue",
+                    doc_id=doc_id,
+                    filename=safe_name,
+                )
                 await enqueue_document(
                     doc_id=doc_id,
                     file_path=str(dest),
                     doc_status_storage=rag.doc_status,
                 )
                 summary = await _run_pipeline(rag, input_dir)
-                logger.info("Upload pipeline finished for %s: %s", safe_name, summary)
+                done_step(
+                    logger,
+                    "api.documents.upload",
+                    doc_id=doc_id,
+                    filename=safe_name,
+                    processed=summary.get("processed"),
+                    failed=summary.get("failed"),
+                )
             except Exception as exc:
-                logger.exception("Background upload index failed: %s", exc)
+                fail_step(
+                    logger,
+                    "api.documents.upload",
+                    doc_id=doc_id,
+                    filename=safe_name,
+                    exc=exc,
+                    exc_info=True,
+                )
             finally:
                 request.app.state.pipeline_busy = False
 
@@ -114,8 +142,32 @@ def create_documents_router(api_key: Optional[str] = None) -> Any:
     async def insert_text(request: Request, body: TextInsertRequest):
         rag = request.app.state.rag
         doc_id = body.doc_id or compute_mdhash_id(body.text, prefix="doc-")
-        result = await _index_inline_text(rag, body.text, doc_id)
-        return {"status": "ok", "doc_id": doc_id, "result": result}
+        main_step(
+            logger,
+            "api.documents.text",
+            doc_id=doc_id,
+            chars=len(body.text),
+            preview=truncate(body.text),
+        )
+        try:
+            result = await _index_inline_text(rag, body.text, doc_id)
+            done_step(
+                logger,
+                "api.documents.text",
+                doc_id=doc_id,
+                processed=result.get("processed"),
+                failed=result.get("failed"),
+            )
+            return {"status": "ok", "doc_id": doc_id, "result": result}
+        except Exception as exc:
+            fail_step(
+                logger,
+                "api.documents.text",
+                doc_id=doc_id,
+                exc=exc,
+                exc_info=True,
+            )
+            raise
 
     @router.get("/", dependencies=[Depends(combined_auth)])
     async def list_documents(request: Request):
@@ -152,6 +204,12 @@ def create_documents_router(api_key: Optional[str] = None) -> Any:
             and not p.name.startswith(".")
             and "__parsed__" not in p.parts
         ]
+        main_step(
+            logger,
+            "api.documents.scan",
+            files_found=len(files),
+            input_dir=str(input_dir),
+        )
 
         async def _bg() -> None:
             try:
@@ -161,17 +219,39 @@ def create_documents_router(api_key: Optional[str] = None) -> Any:
                         doc_id = compute_mdhash_id(
                             f"{path}:{path.stat().st_size}", prefix="doc-"
                         )
+                        sub_step(
+                            logger,
+                            "api.documents.scan.enqueue",
+                            doc_id=doc_id,
+                            file=path.name,
+                        )
                         await enqueue_document(
                             doc_id=doc_id,
                             file_path=str(path),
                             doc_status_storage=rag.doc_status,
                         )
                     except Exception as exc:
-                        logger.warning("Scan enqueue skip %s: %s", path, exc)
+                        fail_step(
+                            logger,
+                            "api.documents.scan.enqueue",
+                            file=path.name,
+                            exc=exc,
+                        )
                 summary = await _run_pipeline(rag, input_dir)
-                logger.info("Scan pipeline finished: %s", summary)
+                done_step(
+                    logger,
+                    "api.documents.scan",
+                    processed=summary.get("processed"),
+                    failed=summary.get("failed"),
+                    files_found=len(files),
+                )
             except Exception as exc:
-                logger.exception("Scan pipeline failed: %s", exc)
+                fail_step(
+                    logger,
+                    "api.documents.scan",
+                    exc=exc,
+                    exc_info=True,
+                )
             finally:
                 request.app.state.pipeline_busy = False
 

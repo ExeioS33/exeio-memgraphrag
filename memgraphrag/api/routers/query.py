@@ -13,6 +13,7 @@ from typing import Any, AsyncIterator, Literal, Optional
 from memgraphrag.base import QueryParam
 from memgraphrag.observability.langfuse_trace import flush_langfuse
 from memgraphrag.utils.misc import QuerySolution
+from memgraphrag.utils.step_log import done_step, fail_step, main_step, truncate
 
 logger = logging.getLogger("memgraphrag.api.query")
 
@@ -95,9 +96,36 @@ def create_query_router(api_key: Optional[str] = None) -> Any:
         param = _build_param(body, rag)
         if body.only_need_context or body.mode == "context":
             param.only_need_context = True
+        main_step(
+            logger,
+            "api.query",
+            mode=param.mode,
+            query=truncate(body.query),
+            stream=False,
+            only_need_context=bool(param.only_need_context),
+        )
         try:
             sol = await rag.arag_qa(body.query, param=param)
-            return _solution_payload(sol)
+            payload = _solution_payload(sol)
+            answer = payload.get("answer") or payload.get("response") or ""
+            docs = getattr(sol, "docs", None) or []
+            done_step(
+                logger,
+                "api.query",
+                mode=param.mode,
+                docs=len(docs),
+                answer_chars=len(str(answer)),
+            )
+            return payload
+        except Exception as exc:
+            fail_step(
+                logger,
+                "api.query",
+                mode=param.mode,
+                exc=exc,
+                exc_info=True,
+            )
+            raise
         finally:
             flush_langfuse()
 
@@ -109,30 +137,72 @@ def create_query_router(api_key: Optional[str] = None) -> Any:
         param.only_need_context = True
         if param.mode == "bypass":
             param.mode = "ppr"
-        sols = await rag.aretrieve(body.query, param=param)
-        sol = sols[0] if sols else QuerySolution(question=body.query, docs=[])
-        return {
-            "status": "success",
-            "data": _solution_payload(sol),
-            "metadata": {"mode": param.mode},
-        }
+        main_step(
+            logger,
+            "api.query.data",
+            mode=param.mode,
+            query=truncate(body.query),
+        )
+        try:
+            sols = await rag.aretrieve(body.query, param=param)
+            sol = sols[0] if sols else QuerySolution(question=body.query, docs=[])
+            done_step(
+                logger,
+                "api.query.data",
+                mode=param.mode,
+                docs=len(sol.docs),
+            )
+            return {
+                "status": "success",
+                "data": _solution_payload(sol),
+                "metadata": {"mode": param.mode},
+            }
+        except Exception as exc:
+            fail_step(
+                logger,
+                "api.query.data",
+                mode=param.mode,
+                exc=exc,
+                exc_info=True,
+            )
+            raise
 
     @router.post("/query/stream", dependencies=[Depends(combined_auth)])
     async def query_stream(request: Request, body: QueryRequest):
         rag = request.app.state.rag
         param = _build_param(body, rag)
         param.stream = True
+        main_step(
+            logger,
+            "api.query.stream",
+            mode=param.mode,
+            query=truncate(body.query),
+        )
 
         async def event_gen() -> AsyncIterator[str]:
             try:
                 sol = await rag.arag_qa(body.query, param=param)
                 payload = _solution_payload(sol)
                 answer = payload.get("answer") or payload.get("response") or ""
+                docs = getattr(sol, "docs", None) or []
+                done_step(
+                    logger,
+                    "api.query.stream",
+                    mode=param.mode,
+                    docs=len(docs),
+                    answer_chars=len(str(answer)),
+                )
                 # Yield full answer as one SSE chunk (no token streaming yet)
                 yield f"data: {json.dumps({'response': answer}, ensure_ascii=False)}\n\n"
                 yield "data: [DONE]\n\n"
             except Exception as exc:
-                logger.exception("query/stream failed: %s", exc)
+                fail_step(
+                    logger,
+                    "api.query.stream",
+                    mode=param.mode,
+                    exc=exc,
+                    exc_info=True,
+                )
                 yield f"data: {json.dumps({'error': str(exc)})}\n\n"
 
         return StreamingResponse(event_gen(), media_type="text/event-stream")
