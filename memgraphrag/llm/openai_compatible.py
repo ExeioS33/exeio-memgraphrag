@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Any, AsyncIterator, Sequence
 
 import numpy as np
@@ -17,6 +18,7 @@ from openai import (
     APIConnectionError,
     APITimeoutError,
     AsyncOpenAI,
+    BadRequestError,
     InternalServerError,
     RateLimitError,
 )
@@ -183,20 +185,58 @@ def _embedding_max_tokens() -> int | None:
     return value if value > 0 else None
 
 
+def _embedding_token_safety(model_name: str) -> float:
+    """Tiktoken→provider tokenizer safety factor for embed truncation.
+
+    gpt-4o-mini tiktoken systematically undercounts WordPiece/e5 tokenizers.
+    Runtime probe: 480 tiktoken tokens → Together reported 748 for e5-instruct.
+    """
+    raw = (os.getenv("EMBEDDING_TOKEN_SAFETY") or "").strip()
+    if raw:
+        try:
+            value = float(raw)
+            if 0.1 <= value <= 1.0:
+                return value
+        except ValueError:
+            pass
+    lowered = (model_name or "").lower()
+    if any(tag in lowered for tag in ("e5", "bge", "gte-", "nomic-embed")):
+        return 0.60
+    return 0.95
+
+
+def _embedding_budget_tokens(model_name: str) -> int | None:
+    """Effective tiktoken budget after applying tokenizer safety."""
+    configured = _embedding_max_tokens()
+    if configured is None:
+        return None
+    safety = _embedding_token_safety(model_name)
+    budget = max(32, int(configured * safety))
+    if budget < configured:
+        logger.info(
+            "Embed token budget %d (configured=%d safety=%.2f model=%s)",
+            budget,
+            configured,
+            safety,
+            model_name,
+        )
+    return budget
+
+
 def _truncate_for_embedding(texts: list[str], max_tokens: int) -> list[str]:
     """Truncate texts to ``max_tokens`` using tiktoken when available.
 
     Providers like Together's e5 endpoints reject inputs above 512 tokens.
-    Tiktoken is an approximation of the model tokenizer but keeps us under the
-    hard limit when ``CHUNK_SIZE`` is also aligned.
+    Tiktoken is an approximation of the model tokenizer; callers should pass a
+    safety-reduced budget (see ``_embedding_budget_tokens``).
     """
     try:
         from memgraphrag.utils.tokenizer import TiktokenTokenizer
 
         tok = TiktokenTokenizer("gpt-4o-mini")
     except Exception:
-        # ~3 chars/token is conservative for scientific English vs WordPiece.
-        char_limit = max(max_tokens * 3, 64)
+        # ~2.5 chars/token is conservative for scientific English vs WordPiece.
+        char_limit = max(int(max_tokens * 2.5), 64)
         out = []
         for t in texts:
             if len(t) > char_limit:
@@ -229,6 +269,19 @@ def _truncate_for_embedding(texts: list[str], max_tokens: int) -> list[str]:
     return out
 
 
+_CONTEXT_LEN_RE = re.compile(
+    r"maximum context length is (?P<max>\d+).*?requested (?P<req>\d+)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _parse_context_length_error(exc: BaseException) -> tuple[int, int] | None:
+    match = _CONTEXT_LEN_RE.search(str(exc))
+    if not match:
+        return None
+    return int(match.group("max")), int(match.group("req"))
+
+
 async def openai_embed(
     texts: Sequence[str],
     model: str | None = None,
@@ -251,12 +304,11 @@ async def openai_embed(
         texts = [f"{instruction} {t}" for t in texts]
 
     texts_list = [t if t is not None else "" for t in texts]
-    max_tokens = _embedding_max_tokens()
-    if max_tokens is not None:
-        texts_list = _truncate_for_embedding(texts_list, max_tokens)
-
     dim = _embed_dim(embedding_dim)
     model_name = _embed_model(model)
+    budget = _embedding_budget_tokens(model_name)
+    if budget is not None:
+        texts_list = _truncate_for_embedding(texts_list, budget)
 
     client = _embed_client()
     logger.debug("openai_embed model=%s n=%d dim=%s", model_name, len(texts_list), dim)
@@ -278,6 +330,52 @@ async def openai_embed(
         if "dimensions" in create_kwargs and "dimension" in str(exc).lower():
             create_kwargs.pop("dimensions", None)
             logger.warning("Retrying embeddings without dimensions: %s", exc)
+            try:
+                response = await client.embeddings.create(**create_kwargs)
+            except Exception as exc2:
+                exc = exc2
+            else:
+                vectors = [item.embedding for item in response.data]
+                return np.asarray(vectors, dtype=np.float32)
+
+        parsed = _parse_context_length_error(exc)
+        if parsed and budget is not None:
+            provider_max, provider_req = parsed
+            # Scale tiktoken budget by observed provider overshoot, with margin.
+            scaled = max(
+                32,
+                int(budget * (provider_max / max(provider_req, 1)) * 0.90),
+            )
+            if scaled < budget:
+                logger.warning(
+                    "Embed context overflow (provider %d/%d); retry with budget %d→%d",
+                    provider_req,
+                    provider_max,
+                    budget,
+                    scaled,
+                )
+                texts_list = _truncate_for_embedding(
+                    [t if t is not None else "" for t in texts],
+                    scaled,
+                )
+                create_kwargs["input"] = texts_list
+                response = await client.embeddings.create(**create_kwargs)
+            else:
+                raise
+        elif isinstance(exc, BadRequestError) and budget is not None:
+            # Fallback when error text is non-standard: hard-cut budget in half.
+            scaled = max(32, budget // 2)
+            logger.warning(
+                "Embed BadRequestError; retry with budget %d→%d: %s",
+                budget,
+                scaled,
+                exc,
+            )
+            texts_list = _truncate_for_embedding(
+                [t if t is not None else "" for t in texts],
+                scaled,
+            )
+            create_kwargs["input"] = texts_list
             response = await client.embeddings.create(**create_kwargs)
         else:
             raise
