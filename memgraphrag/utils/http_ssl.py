@@ -35,6 +35,7 @@ def ssl_verify() -> Any:
 
     for key in (
         "MEMGRAPHRAG_SSL_CERT_FILE",
+        "MEMGRAPHRAG_CORP_CA_FILE",
         "SSL_CERT_FILE",
         "REQUESTS_CA_BUNDLE",
         "CURL_CA_BUNDLE",
