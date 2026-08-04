@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import mimetypes
 import os
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Iterator, Optional
 from urllib.parse import urlparse
@@ -12,9 +14,73 @@ from urllib.parse import urlparse
 import httpx
 
 from memgraphrag.client.params import SUPPORTED_EXTENSIONS, clean_params
+from memgraphrag.utils.http_ssl import describe_ssl_verify, ssl_verify
 
 DEFAULT_BASE_URL = "http://localhost:9621"
 DEFAULT_TIMEOUT = httpx.Timeout(connect=10.0, read=300.0, write=120.0, pool=10.0)
+
+
+class ClientSSLError(RuntimeError):
+    """Raised when outbound HTTPS fails TLS verification (URL ingest, etc.)."""
+
+
+def _filename_from_headers(
+    content_disp: str, content_type: str, fallback: str
+) -> str:
+    """Derive a filename from Content-Disposition / Content-Type when URL has none."""
+    name = fallback
+    cd = content_disp or ""
+    # Prefer RFC 5987 filename*=utf-8''...
+    if "filename*=" in cd.lower():
+        try:
+            part = cd.split("filename*=")[-1].split(";")[0].strip().strip("\"'")
+            if "''" in part:
+                part = part.split("''", 1)[1]
+            from urllib.parse import unquote
+
+            candidate = Path(unquote(part)).name
+            if candidate:
+                name = candidate
+        except Exception:
+            pass
+    elif "filename=" in cd:
+        candidate = Path(cd.split("filename=")[-1].split(";")[0].strip().strip("\"'")).name
+        if candidate:
+            name = candidate
+    if not Path(name).suffix:
+        guessed = mimetypes.guess_extension((content_type or "").split(";")[0].strip())
+        if guessed:
+            name = f"{name}{guessed}"
+    return name
+
+# #region agent log
+_DEBUG_LOG_PATH = "/home/sanda/Desktop/project/cf_memgraphrag/.cursor/debug-4b92ea.log"
+
+
+def _agent_log(
+    hypothesis_id: str,
+    location: str,
+    message: str,
+    data: dict[str, Any],
+    run_id: str = "pre-fix",
+) -> None:
+    try:
+        payload = {
+            "sessionId": "4b92ea",
+            "runId": run_id,
+            "hypothesisId": hypothesis_id,
+            "location": location,
+            "message": message,
+            "data": data,
+            "timestamp": int(time.time() * 1000),
+        }
+        with open(_DEBUG_LOG_PATH, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(payload, default=str) + "\n")
+    except Exception:
+        pass
+
+
+# #endregion
 
 
 class MemGraphRAGClient:
@@ -30,6 +96,7 @@ class MemGraphRAGClient:
         api_key: Optional[str] = None,
         timeout: Optional[httpx.Timeout] = None,
         transport: Optional[httpx.BaseTransport] = None,
+        verify: Any = None,
     ) -> None:
         self.base_url = (
             base_url
@@ -39,15 +106,40 @@ class MemGraphRAGClient:
         self.api_key = api_key if api_key is not None else os.environ.get(
             "MEMGRAPHRAG_API_KEY"
         )
+        self.verify = ssl_verify() if verify is None else verify
         headers: dict[str, str] = {"Accept": "application/json"}
         if self.api_key:
             headers["X-API-Key"] = self.api_key
+        # #region agent log
+        _agent_log(
+            "H-D",
+            "http.py:MemGraphRAGClient.__init__",
+            "client_init_verify",
+            {
+                "base_scheme": urlparse(self.base_url).scheme,
+                "verify_type": type(self.verify).__name__,
+                "verify_repr": str(self.verify)[:200],
+                "ssl_env": {
+                    k: bool((os.getenv(k) or "").strip())
+                    for k in (
+                        "SSL_VERIFY",
+                        "SSL_CERT_FILE",
+                        "REQUESTS_CA_BUNDLE",
+                        "MEMGRAPHRAG_SSL_CERT_FILE",
+                        "MEMGRAPHRAG_CORP_CA_FILE",
+                        "CURL_CA_BUNDLE",
+                    )
+                },
+            },
+        )
+        # #endregion
         self._client = httpx.Client(
             base_url=self.base_url,
             headers=headers,
             timeout=timeout or DEFAULT_TIMEOUT,
             transport=transport,
             follow_redirects=True,
+            verify=self.verify,
         )
 
     def close(self) -> None:
@@ -132,21 +224,108 @@ class MemGraphRAGClient:
         return results
 
     def upload_url(self, url: str, filename: Optional[str] = None) -> dict[str, Any]:
-        """Download ``url`` then multipart-upload it to the server."""
-        with httpx.Client(timeout=DEFAULT_TIMEOUT, follow_redirects=True) as dl:
-            resp = dl.get(url)
-            resp.raise_for_status()
-            data = resp.content
-            content_disp = resp.headers.get("content-disposition", "")
-            content_type = resp.headers.get("content-type", "")
-        name = filename or Path(urlparse(url).path).name or "download.bin"
+        """Download ``url`` then multipart-upload it to the server.
+
+        Honors the same TLS settings as the rest of MemGraphRAG (``ssl_verify()`` /
+        ``SSL_CERT_FILE`` / ``SSL_VERIFY``). Corporate TLS inspection often needs a
+        Fortinet/Zscaler CA PEM plus OpenSSL-3 AKI relax (handled in ``http_ssl``).
+        """
+        url = (url or "").strip()
+        if not url:
+            raise ValueError("URL is empty")
+        parsed = urlparse(url)
+        if parsed.scheme not in {"http", "https"}:
+            raise ValueError(f"Unsupported URL scheme {parsed.scheme!r}; use http(s)")
+        if not parsed.netloc:
+            raise ValueError(f"URL is missing a host: {url!r}")
+
+        verify = self.verify
+        ssl_info = describe_ssl_verify()
+        # #region agent log
+        _agent_log(
+            "H-A",
+            "http.py:upload_url:before_get",
+            "upload_url_download_start",
+            {
+                "scheme": parsed.scheme,
+                "host": parsed.hostname,
+                "verify_type": type(verify).__name__,
+                "verify_repr": str(verify)[:200],
+                "passing_verify_to_download_client": True,
+                "ssl_info": ssl_info,
+                "run": "post-fix",
+            },
+            run_id="post-fix",
+        )
+        # #endregion
+        try:
+            with httpx.Client(
+                timeout=DEFAULT_TIMEOUT,
+                follow_redirects=True,
+                verify=verify,
+            ) as dl:
+                resp = dl.get(url)
+                # #region agent log
+                _agent_log(
+                    "H-C",
+                    "http.py:upload_url:after_get",
+                    "upload_url_download_ok",
+                    {
+                        "status": resp.status_code,
+                        "final_url": str(resp.url),
+                        "final_scheme": urlparse(str(resp.url)).scheme,
+                        "n_redirects": len(resp.history),
+                        "content_type": resp.headers.get("content-type", ""),
+                        "bytes": len(resp.content),
+                    },
+                    run_id="post-fix",
+                )
+                # #endregion
+                resp.raise_for_status()
+                data = resp.content
+                content_disp = resp.headers.get("content-disposition", "")
+                content_type = resp.headers.get("content-type", "")
+        except Exception as exc:  # noqa: BLE001 — logged then re-raised
+            msg = str(exc)
+            is_ssl = (
+                "CERTIFICATE_VERIFY_FAILED" in msg
+                or "SSL" in type(exc).__name__
+                or "ssl" in type(exc).__module__
+            )
+            # #region agent log
+            _agent_log(
+                "H-A",
+                "http.py:upload_url:except",
+                "upload_url_download_failed",
+                {
+                    "exc_type": type(exc).__name__,
+                    "exc_module": type(exc).__module__,
+                    "exc_msg": msg[:500],
+                    "is_ssl_error": is_ssl,
+                    "verify_repr": str(verify)[:200],
+                    "ssl_info": ssl_info,
+                },
+                run_id="post-fix",
+            )
+            # #endregion
+            if is_ssl:
+                raise ClientSSLError(
+                    "TLS verification failed while downloading the URL. "
+                    "Behind corporate TLS inspection, set "
+                    "MEMGRAPHRAG_SSL_CERT_FILE (or SSL_CERT_FILE) to your "
+                    "Fortinet/Zscaler CA PEM, or place it at certs/corporate-ca.crt. "
+                    "Lab-only escape hatch: SSL_VERIFY=false. "
+                    f"Original error: {msg}"
+                ) from exc
+            raise
+
+        if not data:
+            raise ValueError(f"Downloaded empty body from {url}")
+
+        name = filename or Path(parsed.path).name or "download.bin"
+        name = Path(name).name  # prevent path traversal in Content-Disposition
         if not Path(name).suffix:
-            if "filename=" in content_disp:
-                name = content_disp.split("filename=")[-1].strip("\"' ")
-            else:
-                guessed = mimetypes.guess_extension(content_type.split(";")[0].strip())
-                if guessed:
-                    name = f"{name}{guessed}"
+            name = _filename_from_headers(content_disp, content_type, name)
         suffix = Path(name).suffix or ".bin"
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
             tmp.write(data)
