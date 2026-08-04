@@ -1,0 +1,55 @@
+# MemGraphRAG testing datasets and paper references
+# Paths are relative to this industrial repo root (memgraphrag/).
+# Sibling research checkout: ../MemGraphRAG/ (same parent as this project).
+
+###########################
+# Papers / arXiv
+###########################
+# MemGraphRAG (KDD'26) — main paper
+https://arxiv.org/pdf/2606.00610
+https://arxiv.org/abs/2606.00610
+# Related arXiv PDF kept from original notes
+https://arxiv.org/pdf/2605.18490v1
+# Upstream GitHub
+https://github.com/XMUDeepLIT/MemGraphRAG
+
+###########################
+# Local corpora (plain-text / JSON) for e2e + integration
+# Prefer these when the MemGraphRAG sibling tree is present.
+###########################
+# HotpotQA
+../MemGraphRAG/dataset/hotpotqa/hotpotqa.txt
+../MemGraphRAG/dataset/hotpotqa/hotpotqa_corpus.json
+../MemGraphRAG/dataset/hotpotqa/hotpotqa.json
+
+# 2WikiMultihopQA (folder spelling matches upstream: 2wikimutlhopqa)
+../MemGraphRAG/dataset/2wikimutlhopqa/2wikimultihopqa.txt
+../MemGraphRAG/dataset/2wikimutlhopqa/2wikimultihopqa_corpus.json
+../MemGraphRAG/dataset/2wikimutlhopqa/2wikimultihopqa.json
+
+# MuSiQue
+../MemGraphRAG/dataset/musique/musique.txt
+../MemGraphRAG/dataset/musique/musique_corpus.json
+../MemGraphRAG/dataset/musique/musique.json
+
+# Medical QA sample
+../MemGraphRAG/dataset/medical/medical.txt
+../MemGraphRAG/dataset/medical/question.json
+
+###########################
+# Suggested smoke-test copies into this repo's INPUT_DIR
+###########################
+# cp ../MemGraphRAG/dataset/medical/medical.txt ./data/inputs/
+# Or a small HotpotQA slice for parser/ingestion smoke tests.
+
+###########################
+# Optional remote / HuggingFace sources
+###########################
+# GraphRAG Benchmark (related release from the MemGraphRAG authors' ecosystem)
+https://huggingface.co/datasets/GraphRAG-Bench/GraphRAG-Bench
+# HotpotQA (if re-downloading instead of using local sibling files)
+https://huggingface.co/datasets/hotpotqa/hotpot_qa
+# 2WikiMultihopQA
+https://huggingface.co/datasets/voidful/2WikiMultihopQA
+# MuSiQue
+https://huggingface.co/datasets/dgslibisey/MuSiQue

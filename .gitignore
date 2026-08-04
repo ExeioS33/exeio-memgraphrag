@@ -13,9 +13,10 @@ site/
 .venv/
 venv/
 
-# Environment
+# Environment (keep env.example and .env.example tracked for testing)
 .env
 .env.backup.*
+# Note: dataset_url.txt is committed (paper + corpus/QA paths for tests)
 
 # IDE / tooling
 .idea/
