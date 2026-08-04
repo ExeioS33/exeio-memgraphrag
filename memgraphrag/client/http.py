@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import json
 import mimetypes
 import os
 import tempfile
-import time
 from pathlib import Path
 from typing import Any, Iterator, Optional
 from urllib.parse import urlparse
@@ -18,31 +16,6 @@ from memgraphrag.utils.http_ssl import ssl_verify
 
 DEFAULT_BASE_URL = "http://localhost:9621"
 DEFAULT_TIMEOUT = httpx.Timeout(connect=10.0, read=300.0, write=120.0, pool=10.0)
-
-# #region agent log
-_DEBUG_LOG_PATH = "/home/sanda/Desktop/project/cf_memgraphrag/.cursor/debug-4b92ea.log"
-
-
-def _agent_log(
-    hypothesis_id: str, location: str, message: str, data: dict[str, Any], run_id: str = "pre-fix"
-) -> None:
-    try:
-        payload = {
-            "sessionId": "4b92ea",
-            "runId": run_id,
-            "hypothesisId": hypothesis_id,
-            "location": location,
-            "message": message,
-            "data": data,
-            "timestamp": int(time.time() * 1000),
-        }
-        with open(_DEBUG_LOG_PATH, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(payload, default=str) + "\n")
-    except Exception:
-        pass
-
-
-# #endregion
 
 
 class ClientSSLError(RuntimeError):
@@ -304,23 +277,6 @@ class MemGraphRAGClient:
             data=data,
             explicit=filename,
         )
-        # #region agent log
-        _agent_log(
-            "H1",
-            "http.py:upload_url:filename",
-            "normalized_download_filename",
-            {
-                "url_basename": raw_name,
-                "path_suffix": Path(raw_name).suffix,
-                "content_type": (content_type or "")[:80],
-                "has_pdf_magic": data[:4] == b"%PDF",
-                "final_name": name,
-                "final_suffix": Path(name).suffix,
-                "supported": _has_supported_suffix(name),
-            },
-            run_id="post-fix",
-        )
-        # #endregion
         suffix = Path(name).suffix or ".bin"
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
             tmp.write(data)
