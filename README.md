@@ -107,6 +107,10 @@ Personalized PageRank over the memory graph:
 - **`PPR_ENGINE=igraph`** (default) — paper-exact local engine
 - **`PPR_ENGINE=neo4j_gds`** — Neo4j Graph Data Science alternative
 
+### 📡 Langfuse observability
+
+Optional retrieval tracing via [Langfuse](https://langfuse.com/) (`LANGFUSE_ENABLE_TRACE`, keys, `LANGFUSE_BASE_URL` / `LANGFUSE_HOST`). When enabled, each `/query` emits nested spans for fact linking, PPR, dense fallback, and RAG generation. See [`docs/LangfuseObservability.md`](docs/LangfuseObservability.md).
+
 ### 🤖 LLM & embeddings
 
 OpenAI-compatible bindings only (`LLM_*`, `EMBEDDING_*`) — point at OpenAI, Azure, vLLM, Ollama OpenAI shim, or any compatible gateway. No local torch/HF embedders in the service image for the POC path.
@@ -124,6 +128,7 @@ memgraphrag/                 # repository root
 │   ├── storage/             # KV / vector / graph / doc-status backends
 │   ├── ppr/                 # igraph & Neo4j GDS Personalized PageRank
 │   ├── llm/                 # OpenAI-compatible LLM / embedding bindings
+│   ├── observability/       # Langfuse retrieval tracing (optional)
 │   ├── openie/              # OpenIE fact extraction
 │   ├── prompts/             # Prompt templates
 │   ├── sidecar/             # Sidecar writer utilities
@@ -153,6 +158,7 @@ Guides under [`docs/`](docs/), including:
 - [`docs/MemGraphRAG-API-Server.md`](docs/MemGraphRAG-API-Server.md) — API server
 - [`docs/DockerDeployment.md`](docs/DockerDeployment.md) — Compose stack
 - [`docs/FileProcessingPipeline.md`](docs/FileProcessingPipeline.md) — parsers & chunkers
+- [`docs/LangfuseObservability.md`](docs/LangfuseObservability.md) — Langfuse retrieval traces
 - [`docs/ProgramingWithCore.md`](docs/ProgramingWithCore.md) — engine usage
 
 ## 🤖 Agent maintenance

@@ -54,6 +54,12 @@ from memgraphrag.ppr.igraph_engine import IgraphPPREngine
 from memgraphrag.rerank import FactFilter
 from memgraphrag.storage import verify_storage_implementation
 from memgraphrag.storage.factory import get_storage_class
+from memgraphrag.observability.langfuse_trace import (
+    flush_langfuse,
+    observation,
+    truncate_docs,
+    update_observation,
+)
 from memgraphrag.utils.env import get_env_value
 from memgraphrag.utils.hashing import compute_mdhash_id
 from memgraphrag.utils.misc import QuerySolution
@@ -618,139 +624,235 @@ class MemGraphRAG:
         return _run_sync(self.aretrieve(queries, param=param))
 
     async def _retrieve_one(self, query: str, param: QueryParam) -> QuerySolution:
-        # Embed query for facts
-        q_fact = await self.embedding_func(
-            [query],
-            context="query",
-            instruction=get_query_instruction("query_to_fact"),
-        )
-        q_fact_vec = np.asarray(q_fact[0], dtype=np.float64).tolist()
+        with observation(
+            "memgraphrag.retrieve",
+            as_type="retriever",
+            input={"query": query, "mode": param.mode},
+            metadata={
+                "top_k": param.top_k,
+                "linking_top_k": param.linking_top_k,
+                "damping": param.damping,
+                "skip_fact_rerank": param.skip_fact_rerank,
+            },
+        ) as root_span:
+            # Embed query for facts
+            with observation(
+                "memgraphrag.fact_linking",
+                as_type="span",
+                input={"query": query, "linking_top_k": param.linking_top_k},
+            ) as fact_span:
+                q_fact = await self.embedding_func(
+                    [query],
+                    context="query",
+                    instruction=get_query_instruction("query_to_fact"),
+                )
+                q_fact_vec = np.asarray(q_fact[0], dtype=np.float64).tolist()
 
-        fact_hits = await self.facts_vdb.query(q_fact_vec, top_k=param.linking_top_k)
-        scores = [float(h.get("score", h.get("distance", 0.0))) for h in fact_hits]
-        # nano-vectordb often returns similarity; if distance-like, invert heuristically
-        if scores and max(scores) <= 1.0 and min(scores) >= 0:
-            sim_scores = scores
-        else:
-            sim_scores = [1.0 / (1.0 + abs(s)) for s in scores]
+                fact_hits = await self.facts_vdb.query(
+                    q_fact_vec, top_k=param.linking_top_k
+                )
+                scores = [
+                    float(h.get("score", h.get("distance", 0.0))) for h in fact_hits
+                ]
+                # nano-vectordb often returns similarity; if distance-like, invert
+                if scores and max(scores) <= 1.0 and min(scores) >= 0:
+                    sim_scores = scores
+                else:
+                    sim_scores = [1.0 / (1.0 + abs(s)) for s in scores]
 
-        if param.skip_fact_rerank:
-            kept = self.fact_filter.threshold_filter(
-                sim_scores, param.fact_similarity_threshold
-            )
-        else:
-            kept = self.fact_filter.llm_filter(
-                query,
-                [h.get("content") for h in fact_hits],
-                list(range(len(fact_hits))),
-                scores=sim_scores,
-                threshold=param.fact_similarity_threshold,
-            )
-
-        kept_hits = [fact_hits[i] for i in kept if i < len(fact_hits)]
-
-        if not kept_hits:
-            return await self._dense_passage_retrieve(query, param)
-
-        # Seed PPR from entities in filtered facts
-        seed_weights: dict[str, float] = {}
-        for hit, score in zip(kept_hits, [sim_scores[i] for i in kept if i < len(sim_scores)]):
-            triple = hit.get("triple")
-            if not triple:
-                content = hit.get("content", "")
-                try:
-                    triple = eval(content) if isinstance(content, str) else content
-                except Exception:
-                    triple = None
-            if not (isinstance(triple, (list, tuple)) and len(triple) == 3):
-                continue
-            for ent in (triple[0], triple[2]):
-                eid = compute_mdhash_id(str(ent).strip().lower(), prefix="entity-")
-                seed_weights[eid] = seed_weights.get(eid, 0.0) + float(score)
-                # also seed linked passages lightly
-                for pid in self._entity_to_passages.get(eid, set()):
-                    seed_weights[pid] = (
-                        seed_weights.get(pid, 0.0)
-                        + float(score) * param.passage_node_weight
+                if param.skip_fact_rerank:
+                    kept = self.fact_filter.threshold_filter(
+                        sim_scores, param.fact_similarity_threshold
+                    )
+                else:
+                    kept = self.fact_filter.llm_filter(
+                        query,
+                        [h.get("content") for h in fact_hits],
+                        list(range(len(fact_hits))),
+                        scores=sim_scores,
+                        threshold=param.fact_similarity_threshold,
                     )
 
-        # Blend dense passage seeds
-        q_pass = await self.embedding_func(
-            [query],
-            context="query",
-            instruction=get_query_instruction("query_to_passage"),
-        )
-        q_pass_vec = np.asarray(q_pass[0], dtype=np.float64).tolist()
-        passage_hits = await self.chunks_vdb.query(q_pass_vec, top_k=param.top_k)
-        for hit in passage_hits:
-            pid = hit.get("id") or hit.get("__id__")
-            if not pid:
-                # Try match by content
-                content = hit.get("content", "")
-                for cand_id, cand_text in self._passage_id_to_content.items():
-                    if cand_text == content:
-                        pid = cand_id
-                        break
-            if not pid:
-                continue
-            score = float(hit.get("score", hit.get("distance", 0.0)))
-            if score > 1.0 or score < 0:
-                score = 1.0 / (1.0 + abs(score))
-            seed_weights[str(pid)] = (
-                seed_weights.get(str(pid), 0.0) + score * param.passage_node_weight
+                kept_hits = [fact_hits[i] for i in kept if i < len(fact_hits)]
+                update_observation(
+                    fact_span,
+                    output={
+                        "fact_hits": len(fact_hits),
+                        "kept_facts": len(kept_hits),
+                        "threshold": param.fact_similarity_threshold,
+                    },
+                )
+
+            if not kept_hits:
+                sol = await self._dense_passage_retrieve(query, param)
+                update_observation(
+                    root_span,
+                    output={
+                        "path": "dense_fallback_no_facts",
+                        "n_docs": len(sol.docs),
+                        "docs": truncate_docs(sol.docs),
+                    },
+                )
+                return sol
+
+            # Seed PPR from entities in filtered facts
+            seed_weights: dict[str, float] = {}
+            for hit, score in zip(
+                kept_hits, [sim_scores[i] for i in kept if i < len(sim_scores)]
+            ):
+                triple = hit.get("triple")
+                if not triple:
+                    content = hit.get("content", "")
+                    try:
+                        triple = eval(content) if isinstance(content, str) else content
+                    except Exception:
+                        triple = None
+                if not (isinstance(triple, (list, tuple)) and len(triple) == 3):
+                    continue
+                for ent in (triple[0], triple[2]):
+                    eid = compute_mdhash_id(str(ent).strip().lower(), prefix="entity-")
+                    seed_weights[eid] = seed_weights.get(eid, 0.0) + float(score)
+                    for pid in self._entity_to_passages.get(eid, set()):
+                        seed_weights[pid] = (
+                            seed_weights.get(pid, 0.0)
+                            + float(score) * param.passage_node_weight
+                        )
+
+            # Blend dense passage seeds
+            with observation(
+                "memgraphrag.passage_seed",
+                as_type="span",
+                input={"top_k": param.top_k},
+            ) as seed_span:
+                q_pass = await self.embedding_func(
+                    [query],
+                    context="query",
+                    instruction=get_query_instruction("query_to_passage"),
+                )
+                q_pass_vec = np.asarray(q_pass[0], dtype=np.float64).tolist()
+                passage_hits = await self.chunks_vdb.query(
+                    q_pass_vec, top_k=param.top_k
+                )
+                for hit in passage_hits:
+                    pid = hit.get("id") or hit.get("__id__")
+                    if not pid:
+                        content = hit.get("content", "")
+                        for cand_id, cand_text in self._passage_id_to_content.items():
+                            if cand_text == content:
+                                pid = cand_id
+                                break
+                    if not pid:
+                        continue
+                    score = float(hit.get("score", hit.get("distance", 0.0)))
+                    if score > 1.0 or score < 0:
+                        score = 1.0 / (1.0 + abs(score))
+                    seed_weights[str(pid)] = (
+                        seed_weights.get(str(pid), 0.0)
+                        + score * param.passage_node_weight
+                    )
+                update_observation(
+                    seed_span,
+                    output={
+                        "passage_hits": len(passage_hits),
+                        "seed_nodes": len(seed_weights),
+                    },
+                )
+
+            passage_scores = await self._run_ppr(seed_weights, damping=param.damping)
+            if not passage_scores:
+                sol = await self._dense_passage_retrieve(query, param)
+                update_observation(
+                    root_span,
+                    output={
+                        "path": "dense_fallback_empty_ppr",
+                        "n_docs": len(sol.docs),
+                        "docs": truncate_docs(sol.docs),
+                    },
+                )
+                return sol
+
+            ranked = sorted(passage_scores.items(), key=lambda x: x[1], reverse=True)
+            top = ranked[: param.top_k]
+            docs = [
+                self._passage_id_to_content.get(pid, "")
+                for pid, _ in top
+                if self._passage_id_to_content.get(pid)
+            ]
+            doc_scores = [float(s) for _, s in top[: len(docs)]]
+            sol = QuerySolution(question=query, docs=docs, doc_scores=doc_scores)
+            update_observation(
+                root_span,
+                output={
+                    "path": "ppr",
+                    "n_docs": len(docs),
+                    "top_scores": doc_scores[:5],
+                    "docs": truncate_docs(docs),
+                },
             )
-
-        passage_scores = await self._run_ppr(seed_weights, damping=param.damping)
-        if not passage_scores:
-            return await self._dense_passage_retrieve(query, param)
-
-        ranked = sorted(passage_scores.items(), key=lambda x: x[1], reverse=True)
-        top = ranked[: param.top_k]
-        docs = [
-            self._passage_id_to_content.get(pid, "")
-            for pid, _ in top
-            if self._passage_id_to_content.get(pid)
-        ]
-        doc_scores = [float(s) for _, s in top[: len(docs)]]
-        return QuerySolution(question=query, docs=docs, doc_scores=doc_scores)
+            return sol
 
     async def _dense_passage_retrieve(
         self, query: str, param: QueryParam
     ) -> QuerySolution:
-        q_pass = await self.embedding_func(
-            [query],
-            context="query",
-            instruction=get_query_instruction("query_to_passage"),
-        )
-        q_pass_vec = np.asarray(q_pass[0], dtype=np.float64).tolist()
-        hits = await self.chunks_vdb.query(q_pass_vec, top_k=param.top_k)
-        docs: list[str] = []
-        scores: list[float] = []
-        for hit in hits:
-            content = hit.get("content", "")
-            if content:
-                docs.append(content)
-                scores.append(float(hit.get("score", hit.get("distance", 0.0))))
-        return QuerySolution(question=query, docs=docs, doc_scores=scores)
+        with observation(
+            "memgraphrag.dense_retrieve",
+            as_type="retriever",
+            input={"query": query, "top_k": param.top_k},
+        ) as span:
+            q_pass = await self.embedding_func(
+                [query],
+                context="query",
+                instruction=get_query_instruction("query_to_passage"),
+            )
+            q_pass_vec = np.asarray(q_pass[0], dtype=np.float64).tolist()
+            hits = await self.chunks_vdb.query(q_pass_vec, top_k=param.top_k)
+            docs: list[str] = []
+            scores: list[float] = []
+            for hit in hits:
+                content = hit.get("content", "")
+                if content:
+                    docs.append(content)
+                    scores.append(float(hit.get("score", hit.get("distance", 0.0))))
+            sol = QuerySolution(question=query, docs=docs, doc_scores=scores)
+            update_observation(
+                span,
+                output={"n_docs": len(docs), "docs": truncate_docs(docs)},
+            )
+            return sol
 
     async def _run_ppr(
         self, seed_weights: dict[str, float], damping: float
     ) -> dict[str, float]:
-        if self._ppr is None:
-            # Simple fallback: aggregate entity→passage seeds
-            logger.warning("No PPR engine; using seed score fallback")
-            out: dict[str, float] = {}
-            for nid, w in seed_weights.items():
-                if nid.startswith(("chunk-", "passage-", "doc-")):
-                    out[nid] = out.get(nid, 0.0) + float(w)
-                else:
-                    for pid in self._entity_to_passages.get(nid, set()):
-                        out[pid] = out.get(pid, 0.0) + float(w)
-            return out
+        engine_name = type(self._ppr).__name__ if self._ppr is not None else "fallback"
+        with observation(
+            "memgraphrag.ppr",
+            as_type="span",
+            input={
+                "seed_nodes": len(seed_weights),
+                "damping": damping,
+                "engine": engine_name,
+            },
+        ) as span:
+            if self._ppr is None:
+                logger.warning("No PPR engine; using seed score fallback")
+                out: dict[str, float] = {}
+                for nid, w in seed_weights.items():
+                    if nid.startswith(("chunk-", "passage-", "doc-")):
+                        out[nid] = out.get(nid, 0.0) + float(w)
+                    else:
+                        for pid in self._entity_to_passages.get(nid, set()):
+                            out[pid] = out.get(pid, 0.0) + float(w)
+                update_observation(span, output={"scored_passages": len(out)})
+                return out
 
-        if asyncio.iscoroutinefunction(getattr(self._ppr, "run", None)):
-            return await self._ppr.run(seed_weights, damping=damping)  # type: ignore
-        return self._ppr.run(seed_weights, damping=damping)
+            if asyncio.iscoroutinefunction(getattr(self._ppr, "run", None)):
+                result = await self._ppr.run(seed_weights, damping=damping)  # type: ignore
+            else:
+                result = self._ppr.run(seed_weights, damping=damping)
+            update_observation(
+                span, output={"scored_passages": len(result) if result else 0}
+            )
+            return result
 
     async def aquery(
         self,
@@ -761,34 +863,94 @@ class MemGraphRAG:
         param = param or QueryParam()
         mode = param.mode
 
-        if mode == "bypass":
-            if not self.llm_model_func:
-                raise PipelineError("bypass mode requires llm_model_func")
-            answer = await self.llm_model_func(query, system_prompt=param.user_prompt)
-            return QuerySolution(question=query, docs=[], answer=str(answer))
+        with observation(
+            "memgraphrag.query",
+            as_type="span",
+            input={"query": query, "mode": mode},
+            metadata={"workspace": self.workspace or ""},
+        ) as root_span:
+            try:
+                if mode == "bypass":
+                    if not self.llm_model_func:
+                        raise PipelineError("bypass mode requires llm_model_func")
+                    with observation(
+                        "memgraphrag.llm_bypass",
+                        as_type="generation",
+                        input={"query": query},
+                        model=os.getenv("LLM_MODEL"),
+                    ) as gen_span:
+                        answer = await self.llm_model_func(
+                            query, system_prompt=param.user_prompt
+                        )
+                        sol = QuerySolution(
+                            question=query, docs=[], answer=str(answer)
+                        )
+                        update_observation(
+                            gen_span, output={"answer": str(answer)[:2000]}
+                        )
+                    update_observation(
+                        root_span, output={"mode": mode, "n_docs": 0}
+                    )
+                    return sol
 
-        if mode == "naive":
-            sol = await self._dense_passage_retrieve(query, param)
-        else:
-            # ppr or context — both retrieve via PPR path
-            sols = await self.aretrieve(query, param=param)
-            sol = sols[0]
+                if mode == "naive":
+                    sol = await self._dense_passage_retrieve(query, param)
+                else:
+                    # ppr or context — both retrieve via PPR path
+                    sols = await self.aretrieve(query, param=param)
+                    sol = sols[0]
 
-        if mode == "context" or param.only_need_context:
-            return sol
+                if mode == "context" or param.only_need_context:
+                    update_observation(
+                        root_span,
+                        output={
+                            "mode": mode,
+                            "n_docs": len(sol.docs),
+                            "docs": truncate_docs(sol.docs),
+                        },
+                    )
+                    return sol
 
-        if not self.llm_model_func:
-            return sol
+                if not self.llm_model_func:
+                    update_observation(
+                        root_span,
+                        output={"mode": mode, "n_docs": len(sol.docs), "llm": False},
+                    )
+                    return sol
 
-        system, user = render_rag_qa(query, sol.docs)
-        if param.user_prompt:
-            user = f"{user}\n\n{param.user_prompt}"
-        history = param.conversation_history or None
-        answer = await self.llm_model_func(
-            user, system_prompt=system, history_messages=history
-        )
-        sol.answer = str(answer)
-        return sol
+                system, user = render_rag_qa(query, sol.docs)
+                if param.user_prompt:
+                    user = f"{user}\n\n{param.user_prompt}"
+                history = param.conversation_history or None
+                with observation(
+                    "memgraphrag.rag_qa",
+                    as_type="generation",
+                    input={
+                        "query": query,
+                        "n_docs": len(sol.docs),
+                        "docs": truncate_docs(sol.docs),
+                    },
+                    model=os.getenv("LLM_MODEL"),
+                    metadata={"system_prompt_chars": len(system or "")},
+                ) as gen_span:
+                    answer = await self.llm_model_func(
+                        user, system_prompt=system, history_messages=history
+                    )
+                    sol.answer = str(answer)
+                    update_observation(
+                        gen_span, output={"answer": str(answer)[:2000]}
+                    )
+                update_observation(
+                    root_span,
+                    output={
+                        "mode": mode,
+                        "n_docs": len(sol.docs),
+                        "answer_chars": len(sol.answer or ""),
+                    },
+                )
+                return sol
+            finally:
+                flush_langfuse()
 
     def query(
         self, query: str, param: QueryParam | None = None

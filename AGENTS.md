@@ -19,6 +19,7 @@ This repository packages that engine as a production FastAPI service inspired by
 | PPR | `PPR_ENGINE=igraph` (default, paper-exact) or `neo4j_gds` |
 | File processing | Parser registry (`legacy`, `docling`) + chunkers F / R / P |
 | Orchestration | Docker Compose: `memgraphrag` + `postgres` + `neo4j` (+ optional `docling` profile) |
+| Observability | Optional Langfuse (`LANGFUSE_*`) on the retrieval / query path |
 | Tests | pytest + pytest-asyncio, `./scripts/test.sh` |
 
 ## Confirmed Architecture Decisions
@@ -41,6 +42,7 @@ This repository packages that engine as a production FastAPI service inspired by
 - **`parser/`**, **`chunker/`**, **`sidecar/`**: File processing (LightRAG-inspired, MemGraphRAG-adapted).
 - **`ppr/`**: `IgraphPPREngine`, `Neo4jGDSPPREngine`.
 - **`llm/`**, **`openie/`**, **`prompts/`**, **`rerank.py`**: Bindings and extraction.
+- **`observability/`**: Optional Langfuse tracing for query/retrieval (`langfuse_trace.py`).
 - **`api/`**: FastAPI app (`server.py`), `config.py`, `auth.py`, `dependencies.py`, `routers/`.
 
 ## Naming Conventions

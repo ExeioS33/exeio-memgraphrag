@@ -11,6 +11,7 @@ import logging
 from typing import Any, AsyncIterator, Literal, Optional
 
 from memgraphrag.base import QueryParam
+from memgraphrag.observability.langfuse_trace import flush_langfuse
 from memgraphrag.utils.misc import QuerySolution
 
 logger = logging.getLogger("memgraphrag.api.query")
@@ -94,8 +95,11 @@ def create_query_router(api_key: Optional[str] = None) -> Any:
         param = _build_param(body, rag)
         if body.only_need_context or body.mode == "context":
             param.only_need_context = True
-        sol = await rag.arag_qa(body.query, param=param)
-        return _solution_payload(sol)
+        try:
+            sol = await rag.arag_qa(body.query, param=param)
+            return _solution_payload(sol)
+        finally:
+            flush_langfuse()
 
     @router.post("/query/data", dependencies=[Depends(combined_auth)])
     async def query_data(request: Request, body: QueryRequest):

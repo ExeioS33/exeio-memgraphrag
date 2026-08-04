@@ -73,6 +73,10 @@ Unlike LightRAG's local/global/hybrid modes:
 
 Ollama chat messages may prefix `/naive`, `/context`, or `/bypass`.
 
+## Langfuse observability
+
+Optional retrieval tracing: set `LANGFUSE_ENABLE_TRACE=true` plus `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` and `LANGFUSE_BASE_URL` (or `LANGFUSE_HOST`). Each `/query` emits nested spans for fact linking, PPR, dense retrieval, and RAG generation. Details: [LangfuseObservability.md](LangfuseObservability.md).
+
 ## Storage selection
 
 ```bash
@@ -88,4 +92,5 @@ Always call `await rag.initialize_storages()` after constructing `MemGraphRAG` i
 
 - [DockerDeployment.md](DockerDeployment.md)
 - [FileProcessingPipeline.md](FileProcessingPipeline.md)
+- [LangfuseObservability.md](LangfuseObservability.md)
 - [ProgramingWithCore.md](ProgramingWithCore.md)
