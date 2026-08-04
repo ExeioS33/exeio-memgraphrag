@@ -34,9 +34,16 @@ from memgraphrag.utils.http_ssl import ssl_verify
 
 logger = logging.getLogger(__name__)
 
+_httpx_client = None
+_llm_openai: AsyncOpenAI | None = None
+_embed_openai: AsyncOpenAI | None = None
+
 
 def _http_client():
     """Shared httpx client so corporate CAs (SSL_CERT_FILE) are honored."""
+    global _httpx_client
+    if _httpx_client is not None:
+        return _httpx_client
     import httpx
 
     verify = ssl_verify()
@@ -49,16 +56,28 @@ def _http_client():
         run_id="post-fix",
     )
     # #endregion
-    return httpx.AsyncClient(verify=verify, timeout=httpx.Timeout(150.0, connect=30.0))
+    _httpx_client = httpx.AsyncClient(
+        verify=verify, timeout=httpx.Timeout(150.0, connect=30.0)
+    )
+    return _httpx_client
 
 
 def _llm_client() -> AsyncOpenAI:
+    global _llm_openai
+    if _llm_openai is not None:
+        return _llm_openai
     api_key = os.getenv("LLM_BINDING_API_KEY") or os.getenv("OPENAI_API_KEY") or "no-key"
     base_url = os.getenv("LLM_BINDING_HOST") or None
-    return AsyncOpenAI(api_key=api_key, base_url=base_url, http_client=_http_client())
+    _llm_openai = AsyncOpenAI(
+        api_key=api_key, base_url=base_url, http_client=_http_client()
+    )
+    return _llm_openai
 
 
 def _embed_client() -> AsyncOpenAI:
+    global _embed_openai
+    if _embed_openai is not None:
+        return _embed_openai
     api_key = (
         os.getenv("EMBEDDING_BINDING_API_KEY")
         or os.getenv("LLM_BINDING_API_KEY")
@@ -66,7 +85,10 @@ def _embed_client() -> AsyncOpenAI:
         or "no-key"
     )
     base_url = os.getenv("EMBEDDING_BINDING_HOST") or os.getenv("LLM_BINDING_HOST") or None
-    return AsyncOpenAI(api_key=api_key, base_url=base_url, http_client=_http_client())
+    _embed_openai = AsyncOpenAI(
+        api_key=api_key, base_url=base_url, http_client=_http_client()
+    )
+    return _embed_openai
 
 
 def _llm_model(explicit: str | None = None) -> str:

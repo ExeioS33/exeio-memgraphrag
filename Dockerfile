@@ -34,7 +34,7 @@ COPY --from=builder /app/pyproject.toml /app/README.md /app/LICENSE /app/
 COPY docker-entrypoint.sh /app/docker-entrypoint.sh
 
 RUN chmod +x /app/docker-entrypoint.sh \
-    && mkdir -p /app/data/rag_storage /app/data/inputs \
+    && mkdir -p /app/data/rag_storage /app/data/inputs /app/certs \
     && chown -R memgraphrag:memgraphrag /app/data
 
 ENV PATH="/app/.venv/bin:${PATH}"

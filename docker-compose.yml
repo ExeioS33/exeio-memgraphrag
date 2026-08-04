@@ -40,9 +40,8 @@ services:
       PPR_ENGINE: "${PPR_ENGINE:-igraph}"
       DOCLING_ENDPOINT: "${DOCLING_ENDPOINT:-}"
       MEMGRAPHRAG_PARSER: "${MEMGRAPHRAG_PARSER:-pdf:docling-P;*:legacy-F}"
-      # Prefer an explicit CA for httpx/openai (certifi ignores system SSL_CERT_FILE).
-      SSL_CERT_FILE: "${SSL_CERT_FILE:-/app/certs/corporate-ca.crt}"
-      REQUESTS_CA_BUNDLE: "${REQUESTS_CA_BUNDLE:-/app/certs/corporate-ca.crt}"
+      # Entrypoint merges /app/certs/corporate-ca.crt into SSL_CERT_FILE.
+      MEMGRAPHRAG_CORP_CA_FILE: "/app/certs/corporate-ca.crt"
       SSL_VERIFY: "${SSL_VERIFY:-true}"
 
   postgres:

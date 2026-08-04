@@ -22,6 +22,7 @@ from memgraphrag.parser.external._zip import safe_extract_zip
 from memgraphrag.parser.registry import PARSER_ENGINE_DOCLING
 from memgraphrag.sidecar.writer import FULL_DOCS_FORMAT_LIGHTRAG, write_sidecar
 from memgraphrag.utils.debug_log import agent_dbg
+from memgraphrag.utils.http_ssl import ssl_verify
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +72,7 @@ class DoclingParser(BaseParser):
             max_polls = DEFAULT_MAX_POLLS
 
         timeout = httpx.Timeout(120.0, connect=30.0)
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with httpx.AsyncClient(timeout=timeout, verify=ssl_verify()) as client:
             task_id = await self._submit(client, endpoint, source)
             await self._poll_until_done(client, endpoint, task_id, poll_wait, max_polls)
             content, blocks = await self._fetch_result(
