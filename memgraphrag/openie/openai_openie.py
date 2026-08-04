@@ -7,57 +7,15 @@ for async OpenAI-compatible LLM callables used by the industrialized package.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-import re
 from typing import Any, Awaitable, Callable, Sequence
 
 from memgraphrag.prompts.templates import render_ner, render_triple_extraction
+from memgraphrag.utils.json_llm import extract_json_object as _extract_json_object
 
 logger = logging.getLogger(__name__)
 
 LLMFunc = Callable[..., Awaitable[str]]
-
-try:
-    import json_repair  # type: ignore
-
-    def _loads(text: str) -> Any:
-        return json_repair.loads(text)
-
-except ImportError:  # pragma: no cover - optional dependency
-
-    def _loads(text: str) -> Any:
-        return json.loads(text)
-
-
-def _extract_json_object(text: str) -> dict[str, Any]:
-    """Parse a JSON object from an LLM response, repairing when possible."""
-    text = (text or "").strip()
-    if not text:
-        return {}
-
-    # Prefer fenced JSON if present
-    fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
-    if fence:
-        text = fence.group(1)
-
-    try:
-        data = _loads(text)
-        if isinstance(data, dict):
-            return data
-    except Exception:
-        pass
-
-    # Fallback: first {...} block
-    match = re.search(r"\{.*\}", text, re.DOTALL)
-    if match:
-        try:
-            data = _loads(match.group(0))
-            if isinstance(data, dict):
-                return data
-        except Exception as exc:
-            logger.warning("Failed to parse OpenIE JSON: %s", exc)
-    return {}
 
 
 def _normalize_entities(raw: Any) -> list[str]:
