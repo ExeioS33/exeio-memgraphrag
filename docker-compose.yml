@@ -1,8 +1,15 @@
 services:
   memgraphrag:
+    image: exeio-memgraphrag:${MEMGRAPHRAG_VERSION:-0.1.0}
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        MEMGRAPHRAG_VERSION: ${MEMGRAPHRAG_VERSION:-0.1.0}
+        PYTHON_VERSION: ${PYTHON_VERSION:-3.12}
+      tags:
+        - exeio-memgraphrag:${MEMGRAPHRAG_VERSION:-0.1.0}
+        - exeio-memgraphrag:latest
     ports:
       - "${HOST:-0.0.0.0}:${PORT:-9621}:9621"
     volumes:

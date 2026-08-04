@@ -10,7 +10,8 @@ This repository packages that engine as a production FastAPI service inspired by
 
 | Area | Choice |
 |------|--------|
-| Language / packaging | Python >= 3.10, **uv**, `pyproject.toml` extras `[api]` / `[pytest]` / `[test]` |
+| Language / packaging | Python >= 3.10, **uv**, exact-pinned direct deps in `pyproject.toml` + `uv.lock`, extras `[api]` / `[pytest]` / `[test]` |
+| Container image | Compose build tags **`exeio-memgraphrag:<MEMGRAPHRAG_VERSION>`** and `:latest` |
 | API | FastAPI + Uvicorn / Gunicorn |
 | Auth | JWT (`AUTH_ACCOUNTS`) and/or API key (`MEMGRAPHRAG_API_KEY`) |
 | LLM / embeddings | OpenAI-compatible bindings only (`LLM_*`, `EMBEDDING_*`) |

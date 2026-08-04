@@ -1,10 +1,14 @@
 # syntax=docker/dockerfile:1
+# Built/tagged by Compose as exeio-memgraphrag:<MEMGRAPHRAG_VERSION>
 
-FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS builder
+ARG PYTHON_VERSION=3.12
+
+FROM ghcr.io/astral-sh/uv:python${PYTHON_VERSION}-bookworm-slim AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV UV_COMPILE_BYTECODE=1
 ENV UV_LINK_MODE=copy
+ENV UV_PYTHON_DOWNLOADS=never
 
 WORKDIR /app
 
@@ -19,7 +23,17 @@ COPY README.md LICENSE ./
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --extra api --no-editable
 
-FROM python:3.12-slim-bookworm
+ARG PYTHON_VERSION=3.12
+FROM python:${PYTHON_VERSION}-slim-bookworm
+
+ARG MEMGRAPHRAG_VERSION=0.1.0
+
+LABEL org.opencontainers.image.title="exeio-memgraphrag" \
+      org.opencontainers.image.description="EXEIO MemGraphRAG API server" \
+      org.opencontainers.image.vendor="EXEIO" \
+      org.opencontainers.image.source="https://github.com/ExeioS33/exeio-memgraphrag" \
+      org.opencontainers.image.version="${MEMGRAPHRAG_VERSION}" \
+      org.opencontainers.image.licenses="MIT"
 
 WORKDIR /app
 
@@ -43,8 +57,10 @@ ENV PORT=9621
 ENV WORKING_DIR=/app/data/rag_storage
 ENV INPUT_DIR=/app/data/inputs
 ENV PYTHONUNBUFFERED=1
+ENV MEMGRAPHRAG_VERSION=${MEMGRAPHRAG_VERSION}
 
 EXPOSE 9621
 
+# Entrypoint starts as root to fix bind-mount ownership, then drops to UID 1000.
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
 CMD ["python", "-m", "memgraphrag.api.server"]

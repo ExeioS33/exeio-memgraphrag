@@ -18,11 +18,12 @@ cp env.example .env
 # Run API server (file-based defaults; no external DB required)
 uv run memgraphrag-server
 
-# Or full stack
-docker compose up -d
+# Or full stack (API image tagged exeio-memgraphrag:<version>)
+docker compose up -d --build
 ```
 
-API docs: `http://localhost:9621/docs`
+API docs: `http://localhost:9621/docs`  
+Compose image: `exeio-memgraphrag:0.1.0` (also `:latest`). Direct deps are exact-pinned in `pyproject.toml`; full tree is locked in `uv.lock`.
 
 ## 🏗 Architecture overview
 

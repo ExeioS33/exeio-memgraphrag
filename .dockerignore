@@ -1,0 +1,43 @@
+# Git / IDE
+.git
+.gitignore
+.cursor
+.idea
+.vscode
+*.swp
+
+# Local env and secrets
+.env
+.env.*
+!.env.example
+
+# Python caches / venvs
+.venv
+venv
+__pycache__
+*.py[cod]
+*.egg-info
+.eggs
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.coverage
+htmlcov
+dist
+build
+
+# Runtime data (bind-mounted at run time)
+data/rag_storage/**
+data/inputs/**
+!data/rag_storage/.gitkeep
+!data/inputs/.gitkeep
+
+# Docs / tests not needed in the runtime image context
+# (keep README/LICENSE — copied explicitly for package metadata)
+tests
+scripts
+docs
+*.md
+!README.md
+agent-transcripts
+*.log

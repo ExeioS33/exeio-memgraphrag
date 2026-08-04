@@ -4,10 +4,26 @@
 
 | Service | Image / build | Role |
 |---------|---------------|------|
-| `memgraphrag` | local `Dockerfile` | API server on port 9621 |
+| `memgraphrag` | **`exeio-memgraphrag:<version>`** (local `Dockerfile`) | API server on port 9621 |
 | `postgres` | `pgvector/pgvector:pg16` | KV, vectors (pgvector), doc-status |
 | `neo4j` | `neo4j:5-community` + GDS plugin | Memory graph |
 | `docling` (profile) | `ghcr.io/docling-project/docling-serve` | Optional remote parser |
+
+### App image tags
+
+Compose builds and tags the API image as:
+
+- `exeio-memgraphrag:${MEMGRAPHRAG_VERSION:-0.1.0}`
+- `exeio-memgraphrag:latest`
+
+```bash
+# optional override
+export MEMGRAPHRAG_VERSION=0.1.0
+docker compose build memgraphrag
+docker images 'exeio-memgraphrag*'
+```
+
+The Dockerfile also sets OCI labels (`org.opencontainers.image.title=exeio-memgraphrag`, version, source, license).
 
 ## Bring up
 
