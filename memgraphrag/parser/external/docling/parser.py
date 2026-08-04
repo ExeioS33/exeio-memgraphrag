@@ -1,0 +1,228 @@
+"""Docling Serve adapter for MemGraphRAG.
+
+Adapted from LightRAG ``lightrag/parser/external/docling/`` — simplified
+submit+poll client that writes a sidecar and returns ``parse_format=lightrag``.
+Only selectable when ``DOCLING_ENDPOINT`` is set (enforced by the registry).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import os
+import time
+from pathlib import Path
+from typing import Any
+from urllib.parse import quote
+
+from memgraphrag.parser.base import BaseParser, ParseContext, ParseResult
+from memgraphrag.parser.registry import PARSER_ENGINE_DOCLING
+from memgraphrag.sidecar.writer import FULL_DOCS_FORMAT_LIGHTRAG, write_sidecar
+
+logger = logging.getLogger(__name__)
+
+CONVERT_PATH = "/v1/convert/file/async"
+POLL_PATH = "/v1/status/poll/{task_id}"
+RESULT_PATH = "/v1/result/{task_id}"
+
+SUCCESS_STATES = {"success"}
+FAILURE_STATES = {"failure", "partial_success", "skipped"}
+IN_PROGRESS_STATES = {"pending", "started"}
+
+DEFAULT_POLL_WAIT_SECONDS = 5
+DEFAULT_MAX_POLLS = 240
+
+
+def _endpoint() -> str:
+    return os.getenv("DOCLING_ENDPOINT", "").strip().rstrip("/")
+
+
+class DoclingParser(BaseParser):
+    """POST file to Docling Serve, poll status, write sidecar."""
+
+    engine_name = PARSER_ENGINE_DOCLING
+
+    async def parse(self, ctx: ParseContext) -> ParseResult:
+        endpoint = _endpoint()
+        if not endpoint:
+            raise RuntimeError("DOCLING_ENDPOINT is required for DoclingParser")
+
+        try:
+            import httpx
+        except ImportError as exc:
+            raise RuntimeError(
+                "httpx is required for Docling parsing but is not installed"
+            ) from exc
+
+        source = ctx.source_path()
+        if not source.is_file():
+            raise FileNotFoundError(f"docling source file not found: {source}")
+
+        parsed_dir = ctx.resolve_parsed_dir()
+        poll_wait = int(os.getenv("DOCLING_POLL_INTERVAL_SECONDS", DEFAULT_POLL_WAIT_SECONDS))
+        max_polls = int(os.getenv("DOCLING_MAX_POLLS", DEFAULT_MAX_POLLS))
+        if poll_wait <= 0:
+            poll_wait = DEFAULT_POLL_WAIT_SECONDS
+        if max_polls <= 0:
+            max_polls = DEFAULT_MAX_POLLS
+
+        timeout = httpx.Timeout(120.0, connect=30.0)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            task_id = await self._submit(client, endpoint, source)
+            await self._poll_until_done(client, endpoint, task_id, poll_wait, max_polls)
+            content, blocks = await self._fetch_result(
+                client, endpoint, task_id, source.name
+            )
+
+        if not content.strip() and not blocks:
+            raise ValueError(
+                f"Docling produced empty content for {ctx.file_path} (doc_id={ctx.doc_id})"
+            )
+
+        if not blocks:
+            blocks = [{"content": content, "heading": "", "level": 0}]
+
+        sidecar = write_sidecar(
+            parsed_dir,
+            blocks,
+            doc_id=ctx.doc_id,
+            document_name=source.name,
+            engine=self.engine_name,
+        )
+
+        return ParseResult(
+            doc_id=ctx.doc_id,
+            file_path=ctx.file_path,
+            parse_format=FULL_DOCS_FORMAT_LIGHTRAG,
+            content=sidecar["content"] or content,
+            blocks_path=sidecar["blocks_path"],
+            parse_engine=self.engine_name,
+        )
+
+    async def _submit(
+        self, client: Any, endpoint: str, source: Path
+    ) -> str:
+        url = f"{endpoint}{CONVERT_PATH}"
+        data = {
+            "pipeline": "standard",
+            "target_type": "zip",
+            "to_formats": ["json", "md"],
+            "image_export_mode": "referenced",
+        }
+        with source.open("rb") as fh:
+            files = {"files": (source.name, fh, "application/octet-stream")}
+            resp = await client.post(url, data=data, files=files)
+        resp.raise_for_status()
+        payload = resp.json() if resp.text else {}
+        task_id = str(payload.get("task_id") or payload.get("id") or "").strip()
+        if not task_id:
+            raise RuntimeError(f"Docling upload response missing task_id: {payload!r}")
+        return task_id
+
+    async def _poll_until_done(
+        self,
+        client: Any,
+        endpoint: str,
+        task_id: str,
+        poll_wait: int,
+        max_polls: int,
+    ) -> None:
+        encoded = quote(task_id, safe="")
+        url = f"{endpoint}{POLL_PATH.format(task_id=encoded)}"
+        for _ in range(max_polls):
+            started = time.monotonic()
+            resp = await client.get(url, params={"wait": poll_wait})
+            resp.raise_for_status()
+            payload = resp.json() if resp.text else {}
+            status = str(
+                payload.get("task_status") or payload.get("status") or ""
+            ).lower()
+            if status in SUCCESS_STATES:
+                return
+            if status in FAILURE_STATES:
+                err = (
+                    payload.get("error_message")
+                    or payload.get("error")
+                    or payload.get("message")
+                    or "<no error>"
+                )
+                raise RuntimeError(f"Docling task {task_id} ended in {status}: {err}")
+            remaining = poll_wait - (time.monotonic() - started)
+            if remaining > 0:
+                await asyncio.sleep(remaining)
+        raise TimeoutError(f"Docling task {task_id} polling timeout")
+
+    async def _fetch_result(
+        self, client: Any, endpoint: str, task_id: str, filename: str
+    ) -> tuple[str, list[dict[str, Any]]]:
+        encoded = quote(task_id, safe="")
+        url = f"{endpoint}{RESULT_PATH.format(task_id=encoded)}"
+        resp = await client.get(url)
+        resp.raise_for_status()
+        ctype = (resp.headers.get("content-type") or "").lower()
+
+        # Prefer JSON envelope when available; otherwise treat body as markdown.
+        if "json" in ctype or resp.content.lstrip().startswith((b"{", b"[")):
+            try:
+                payload = resp.json()
+            except Exception:
+                payload = json.loads(resp.content)
+            return self._extract_from_json(payload, filename)
+
+        text = resp.text or ""
+        return text, [{"content": text, "heading": "", "level": 0}] if text.strip() else []
+
+    def _extract_from_json(
+        self, payload: Any, filename: str
+    ) -> tuple[str, list[dict[str, Any]]]:
+        markdown = ""
+        document: dict[str, Any] | None = None
+
+        if isinstance(payload, dict):
+            nested = payload.get("document")
+            if isinstance(nested, dict):
+                md = nested.get("md_content")
+                if isinstance(md, str):
+                    markdown = md
+                json_content = nested.get("json_content")
+                if isinstance(json_content, dict):
+                    document = json_content
+                elif any(k in nested for k in ("texts", "body", "tables")):
+                    document = nested
+            if not markdown and isinstance(payload.get("md_content"), str):
+                markdown = payload["md_content"]
+            if document is None and any(
+                k in payload for k in ("texts", "body", "tables", "schema_name")
+            ):
+                document = payload
+
+        blocks: list[dict[str, Any]] = []
+        if document:
+            texts = document.get("texts")
+            if isinstance(texts, list):
+                for item in texts:
+                    if not isinstance(item, dict):
+                        continue
+                    text = str(item.get("text") or item.get("orig") or "").strip()
+                    if not text:
+                        continue
+                    label = str(item.get("label") or "")
+                    level = 0
+                    heading = ""
+                    if "title" in label.lower() or "heading" in label.lower():
+                        heading = text
+                        level = 1
+                    blocks.append(
+                        {"content": text, "heading": heading, "level": level}
+                    )
+
+        if not markdown and blocks:
+            markdown = "\n\n".join(b["content"] for b in blocks)
+        if not blocks and markdown.strip():
+            blocks = [{"content": markdown, "heading": "", "level": 0}]
+
+        logger.debug(
+            "[docling] extracted %d blocks from %s", len(blocks), filename
+        )
+        return markdown, blocks

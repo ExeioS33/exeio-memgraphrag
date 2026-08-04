@@ -1,0 +1,174 @@
+"""Legacy text extractors for common office / plain-text formats.
+
+Adapted from LightRAG ``lightrag/parser/legacy/extractors.py``.
+Uses pypdf, python-docx, python-pptx, openpyxl, and UTF-8 decode.
+"""
+
+from __future__ import annotations
+
+from io import BytesIO
+
+
+class LegacyExtractionError(ValueError):
+    """Raised when legacy extraction cannot produce usable text."""
+
+
+def _extract_pdf_pypdf(file_bytes: bytes, password: str | None = None) -> str:
+    from pypdf import PdfReader  # type: ignore
+
+    reader = PdfReader(BytesIO(file_bytes))
+    if reader.is_encrypted:
+        decrypt_result = reader.decrypt(password or "")
+        if decrypt_result == 0:
+            if password:
+                raise Exception("Incorrect PDF password")
+            raise Exception("PDF is encrypted but no password provided")
+    content = ""
+    for page in reader.pages:
+        content += page.extract_text() + "\n"
+    return content
+
+
+def _extract_docx(file_bytes: bytes) -> str:
+    from docx import Document  # type: ignore
+    from docx.table import Table  # type: ignore
+    from docx.text.paragraph import Paragraph  # type: ignore
+
+    doc = Document(BytesIO(file_bytes))
+
+    def escape_cell(cell_value: str | None) -> str:
+        if cell_value is None:
+            return ""
+        text = str(cell_value)
+        return (
+            text.replace("\\", "\\\\")
+            .replace("\t", "&emsp;&emsp;")
+            .replace("\r\n", "<br>")
+            .replace("\r", "<br>")
+            .replace("\n", "<br>")
+        )
+
+    content_parts: list[str] = []
+    in_table = False
+    for element in doc.element.body:
+        if element.tag.endswith("p"):
+            if in_table:
+                content_parts.append("")
+                in_table = False
+            paragraph = Paragraph(element, doc)
+            content_parts.append(paragraph.text)
+        elif element.tag.endswith("tbl"):
+            if content_parts and not in_table:
+                content_parts.append("")
+            in_table = True
+            table = Table(element, doc)
+            for row in table.rows:
+                row_text = [escape_cell(cell.text) for cell in row.cells]
+                if any(cell for cell in row_text):
+                    content_parts.append("\t".join(row_text))
+    return "\n".join(content_parts)
+
+
+def _extract_pptx(file_bytes: bytes) -> str:
+    from pptx import Presentation  # type: ignore
+
+    prs = Presentation(BytesIO(file_bytes))
+    content = ""
+    for slide in prs.slides:
+        for shape in slide.shapes:
+            if hasattr(shape, "text"):
+                content += shape.text + "\n"
+    return content
+
+
+def _extract_xlsx(file_bytes: bytes) -> str:
+    from openpyxl import load_workbook  # type: ignore
+
+    wb_values = load_workbook(BytesIO(file_bytes), data_only=True)
+    wb_formulas = load_workbook(BytesIO(file_bytes), data_only=False)
+
+    def escape_cell(cell_value: str | int | float | None) -> str:
+        if cell_value is None:
+            return ""
+        text = str(cell_value)
+        return (
+            text.replace("\\", "\\\\")
+            .replace("\t", "\\t")
+            .replace("\r\n", "\\n")
+            .replace("\r", "\\n")
+            .replace("\n", "\\n")
+        )
+
+    def escape_sheet_title(title: str) -> str:
+        return str(title).replace("\n", " ").replace("\t", " ").replace("\r", " ")
+
+    content_parts: list[str] = []
+    sheet_separator = "=" * 20
+    for idx, sheet in enumerate(wb_values):
+        if idx > 0:
+            content_parts.append("")
+        safe_title = escape_sheet_title(sheet.title)
+        content_parts.append(f"{sheet_separator} Sheet: {safe_title} {sheet_separator}")
+        formula_sheet = wb_formulas[sheet.title]
+        max_rows = max(sheet.max_row or 0, formula_sheet.max_row or 0)
+        max_columns = max(sheet.max_column or 0, formula_sheet.max_column or 0)
+        value_rows = sheet.iter_rows(
+            min_row=1, max_row=max_rows, max_col=max_columns, values_only=True
+        )
+        formula_rows = formula_sheet.iter_rows(
+            min_row=1, max_row=max_rows, max_col=max_columns, values_only=True
+        )
+        for value_row, formula_row in zip(value_rows, formula_rows):
+            row_parts = []
+            row_has_content = False
+            for cell_value, formula_value in zip(value_row, formula_row):
+                if cell_value is None:
+                    cell_value = formula_value
+                cell_text = escape_cell(cell_value)
+                row_parts.append(cell_text)
+                if cell_text:
+                    row_has_content = True
+            if not row_has_content:
+                content_parts.append("")
+            else:
+                content_parts.append("\t".join(row_parts))
+    content_parts.append(sheet_separator)
+    return "\n".join(content_parts)
+
+
+_BINARY_EXTRACTORS = {
+    "pdf": _extract_pdf_pypdf,
+    "docx": _extract_docx,
+    "pptx": _extract_pptx,
+    "xlsx": _extract_xlsx,
+}
+
+
+def _decode_text(file_bytes: bytes) -> str:
+    try:
+        content = file_bytes.decode("utf-8")
+    except UnicodeDecodeError as e:
+        raise LegacyExtractionError(
+            "File is not valid UTF-8 encoded text. Please convert it to "
+            f"UTF-8 before processing: {e}"
+        ) from e
+    if not content or len(content.strip()) == 0:
+        raise LegacyExtractionError("File contains no content or only whitespace")
+    if content.startswith("b'") or content.startswith('b"'):
+        raise LegacyExtractionError(
+            "File appears to contain binary data representation instead of text"
+        )
+    return content
+
+
+def extract_text(
+    file_bytes: bytes, suffix: str, *, pdf_password: str | None = None
+) -> str:
+    """Extract plain text from ``file_bytes`` based on ``suffix`` (no dot)."""
+    suffix = suffix.lower().lstrip(".")
+    extractor = _BINARY_EXTRACTORS.get(suffix)
+    if extractor is _extract_pdf_pypdf:
+        return _extract_pdf_pypdf(file_bytes, pdf_password)
+    if extractor is not None:
+        return extractor(file_bytes)
+    return _decode_text(file_bytes)
