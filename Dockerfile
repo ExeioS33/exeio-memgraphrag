@@ -24,7 +24,7 @@ FROM python:3.12-slim-bookworm
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends gosu curl \
+    && apt-get install -y --no-install-recommends ca-certificates gosu curl \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 1000 --shell /bin/bash memgraphrag
 

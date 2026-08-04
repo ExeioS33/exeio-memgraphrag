@@ -9,6 +9,9 @@ services:
       - ./data/rag_storage:/app/data/rag_storage
       - ./data/inputs:/app/data/inputs
       - ./.env:/app/.env:ro
+      # Optional corporate TLS inspection CA (Fortinet, Zscaler, …). Create the
+      # file on the host or leave the mount unused when SSL_CERT_FILE is unset.
+      - ${MEMGRAPHRAG_HOST_CA_FILE:-/usr/local/share/ca-certificates/Fortinet_CA_SSL.crt}:/app/certs/corporate-ca.crt:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -37,6 +40,10 @@ services:
       PPR_ENGINE: "${PPR_ENGINE:-igraph}"
       DOCLING_ENDPOINT: "${DOCLING_ENDPOINT:-}"
       MEMGRAPHRAG_PARSER: "${MEMGRAPHRAG_PARSER:-pdf:docling-P;*:legacy-F}"
+      # Prefer an explicit CA for httpx/openai (certifi ignores system SSL_CERT_FILE).
+      SSL_CERT_FILE: "${SSL_CERT_FILE:-/app/certs/corporate-ca.crt}"
+      REQUESTS_CA_BUNDLE: "${REQUESTS_CA_BUNDLE:-/app/certs/corporate-ca.crt}"
+      SSL_VERIFY: "${SSL_VERIFY:-true}"
 
   postgres:
     image: pgvector/pgvector:pg16

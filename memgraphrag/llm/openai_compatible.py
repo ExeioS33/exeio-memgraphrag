@@ -28,15 +28,34 @@ from tenacity import (
 )
 
 from memgraphrag.constants import EMBEDDING_DIM
+from memgraphrag.utils.debug_log import agent_dbg
 from memgraphrag.utils.env import get_env_value
+from memgraphrag.utils.http_ssl import ssl_verify
 
 logger = logging.getLogger(__name__)
+
+
+def _http_client():
+    """Shared httpx client so corporate CAs (SSL_CERT_FILE) are honored."""
+    import httpx
+
+    verify = ssl_verify()
+    # #region agent log
+    agent_dbg(
+        "E",
+        "openai_compatible.py:_http_client",
+        "ssl verify for OpenAI client",
+        {"verify": verify if isinstance(verify, bool) else str(verify)},
+        run_id="post-fix",
+    )
+    # #endregion
+    return httpx.AsyncClient(verify=verify, timeout=httpx.Timeout(150.0, connect=30.0))
 
 
 def _llm_client() -> AsyncOpenAI:
     api_key = os.getenv("LLM_BINDING_API_KEY") or os.getenv("OPENAI_API_KEY") or "no-key"
     base_url = os.getenv("LLM_BINDING_HOST") or None
-    return AsyncOpenAI(api_key=api_key, base_url=base_url)
+    return AsyncOpenAI(api_key=api_key, base_url=base_url, http_client=_http_client())
 
 
 def _embed_client() -> AsyncOpenAI:
@@ -47,7 +66,7 @@ def _embed_client() -> AsyncOpenAI:
         or "no-key"
     )
     base_url = os.getenv("EMBEDDING_BINDING_HOST") or os.getenv("LLM_BINDING_HOST") or None
-    return AsyncOpenAI(api_key=api_key, base_url=base_url)
+    return AsyncOpenAI(api_key=api_key, base_url=base_url, http_client=_http_client())
 
 
 def _llm_model(explicit: str | None = None) -> str:
