@@ -9,7 +9,7 @@ description = "Industrialized MemGraphRAG: memory-based GraphRAG API server"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.10"
-authors = [{name = "EXEIO", email = "ExeioS33@users.noreply.github.com"}]
+authors = [{name = "EXEIO", email = "sandria@exeiocorp.com"}]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Programming Language :: Python :: 3",
