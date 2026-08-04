@@ -20,9 +20,15 @@ uv run memgraphrag-server
 
 # Or full stack (API image tagged exeio-memgraphrag:<version>)
 docker compose up -d --build
+
+# Optional: CLI + Streamlit clients (talk to the running API)
+uv sync --extra client
+uv run memgraphrag-cli health
+uv run streamlit run memgraphrag/client/app.py
 ```
 
 API docs: `http://localhost:9621/docs`  
+Clients guide: [`docs/Clients.md`](docs/Clients.md).  
 Compose image: `exeio-memgraphrag:0.1.0` (also `:latest`). Direct deps are exact-pinned in `pyproject.toml`; full tree is locked in `uv.lock`.
 
 ## 🏗 Architecture overview
@@ -130,6 +136,7 @@ memgraphrag/                 # repository root
 │   ├── ppr/                 # igraph & Neo4j GDS Personalized PageRank
 │   ├── llm/                 # OpenAI-compatible LLM / embedding bindings
 │   ├── observability/       # Langfuse retrieval tracing (optional)
+│   ├── client/              # HTTP client, CLI (memgraphrag-cli), Streamlit UI
 │   ├── openie/              # OpenIE fact extraction
 │   ├── prompts/             # Prompt templates
 │   ├── sidecar/             # Sidecar writer utilities
@@ -157,6 +164,7 @@ memgraphrag/                 # repository root
 Guides under [`docs/`](docs/), including:
 
 - [`docs/MemGraphRAG-API-Server.md`](docs/MemGraphRAG-API-Server.md) — API server
+- [`docs/Clients.md`](docs/Clients.md) — CLI + Streamlit clients
 - [`docs/DockerDeployment.md`](docs/DockerDeployment.md) — Compose stack
 - [`docs/FileProcessingPipeline.md`](docs/FileProcessingPipeline.md) — parsers & chunkers
 - [`docs/LangfuseObservability.md`](docs/LangfuseObservability.md) — Langfuse retrieval traces

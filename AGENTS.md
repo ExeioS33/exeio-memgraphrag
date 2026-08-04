@@ -10,9 +10,10 @@ This repository packages that engine as a production FastAPI service inspired by
 
 | Area | Choice |
 |------|--------|
-| Language / packaging | Python >= 3.10, **uv**, exact-pinned direct deps in `pyproject.toml` + `uv.lock`, extras `[api]` / `[pytest]` / `[test]` |
+| Language / packaging | Python >= 3.10, **uv**, exact-pinned direct deps in `pyproject.toml` + `uv.lock`, extras `[api]` / `[pytest]` / `[client]` / `[test]` |
 | Container image | Compose build tags **`exeio-memgraphrag:<MEMGRAPHRAG_VERSION>`** and `:latest` |
 | API | FastAPI + Uvicorn / Gunicorn |
+| Clients | `memgraphrag-cli` (Typer+Rich) + Streamlit playground (`memgraphrag/client/`) — see `docs/Clients.md` |
 | Auth | JWT (`AUTH_ACCOUNTS`) and/or API key (`MEMGRAPHRAG_API_KEY`) |
 | LLM / embeddings | OpenAI-compatible bindings only (`LLM_*`, `EMBEDDING_*`) |
 | Vector / KV / doc-status | PostgreSQL + pgvector (`PG*Storage`) or JSON / nano-vectordb defaults |
@@ -29,7 +30,7 @@ This repository packages that engine as a production FastAPI service inspired by
 - OpenAI-compatible bindings only for POC (no local torch/HF embedders in the service image).
 - Storage selected by `MEMGRAPHRAG_{KV,VECTOR,GRAPH,DOC_STATUS}_STORAGE`.
 - PPR hybrid: igraph default + Neo4j GDS alternative.
-- Full API parity with LightRAG (documents / query / graph / Ollama `/api`); no WebUI in phase 1.
+- Full API parity with LightRAG (documents / query / graph / Ollama `/api`); optional Streamlit/CLI clients talk to the API (not embedded in the service image).
 - Docling via optional compose profile; VLM ANALYZING stage reserved, not implemented.
 - One local commit per advancement; single-line messages; details live in `docs/`.
 
@@ -44,6 +45,7 @@ This repository packages that engine as a production FastAPI service inspired by
 - **`ppr/`**: `IgraphPPREngine`, `Neo4jGDSPPREngine`.
 - **`llm/`**, **`openie/`**, **`prompts/`**, **`rerank.py`**: Bindings and extraction.
 - **`observability/`**: Optional Langfuse tracing for query/retrieval (`langfuse_trace.py`).
+- **`client/`**: HTTP client, Typer CLI (`memgraphrag-cli`), Streamlit playground, hybrid optimizer.
 - **`api/`**: FastAPI app (`server.py`), `config.py`, `auth.py`, `dependencies.py`, `routers/`.
 
 ## Naming Conventions
@@ -66,10 +68,12 @@ This repository packages that engine as a production FastAPI service inspired by
 ## Development Workflow
 
 ```bash
-uv sync --extra api --extra pytest
+uv sync --extra api --extra pytest --extra client
 cp env.example .env
 ./scripts/test.sh tests
 uv run memgraphrag-server
+uv run memgraphrag-cli health
+uv run streamlit run memgraphrag/client/app.py
 docker compose up -d
 docker compose --profile docling up -d   # optional Docling
 ```
