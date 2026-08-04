@@ -20,7 +20,8 @@ from memgraphrag.constants import DEFAULT_OLLAMA_MODEL_NAME, DEFAULT_OLLAMA_MODE
 from memgraphrag.core import MemGraphRAG
 from memgraphrag.llm.openai_compatible import openai_complete, openai_embed
 
-load_dotenv(dotenv_path=".env", override=False)
+# Prefer the mounted/project .env over stale process env after compose recreates.
+load_dotenv(dotenv_path=".env", override=True)
 
 logger = logging.getLogger("memgraphrag.api.server")
 
