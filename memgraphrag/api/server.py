@@ -175,7 +175,7 @@ def create_app(
             "core_version": core_version,
             "api_version": __api_version__,
             "auth_mode": "enabled" if auth_handler.accounts else "disabled",
-            "pipeline_busy": False,
+            "pipeline_busy": bool(getattr(app.state, "pipeline_busy", False)),
             "working_dir": getattr(request.app.state.rag, "working_dir", None),
             "workspace": getattr(request.app.state.rag, "workspace", ""),
         }

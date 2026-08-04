@@ -36,6 +36,7 @@ services:
       NEO4J_PASSWORD: "${NEO4J_PASSWORD:-memgraphrag}"
       PPR_ENGINE: "${PPR_ENGINE:-igraph}"
       DOCLING_ENDPOINT: "${DOCLING_ENDPOINT:-}"
+      MEMGRAPHRAG_PARSER: "${MEMGRAPHRAG_PARSER:-pdf:docling-P;*:legacy-F}"
 
   postgres:
     image: pgvector/pgvector:pg16
