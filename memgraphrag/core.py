@@ -23,13 +23,19 @@ from memgraphrag.base import (
     QueryParam,
 )
 from memgraphrag.constants import (
+    CONFLICT_ENABLED,
+    CONFLICT_MAX_GROUPS,
     DAMPING,
     EMBEDDING_DIM,
     FACT_SIMILARITY_THRESHOLD,
     LINKING_TOP_K,
     MAX_ASYNC_LLM,
+    ONTOLOGY_BATCH_SIZE,
+    ONTOLOGY_MIN_FREQUENCY,
     PASSAGE_NODE_WEIGHT,
     PPR_ENGINE,
+    SCHEMA_NODE_WEIGHT,
+    SCHEMA_TOP_K,
     SKIP_FACT_RERANK,
     TOP_K,
     WORKING_DIR,
@@ -62,6 +68,7 @@ from memgraphrag.observability.langfuse_trace import (
 )
 from memgraphrag.utils.env import get_env_value
 from memgraphrag.utils.hashing import compute_mdhash_id
+from memgraphrag.utils.json_llm import extract_json_object
 from memgraphrag.utils.misc import QuerySolution
 from memgraphrag.utils.step_log import done_step, fail_step, main_step, sub_step, truncate
 
@@ -188,6 +195,9 @@ class MemGraphRAG:
         self.facts_vdb: BaseVectorStorage = vec_cls(
             namespace=NameSpace.VECTOR_FACTS, **common
         )
+        self.schemas_vdb: BaseVectorStorage = vec_cls(
+            namespace=NameSpace.VECTOR_SCHEMAS, **common
+        )
 
         self.graph: BaseGraphStorage = graph_cls(
             namespace=NameSpace.GRAPH_MEMORY, **common
@@ -203,6 +213,7 @@ class MemGraphRAG:
             self.chunks_vdb,
             self.entities_vdb,
             self.facts_vdb,
+            self.schemas_vdb,
             self.graph,
             self.doc_status,
         ]
@@ -219,8 +230,10 @@ class MemGraphRAG:
         self._passage_ids: list[str] = []
         self._entity_ids: list[str] = []
         self._fact_ids: list[str] = []
+        self._schema_ids: list[str] = []
         self._passage_id_to_content: dict[str, str] = {}
         self._fact_id_to_triple: dict[str, tuple[str, str, str]] = {}
+        self._schema_id_to_idx: dict[str, int] = {}
         self._entity_to_passages: dict[str, set[str]] = {}
         self._initialized = False
 
@@ -241,62 +254,318 @@ class MemGraphRAG:
         logger.info("MemGraphRAG storages finalized")
 
     # ------------------------------------------------------------------
-    # Schema / conflict stages (lightweight)
+    # Schema / conflict stages
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _normalize_triple_key(triple: Sequence[str]) -> tuple[str, str, str]:
+        return (
+            str(triple[0]).strip(),
+            str(triple[1]).strip(),
+            str(triple[2]).strip(),
+        )
+
+    @staticmethod
+    def _triple_lookup_key(triple: Sequence[str]) -> tuple[str, str, str]:
+        h, r, t = MemGraphRAG._normalize_triple_key(triple)
+        return (h.lower(), r.lower(), t.lower())
+
+    def _parse_ontology_triples(
+        self, raw: str
+    ) -> list[tuple[tuple[str, str, str], tuple[str, str, str]]]:
+        """Return list of (fact_triple, ontology_triple) from LLM JSON."""
+        data = extract_json_object(raw)
+        items = data.get("ontology_triples") or []
+        if not isinstance(items, list):
+            return []
+        out: list[tuple[tuple[str, str, str], tuple[str, str, str]]] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            triple = item.get("triple")
+            ontology = item.get("ontology")
+            if not (
+                isinstance(triple, (list, tuple))
+                and len(triple) == 3
+                and isinstance(ontology, (list, tuple))
+                and len(ontology) == 3
+            ):
+                continue
+            out.append(
+                (
+                    self._normalize_triple_key(triple),
+                    self._normalize_triple_key(ontology),
+                )
+            )
+        return out
+
+    async def _apply_cached_ontology(
+        self, memory: ThreeLayerMemory
+    ) -> int:
+        """Apply ``extracted_triple_ontology`` from openie_kv when present."""
+        linked = 0
+        try:
+            cached = await self.openie_kv.get_all()
+        except Exception:
+            cached = {}
+        if not cached:
+            return 0
+
+        fact_by_key = {
+            self._triple_lookup_key(f.content): f.idx for f in memory.fact_layer
+        }
+        for _doc_id, doc in cached.items():
+            if not isinstance(doc, dict):
+                continue
+            ont_map = doc.get("extracted_triple_ontology") or {}
+            if not isinstance(ont_map, dict) or not ont_map:
+                continue
+            for triple_key, ontology in ont_map.items():
+                try:
+                    import ast
+
+                    triple_tuple = ast.literal_eval(str(triple_key))
+                    if not (
+                        isinstance(triple_tuple, (list, tuple))
+                        and len(triple_tuple) == 3
+                    ):
+                        continue
+                except Exception:
+                    continue
+                if not (isinstance(ontology, (list, tuple)) and len(ontology) == 3):
+                    continue
+                fact_idx = fact_by_key.get(self._triple_lookup_key(triple_tuple))
+                if fact_idx is None:
+                    continue
+                memory.link_fact_to_schema(
+                    fact_idx, self._normalize_triple_key(ontology)
+                )
+                linked += 1
+        return linked
+
+    async def _persist_ontology_to_openie(
+        self, memory: ThreeLayerMemory
+    ) -> None:
+        """Write per-doc ontology maps back into openie_kv for cache reuse."""
+        try:
+            cached = await self.openie_kv.get_all()
+        except Exception:
+            return
+        if not cached:
+            return
+
+        by_chunk: dict[str, dict[str, list[str]]] = {}
+        by_content: dict[str, dict[str, list[str]]] = {}
+        for fact in memory.fact_layer:
+            if fact.schema_idx < 0:
+                continue
+            schema = memory.get_schema_by_idx(fact.schema_idx)
+            if schema is None:
+                continue
+            key = str(tuple(fact.content))
+            for pidx in fact.passage_indices:
+                passage = memory.get_passage_by_idx(pidx)
+                if passage is None:
+                    continue
+                by_chunk.setdefault(str(passage.chunk_id), {})[key] = list(
+                    schema.content
+                )
+                by_content.setdefault(passage.content, {})[key] = list(schema.content)
+
+        updates: dict[str, Any] = {}
+        for doc_id, doc in cached.items():
+            if not isinstance(doc, dict):
+                continue
+            chunk_key = str(doc.get("idx", doc_id))
+            ont_map = by_chunk.get(chunk_key) or by_content.get(doc.get("passage") or "")
+            if ont_map:
+                updated = dict(doc)
+                updated["extracted_triple_ontology"] = ont_map
+                updates[str(doc_id)] = updated
+        if updates:
+            await self.openie_kv.upsert(updates)
+
     async def extract_schema(self, memory: ThreeLayerMemory) -> ThreeLayerMemory:
-        """Lightweight ontology extraction; skips gracefully on LLM failure."""
-        if not self.llm_model_func or not memory.fact_layer:
+        """Extract ontology schemas for all facts (batched, cache-aware)."""
+        if not memory.fact_layer:
             sub_step(
                 logger,
                 "index.schema.skip",
-                reason="no_llm_or_empty_facts",
-                facts=len(memory.fact_layer),
+                reason="empty_facts",
+                facts=0,
             )
             return memory
 
-        # Sample a few facts for POC schema tagging
-        sample = memory.fact_layer[: min(8, len(memory.fact_layer))]
-        triples = [list(f.content) for f in sample]
-        passage = memory.passage_layer[0].content if memory.passage_layer else ""
-        user = ONTOLOGY_EXTRACTION_USER_TEMPLATE.substitute(
-            passage=passage, triples=str(triples)
+        cached_links = await self._apply_cached_ontology(memory)
+        unlinked = [f for f in memory.fact_layer if f.schema_idx < 0]
+        if cached_links and not unlinked:
+            memory.recompute_schema_frequencies()
+            done_step(
+                logger,
+                "index.schema.extract",
+                source="cache",
+                linked=cached_links,
+                schemas=len(memory.schema_layer),
+            )
+            return memory
+
+        if not self.llm_model_func:
+            sub_step(
+                logger,
+                "index.schema.skip",
+                reason="no_llm",
+                facts=len(memory.fact_layer),
+                cached_links=cached_links,
+            )
+            return memory
+
+        batch_size = max(
+            1, get_env_value("ONTOLOGY_BATCH_SIZE", ONTOLOGY_BATCH_SIZE, int)
         )
+        # Group unlinked facts by passage for contextual typing.
+        by_passage: dict[int, list[int]] = {}
+        for fact in unlinked:
+            if fact.passage_indices:
+                for pidx in fact.passage_indices:
+                    by_passage.setdefault(pidx, []).append(fact.idx)
+            else:
+                by_passage.setdefault(-1, []).append(fact.idx)
+
+        batches: list[tuple[str, list[int]]] = []
+        for pidx, fact_idxs in by_passage.items():
+            passage = (
+                memory.get_passage_by_idx(pidx).content
+                if pidx >= 0 and memory.get_passage_by_idx(pidx)
+                else ""
+            )
+            for i in range(0, len(fact_idxs), batch_size):
+                batches.append((passage, fact_idxs[i : i + batch_size]))
+
         sub_step(
             logger,
             "index.schema.extract",
-            sample_facts=len(sample),
-            passage_chars=len(passage),
+            batches=len(batches),
+            unlinked=len(unlinked),
+            cached_links=cached_links,
+            batch_size=batch_size,
         )
-        try:
-            raw = await self.llm_model_func(user, system_prompt=ONTOLOGY_EXTRACTION_SYSTEM)
-            sub_step(
-                logger,
-                "index.schema.extract_result",
-                response_chars=len(str(raw)),
+
+        sem = asyncio.Semaphore(max(1, self.max_async_llm))
+        fact_by_key = {
+            self._triple_lookup_key(f.content): f.idx for f in memory.fact_layer
+        }
+        linked = 0
+        failed_batches = 0
+
+        async def _run_batch(passage: str, fact_idxs: list[int]) -> int:
+            nonlocal failed_batches
+            triples = [list(memory.fact_layer[i].content) for i in fact_idxs]
+            user = ONTOLOGY_EXTRACTION_USER_TEMPLATE.substitute(
+                passage=passage, triples=str(triples)
             )
+            try:
+                async with sem:
+                    raw = await self.llm_model_func(
+                        user, system_prompt=ONTOLOGY_EXTRACTION_SYSTEM
+                    )
+            except Exception as exc:
+                fail_step(logger, "index.schema.extract_batch", exc=exc)
+                failed_batches += 1
+                return 0
+            pairs = self._parse_ontology_triples(str(raw))
+            if not pairs:
+                failed_batches += 1
+                fail_step(
+                    logger,
+                    "index.schema.extract_batch",
+                    reason="empty_or_unparsed",
+                    response_chars=len(str(raw)),
+                )
+                return 0
+            count = 0
+            for triple, ontology in pairs:
+                fact_idx = fact_by_key.get(self._triple_lookup_key(triple))
+                if fact_idx is None:
+                    continue
+                memory.link_fact_to_schema(fact_idx, ontology)
+                count += 1
+            return count
+
+        results = await asyncio.gather(
+            *[_run_batch(p, idxs) for p, idxs in batches]
+        )
+        linked = sum(results)
+        memory.recompute_schema_frequencies()
+        try:
+            await self._persist_ontology_to_openie(memory)
         except Exception as exc:
-            fail_step(logger, "index.schema.extract", exc=exc)
+            fail_step(logger, "index.schema.cache_write", exc=exc)
+
+        done_step(
+            logger,
+            "index.schema.extract",
+            linked=linked,
+            schemas=len(memory.schema_layer),
+            failed_batches=failed_batches,
+            facts_untyped=sum(1 for f in memory.fact_layer if f.schema_idx < 0),
+        )
         return memory
 
     async def filter_ontology(self, memory: ThreeLayerMemory) -> ThreeLayerMemory:
-        """Ontology filter stub — returns memory unchanged for POC."""
+        """Frequency-based ontology filter with schema reindexing."""
+        min_freq = get_env_value(
+            "ONTOLOGY_MIN_FREQUENCY", ONTOLOGY_MIN_FREQUENCY, int
+        )
+        before = len(memory.schema_layer)
+        stats = memory.filter_schemas_by_frequency(min_freq)
         sub_step(
             logger,
             "index.ontology.filter",
-            schemas=len(memory.schema_layer),
-            facts=len(memory.fact_layer),
-            noop=True,
+            before=before,
+            kept=stats["kept"],
+            dropped=stats["dropped"],
+            min_frequency=min_freq,
+            noop=min_freq <= 0,
         )
         return memory
 
+    def _conflict_candidate_groups(
+        self, memory: ThreeLayerMemory, max_groups: int
+    ) -> list[list[int]]:
+        """Group facts that share (head, relation) or (relation, tail)."""
+        hr: dict[tuple[str, str], list[int]] = {}
+        rt: dict[tuple[str, str], list[int]] = {}
+        for fact in memory.fact_layer:
+            h, r, t = self._triple_lookup_key(fact.content)
+            hr.setdefault((h, r), []).append(fact.idx)
+            rt.setdefault((r, t), []).append(fact.idx)
+
+        seen: set[frozenset[int]] = set()
+        groups: list[list[int]] = []
+        for bucket in list(hr.values()) + list(rt.values()):
+            uniq = sorted(set(bucket))
+            if len(uniq) < 2:
+                continue
+            key = frozenset(uniq)
+            if key in seen:
+                continue
+            seen.add(key)
+            groups.append(uniq)
+            if len(groups) >= max_groups:
+                break
+        return groups
+
     async def detect_conflicts(self, memory: ThreeLayerMemory) -> dict[str, Any]:
-        """Lightweight conflict detection stub."""
+        """Detect hard conflicts among fact groups via LLM."""
         result: dict[str, Any] = {
             "has_conflict": False,
             "conflicts": [],
-            "summary": {"hard_conflicts": 0},
+            "summary": {"hard_conflicts": 0, "groups_checked": 0},
         }
+        enabled = get_env_value("CONFLICT_ENABLED", CONFLICT_ENABLED, bool)
+        if not enabled:
+            sub_step(logger, "index.conflict.detect_skip", reason="disabled")
+            return result
         if not self.llm_model_func or len(memory.fact_layer) < 2:
             sub_step(
                 logger,
@@ -305,56 +574,224 @@ class MemGraphRAG:
             )
             return result
 
-        target = list(memory.fact_layer[0].content)
-        related = [list(f.content) for f in memory.fact_layer[1:6]]
-        user = CONFLICT_DETECTION_USER_TEMPLATE.substitute(
-            target_triple=str(target), related_triples=str(related)
+        max_groups = max(
+            1, get_env_value("CONFLICT_MAX_GROUPS", CONFLICT_MAX_GROUPS, int)
         )
+        groups = self._conflict_candidate_groups(memory, max_groups)
         sub_step(
             logger,
             "index.conflict.detect",
-            related_facts=len(related),
+            groups=len(groups),
+            max_groups=max_groups,
         )
-        try:
-            raw = await self.llm_model_func(user, system_prompt=CONFLICT_DETECTION_SYSTEM)
-            sub_step(
-                logger,
-                "index.conflict.detect_result",
-                response_chars=len(str(raw)),
+        if not groups:
+            return result
+
+        sem = asyncio.Semaphore(max(1, self.max_async_llm))
+        hard: list[dict[str, Any]] = []
+
+        async def _check_group(idxs: list[int]) -> list[dict[str, Any]]:
+            target_idx = idxs[0]
+            related_idxs = idxs[1:]
+            target = list(memory.fact_layer[target_idx].content)
+            related = [list(memory.fact_layer[i].content) for i in related_idxs]
+            user = CONFLICT_DETECTION_USER_TEMPLATE.substitute(
+                target_triple=str(target), related_triples=str(related)
             )
-        except Exception as exc:
-            fail_step(logger, "index.conflict.detect", exc=exc)
+            try:
+                async with sem:
+                    raw = await self.llm_model_func(
+                        user, system_prompt=CONFLICT_DETECTION_SYSTEM
+                    )
+            except Exception as exc:
+                fail_step(logger, "index.conflict.detect_group", exc=exc)
+                return []
+            data = extract_json_object(str(raw))
+            conflicts = data.get("conflicts") or []
+            if not isinstance(conflicts, list):
+                return []
+            found: list[dict[str, Any]] = []
+            for item in conflicts:
+                if not isinstance(item, dict):
+                    continue
+                if not item.get("is_hard_conflict"):
+                    continue
+                # Attach fact indices when triples match
+                t1 = item.get("triple1")
+                t2 = item.get("triple2")
+                idx1 = idx2 = None
+                if isinstance(t1, (list, tuple)) and len(t1) == 3:
+                    key = self._triple_lookup_key(t1)
+                    for i in idxs:
+                        if self._triple_lookup_key(memory.fact_layer[i].content) == key:
+                            idx1 = i
+                            break
+                if isinstance(t2, (list, tuple)) and len(t2) == 3:
+                    key = self._triple_lookup_key(t2)
+                    for i in idxs:
+                        if self._triple_lookup_key(memory.fact_layer[i].content) == key:
+                            idx2 = i
+                            break
+                found.append(
+                    {
+                        **item,
+                        "fact_idx1": idx1,
+                        "fact_idx2": idx2,
+                        "group_indices": idxs,
+                    }
+                )
+            return found
+
+        group_results = await asyncio.gather(*[_check_group(g) for g in groups])
+        for items in group_results:
+            hard.extend(items)
+
+        result["conflicts"] = hard
+        result["has_conflict"] = bool(hard)
+        result["summary"] = {
+            "hard_conflicts": len(hard),
+            "groups_checked": len(groups),
+        }
+        done_step(
+            logger,
+            "index.conflict.detect",
+            hard_conflicts=len(hard),
+            groups_checked=len(groups),
+        )
         return result
 
     async def resolve_conflicts(
         self, memory: ThreeLayerMemory, conflicts: Mapping[str, Any]
     ) -> tuple[ThreeLayerMemory, dict[str, Any]]:
-        """Conflict resolution stub — returns memory unchanged."""
-        resolution = {"summary": {"resolved": 0}, "resolved_triples": []}
-        if not conflicts.get("has_conflict"):
+        """Resolve hard conflicts using passage evidence; mutate memory."""
+        resolution: dict[str, Any] = {
+            "summary": {"resolved": 0, "discarded": 0, "modified": 0, "kept": 0},
+            "resolved_triples": [],
+        }
+        hard = list(conflicts.get("conflicts") or [])
+        if not conflicts.get("has_conflict") or not hard:
             sub_step(logger, "index.conflict.resolve_skip", hard_conflicts=0)
             return memory, resolution
         if not self.llm_model_func:
             return memory, resolution
+
+        # Build evidence bundles keyed by conflict pairs / groups
+        bundles: list[str] = []
+        for item in hard:
+            t1 = item.get("triple1")
+            t2 = item.get("triple2")
+            idx1 = item.get("fact_idx1")
+            idx2 = item.get("fact_idx2")
+            sources: list[str] = []
+            for fidx in (idx1, idx2):
+                if not isinstance(fidx, int) or not (0 <= fidx < len(memory.fact_layer)):
+                    continue
+                fact = memory.fact_layer[fidx]
+                for pidx in fact.passage_indices:
+                    passage = memory.get_passage_by_idx(pidx)
+                    if passage is None:
+                        continue
+                    preview = passage.content[:800]
+                    sources.append(
+                        f"fact={list(fact.content)} fact_idx={fidx} passage={preview}"
+                    )
+            bundles.append(
+                f"conflict_type={item.get('conflict_type')}\n"
+                f"triple1={t1}\ntriple2={t2}\n"
+                f"reason={item.get('conflict_reason')}\n"
+                f"sources:\n" + "\n---\n".join(sources)
+            )
+
         user = CONFLICT_RESOLUTION_USER_TEMPLATE.substitute(
-            conflicting_triples_with_sources=str(conflicts.get("conflicts", []))
+            conflicting_triples_with_sources="\n\n====\n\n".join(bundles)
         )
         sub_step(
             logger,
             "index.conflict.resolve",
-            conflicts=len(conflicts.get("conflicts") or []),
+            conflicts=len(hard),
         )
         try:
             raw = await self.llm_model_func(
                 user, system_prompt=CONFLICT_RESOLUTION_SYSTEM
             )
-            sub_step(
-                logger,
-                "index.conflict.resolve_result",
-                response_chars=len(str(raw)),
-            )
         except Exception as exc:
             fail_step(logger, "index.conflict.resolve", exc=exc)
+            return memory, resolution
+
+        data = extract_json_object(str(raw))
+        resolved_items = data.get("resolved_triples") or []
+        if not isinstance(resolved_items, list):
+            fail_step(
+                logger,
+                "index.conflict.resolve",
+                reason="unparsed",
+                response_chars=len(str(raw)),
+            )
+            return memory, resolution
+
+        def _find_fact(triple: Sequence[str]) -> int | None:
+            key = self._triple_lookup_key(triple)
+            for f in memory.fact_layer:
+                if self._triple_lookup_key(f.content) == key:
+                    return f.idx
+            return None
+
+        kept = discarded = modified = 0
+        # Apply modifications first (content-stable lookup), then discards.
+        for item in resolved_items:
+            if not isinstance(item, dict):
+                continue
+            action = str(item.get("resolution") or "").lower()
+            original = item.get("original_triple")
+            resolved_t = item.get("resolved_triple")
+            if action != "modified":
+                continue
+            if not (
+                isinstance(original, (list, tuple))
+                and len(original) == 3
+                and isinstance(resolved_t, (list, tuple))
+                and len(resolved_t) == 3
+            ):
+                continue
+            fact_idx = _find_fact(original)
+            if fact_idx is None:
+                continue
+            memory.replace_fact(fact_idx, self._normalize_triple_key(resolved_t))
+            modified += 1
+
+        for item in resolved_items:
+            if not isinstance(item, dict):
+                continue
+            action = str(item.get("resolution") or "").lower()
+            original = item.get("original_triple")
+            if action == "kept":
+                if isinstance(original, (list, tuple)) and len(original) == 3:
+                    if _find_fact(original) is not None:
+                        kept += 1
+                continue
+            if action != "discarded":
+                continue
+            if not (isinstance(original, (list, tuple)) and len(original) == 3):
+                continue
+            fact_idx = _find_fact(original)
+            if fact_idx is None:
+                continue
+            memory.remove_fact(fact_idx)
+            discarded += 1
+
+        resolution["resolved_triples"] = resolved_items
+        resolution["summary"] = {
+            "resolved": kept + discarded + modified,
+            "discarded": discarded,
+            "modified": modified,
+            "kept": kept,
+        }
+        done_step(
+            logger,
+            "index.conflict.resolve",
+            **resolution["summary"],
+            facts=len(memory.fact_layer),
+        )
         return memory, resolution
 
     # ------------------------------------------------------------------
@@ -505,9 +942,33 @@ class MemGraphRAG:
             }
             await self.entities_vdb.upsert(ent_payload)
 
+        # Schemas (ontology type triples)
+        schema_texts = ["\t".join(s.content) for s in memory.schema_layer]
+        schema_ids = [
+            compute_mdhash_id(_triple_str(s.content), prefix="schema-")
+            for s in memory.schema_layer
+        ]
+        if schema_texts:
+            emb = await self.embedding_func(schema_texts)
+            emb = np.asarray(emb)
+            schema_payload = {
+                schema_ids[i]: {
+                    "content": _triple_str(memory.schema_layer[i].content),
+                    "embedding": emb[i].tolist(),
+                    "triple": list(memory.schema_layer[i].content),
+                    "schema_idx": memory.schema_layer[i].idx,
+                }
+                for i in range(len(schema_ids))
+            }
+            await self.schemas_vdb.upsert(schema_payload)
+
         self._passage_ids = passage_ids
         self._fact_ids = fact_ids
         self._entity_ids = entity_ids
+        self._schema_ids = schema_ids
+        self._schema_id_to_idx = {
+            schema_ids[i]: memory.schema_layer[i].idx for i in range(len(schema_ids))
+        }
         self._passage_id_to_content = dict(zip(passage_ids, passage_texts))
         self._fact_id_to_triple = {
             fact_ids[i]: tuple(memory.fact_layer[i].content)
@@ -515,7 +976,7 @@ class MemGraphRAG:
         }
 
     async def _install_memory_graph(self, memory: ThreeLayerMemory) -> None:
-        """Write entity / passage nodes and simple co-occurrence edges."""
+        """Write schema / entity / fact / passage nodes and typed edges."""
         await self.graph.clear()
         entity_to_passages: dict[str, set[str]] = {}
 
@@ -531,8 +992,57 @@ class MemGraphRAG:
                 },
             )
 
+        # Ontology schema nodes + type-level TYPE_RELATION view
+        for schema in memory.schema_layer:
+            sid = compute_mdhash_id(_triple_str(schema.content), prefix="schema-")
+            await self.graph.upsert_node(
+                sid,
+                {
+                    "id": sid,
+                    "label": "Schema",
+                    "layer": "schema",
+                    "content": _triple_str(schema.content),
+                    "frequency": schema.frequency,
+                },
+            )
+            h_type, rel, t_type = schema.content
+            hid = compute_mdhash_id(str(h_type).strip().lower(), prefix="type-")
+            tid = compute_mdhash_id(str(t_type).strip().lower(), prefix="type-")
+            for type_id, type_name in ((hid, h_type), (tid, t_type)):
+                if not await self.graph.has_node(type_id):
+                    await self.graph.upsert_node(
+                        type_id,
+                        {
+                            "id": type_id,
+                            "label": "Type",
+                            "layer": "type",
+                            "content": str(type_name).strip(),
+                        },
+                    )
+            await self.graph.upsert_edge(
+                hid,
+                tid,
+                {
+                    "type": "TYPE_RELATION",
+                    "relation": str(rel),
+                    "weight": float(schema.frequency or 1),
+                },
+            )
+
         for fact in memory.fact_layer:
             h, _r, t = fact.content
+            fid = compute_mdhash_id(_triple_str(fact.content), prefix="fact-")
+            await self.graph.upsert_node(
+                fid,
+                {
+                    "id": fid,
+                    "label": "Fact",
+                    "layer": "fact",
+                    "content": _triple_str(fact.content),
+                    "schema_idx": fact.schema_idx,
+                },
+            )
+
             for ent in (h, t):
                 eid = compute_mdhash_id(str(ent).strip().lower(), prefix="entity-")
                 if not await self.graph.has_node(eid):
@@ -557,18 +1067,25 @@ class MemGraphRAG:
                     )
                     entity_to_passages.setdefault(eid, set()).add(pid)
 
-            # Optional fact node
-            fid = compute_mdhash_id(_triple_str(fact.content), prefix="fact-")
-            if not await self.graph.has_node(fid):
-                await self.graph.upsert_node(
+            for pidx in fact.passage_indices:
+                passage = memory.get_passage_by_idx(pidx)
+                if passage is None:
+                    continue
+                await self.graph.upsert_edge(
                     fid,
-                    {
-                        "id": fid,
-                        "label": "Fact",
-                        "layer": "fact",
-                        "content": _triple_str(fact.content),
-                    },
+                    passage.chunk_id,
+                    {"type": "FACT_PASSAGE", "weight": 1.0},
                 )
+
+            if fact.schema_idx >= 0:
+                schema = memory.get_schema_by_idx(fact.schema_idx)
+                if schema is not None:
+                    sid = compute_mdhash_id(_triple_str(schema.content), prefix="schema-")
+                    await self.graph.upsert_edge(
+                        fid,
+                        sid,
+                        {"type": "FACT_SCHEMA", "weight": 1.0},
+                    )
 
         self._entity_to_passages = entity_to_passages
 
@@ -593,6 +1110,8 @@ class MemGraphRAG:
         self._passage_id_to_content = {}
         self._passage_ids = []
         self._fact_ids = []
+        self._schema_ids = []
+        self._schema_id_to_idx = {}
         self._fact_id_to_triple = {}
         self._entity_to_passages = {}
 
@@ -613,6 +1132,10 @@ class MemGraphRAG:
                             continue
                         pid = passage.chunk_id
                         self._entity_to_passages.setdefault(eid, set()).add(pid)
+            for s in self.memory.schema_layer:
+                sid = compute_mdhash_id(_triple_str(s.content), prefix="schema-")
+                self._schema_ids.append(sid)
+                self._schema_id_to_idx[sid] = s.idx
 
         # Build igraph PPR engine from graph storage edges when possible
         edges: list[tuple[str, str]] = []
@@ -653,6 +1176,7 @@ class MemGraphRAG:
             "retrieve.prepare",
             passages=len(self._passage_ids),
             facts=len(self._fact_ids),
+            schemas=len(self._schema_ids),
             edges=len(edges),
         )
 
@@ -791,7 +1315,94 @@ class MemGraphRAG:
                     },
                 )
 
-            if not kept_hits:
+            # Schema linking (hierarchical retrieval) — runs even when facts empty
+            seed_weights: dict[str, float] = {}
+            schema_hits_n = 0
+            if (
+                self.memory is not None
+                and self.memory.schema_layer
+                and getattr(param, "schema_top_k", 0)
+            ):
+                with observation(
+                    "memgraphrag.schema_linking",
+                    as_type="span",
+                    input={"schema_top_k": param.schema_top_k},
+                ) as schema_span:
+                    sub_step(
+                        logger,
+                        "retrieve.one.schema_linking",
+                        schema_top_k=param.schema_top_k,
+                    )
+                    try:
+                        schema_hits = await self.schemas_vdb.query(
+                            q_fact_vec, top_k=param.schema_top_k
+                        )
+                    except Exception as exc:
+                        fail_step(logger, "retrieve.one.schema_linking", exc=exc)
+                        schema_hits = []
+                    schema_hits_n = len(schema_hits)
+                    for hit in schema_hits:
+                        sid = hit.get("id") or hit.get("__id__")
+                        score = float(hit.get("score", hit.get("distance", 0.0)))
+                        if score > 1.0 or score < 0:
+                            score = 1.0 / (1.0 + abs(score))
+                        schema_idx = None
+                        if sid and sid in self._schema_id_to_idx:
+                            schema_idx = self._schema_id_to_idx[str(sid)]
+                        elif hit.get("schema_idx") is not None:
+                            schema_idx = int(hit["schema_idx"])
+                        else:
+                            triple = hit.get("triple")
+                            if isinstance(triple, (list, tuple)) and len(triple) == 3:
+                                cand = compute_mdhash_id(
+                                    _triple_str(triple), prefix="schema-"
+                                )
+                                schema_idx = self._schema_id_to_idx.get(cand)
+                                sid = cand
+                        if schema_idx is None or self.memory is None:
+                            continue
+                        schema = self.memory.get_schema_by_idx(schema_idx)
+                        if schema is None:
+                            continue
+                        if sid:
+                            seed_weights[str(sid)] = (
+                                seed_weights.get(str(sid), 0.0)
+                                + score * param.schema_node_weight
+                            )
+                        for fidx in schema.fact_indices:
+                            fact = self.memory.get_fact_by_idx(fidx)
+                            if fact is None:
+                                continue
+                            for ent in (fact.content[0], fact.content[2]):
+                                eid = compute_mdhash_id(
+                                    str(ent).strip().lower(), prefix="entity-"
+                                )
+                                seed_weights[eid] = (
+                                    seed_weights.get(eid, 0.0)
+                                    + score * param.schema_node_weight
+                                )
+                                for pid in self._entity_to_passages.get(eid, set()):
+                                    seed_weights[pid] = (
+                                        seed_weights.get(pid, 0.0)
+                                        + score
+                                        * param.schema_node_weight
+                                        * param.passage_node_weight
+                                    )
+                    update_observation(
+                        schema_span,
+                        output={
+                            "schema_hits": schema_hits_n,
+                            "seed_nodes": len(seed_weights),
+                        },
+                    )
+                    sub_step(
+                        logger,
+                        "retrieve.one.schema_linking_done",
+                        schema_hits=schema_hits_n,
+                        seed_nodes=len(seed_weights),
+                    )
+
+            if not kept_hits and not seed_weights:
                 sub_step(logger, "retrieve.one.dense_fallback", reason="no_facts")
                 sol = await self._dense_passage_retrieve(query, param)
                 update_observation(
@@ -811,7 +1422,6 @@ class MemGraphRAG:
                 return sol
 
             # Seed PPR from entities in filtered facts
-            seed_weights: dict[str, float] = {}
             for hit, score in zip(
                 kept_hits, [sim_scores[i] for i in kept if i < len(sim_scores)]
             ):

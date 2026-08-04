@@ -28,7 +28,7 @@ except ImportError:  # pragma: no cover
     neo4jExceptions = None  # type: ignore[assignment, misc]
     _NEO4J_AVAILABLE = False
 
-NODE_LABELS = frozenset({"Type", "Entity", "Passage", "Fact"})
+NODE_LABELS = frozenset({"Type", "Entity", "Passage", "Fact", "Schema"})
 EDGE_TYPES = frozenset(
     {
         "ENTITY_RELATION",
@@ -36,6 +36,8 @@ EDGE_TYPES = frozenset(
         "ENTITY_SIMILARITY",
         "ENTITY_TO_TYPE",
         "TYPE_RELATION",
+        "FACT_SCHEMA",
+        "FACT_PASSAGE",
     }
 )
 _SAFE_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")

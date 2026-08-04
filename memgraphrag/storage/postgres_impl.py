@@ -171,6 +171,19 @@ class PGKVStorage(BaseKVStorage):
                 ids,
             )
 
+    async def get_all(self) -> dict[str, dict[str, Any]]:
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(f"SELECT id, data FROM {self._table}")
+        out: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            data = row["data"]
+            if isinstance(data, str):
+                data = json.loads(data)
+            record = dict(data)
+            record["_id"] = row["id"]
+            out[row["id"]] = record
+        return out
+
 
 @dataclass
 class PGVectorStorage(BaseVectorStorage):

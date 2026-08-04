@@ -17,6 +17,8 @@ from .constants import (
     FACT_SIMILARITY_THRESHOLD,
     LINKING_TOP_K,
     PASSAGE_NODE_WEIGHT,
+    SCHEMA_NODE_WEIGHT,
+    SCHEMA_TOP_K,
     SKIP_FACT_RERANK,
     TOP_K,
 )
@@ -69,6 +71,18 @@ class QueryParam:
         )
     )
     """If True, skip fact reranking and filter by similarity threshold."""
+
+    schema_top_k: int = field(
+        default_factory=lambda: get_env_value("SCHEMA_TOP_K", SCHEMA_TOP_K, int)
+    )
+    """Number of ontology schemas to link from the query embedding."""
+
+    schema_node_weight: float = field(
+        default_factory=lambda: get_env_value(
+            "SCHEMA_NODE_WEIGHT", SCHEMA_NODE_WEIGHT, float
+        )
+    )
+    """Multiplicative weight for schema-expanded seeds in PPR."""
 
     conversation_history: list[dict[str, str]] = field(default_factory=list)
     """Past turns: [{"role": "user"|"assistant", "content": "..."}]."""

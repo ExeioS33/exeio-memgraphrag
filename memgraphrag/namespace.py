@@ -21,6 +21,7 @@ class NameSpace:
     VECTOR_CHUNKS = "chunks"
     VECTOR_ENTITIES = "entities"
     VECTOR_FACTS = "facts"
+    VECTOR_SCHEMAS = "schemas"
 
     GRAPH_MEMORY = "memory_graph"
 
