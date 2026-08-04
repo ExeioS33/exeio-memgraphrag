@@ -181,6 +181,38 @@ def test_http_error_raises() -> None:
 
 
 @pytest.mark.offline
+def test_normalize_download_filename_arxiv_style() -> None:
+    from memgraphrag.client.http import normalize_download_filename
+
+    # arXiv basename: Path.suffix is ``.18490v1`` (false positive)
+    name = normalize_download_filename(
+        "2605.18490v1",
+        content_type="application/pdf",
+        data=b"%PDF-1.7 fake",
+    )
+    assert name.endswith(".pdf")
+    assert name.startswith("2605.18490v1")
+
+    # Magic sniff when content-type is missing
+    name2 = normalize_download_filename(
+        "2605.18490v1",
+        content_type="",
+        data=b"%PDF-1.4\n",
+    )
+    assert name2.endswith(".pdf")
+
+    # Explicit filename wins
+    assert (
+        normalize_download_filename(
+            "x",
+            explicit="paper.pdf",
+            data=b"%PDF-1.4\n",
+        )
+        == "paper.pdf"
+    )
+
+
+@pytest.mark.offline
 def test_upload_url_rejects_bad_schemes() -> None:
     with MemGraphRAGClient(base_url="http://test", verify=False) as client:
         with pytest.raises(ValueError, match="empty"):

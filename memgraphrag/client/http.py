@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import mimetypes
 import os
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Iterator, Optional
 from urllib.parse import urlparse
@@ -17,9 +19,51 @@ from memgraphrag.utils.http_ssl import ssl_verify
 DEFAULT_BASE_URL = "http://localhost:9621"
 DEFAULT_TIMEOUT = httpx.Timeout(connect=10.0, read=300.0, write=120.0, pool=10.0)
 
+# #region agent log
+_DEBUG_LOG_PATH = "/home/sanda/Desktop/project/cf_memgraphrag/.cursor/debug-4b92ea.log"
+
+
+def _agent_log(
+    hypothesis_id: str, location: str, message: str, data: dict[str, Any], run_id: str = "pre-fix"
+) -> None:
+    try:
+        payload = {
+            "sessionId": "4b92ea",
+            "runId": run_id,
+            "hypothesisId": hypothesis_id,
+            "location": location,
+            "message": message,
+            "data": data,
+            "timestamp": int(time.time() * 1000),
+        }
+        with open(_DEBUG_LOG_PATH, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(payload, default=str) + "\n")
+    except Exception:
+        pass
+
+
+# #endregion
+
 
 class ClientSSLError(RuntimeError):
     """Raised when outbound HTTPS fails TLS verification (URL ingest, etc.)."""
+
+
+def _has_supported_suffix(name: str) -> bool:
+    """True when ``name`` ends with a known ingest extension (e.g. ``.pdf``)."""
+    return Path(name).suffix.lower() in SUPPORTED_EXTENSIONS
+
+
+def _sniff_extension(data: bytes) -> str | None:
+    """Best-effort magic-byte extension when URL/basename has no real suffix."""
+    if data[:5] == b"%PDF-" or data[:4] == b"%PDF":
+        return ".pdf"
+    if data[:2] == b"PK":  # zip-based office formats; default to .docx
+        return ".docx"
+    if data.lstrip()[:1] in (b"<", b"{") or data[:3] in (b"\xef\xbb\xbf",):
+        # HTML / JSON / text-ish — leave to content-type when possible
+        return None
+    return None
 
 
 def _filename_from_headers(
@@ -45,10 +89,44 @@ def _filename_from_headers(
         candidate = Path(cd.split("filename=")[-1].split(";")[0].strip().strip("\"'")).name
         if candidate:
             name = candidate
-    if not Path(name).suffix:
-        guessed = mimetypes.guess_extension((content_type or "").split(";")[0].strip())
+    if not _has_supported_suffix(name):
+        ctype = (content_type or "").split(";")[0].strip().lower()
+        if ctype == "application/pdf":
+            guessed = ".pdf"
+        else:
+            guessed = mimetypes.guess_extension(ctype) if ctype else None
         if guessed:
+            # arXiv paths like ``2605.18490v1`` look like they have a suffix
+            # (``.18490v1``) but are not real extensions — append the real one.
             name = f"{name}{guessed}"
+    return name
+
+
+def normalize_download_filename(
+    url_name: str,
+    *,
+    content_disp: str = "",
+    content_type: str = "",
+    data: bytes | None = None,
+    explicit: str | None = None,
+) -> str:
+    """Resolve a safe upload filename with a supported suffix.
+
+    Handles arXiv-style basenames (``2605.18490v1``) where ``Path.suffix`` is a
+    false-positive version fragment rather than a real file type.
+    """
+    if explicit:
+        name = Path(explicit).name
+    else:
+        name = Path(url_name).name or "download.bin"
+        name = _filename_from_headers(content_disp, content_type, name)
+    if not _has_supported_suffix(name) and data is not None:
+        sniffed = _sniff_extension(data)
+        if sniffed:
+            name = f"{name}{sniffed}"
+    if not _has_supported_suffix(name):
+        # Last resort so the server always sees a typed name.
+        name = f"{name}.bin"
     return name
 
 
@@ -218,10 +296,31 @@ class MemGraphRAGClient:
         if not data:
             raise ValueError(f"Downloaded empty body from {url}")
 
-        name = filename or Path(parsed.path).name or "download.bin"
-        name = Path(name).name  # prevent path traversal in Content-Disposition
-        if not Path(name).suffix:
-            name = _filename_from_headers(content_disp, content_type, name)
+        raw_name = Path(parsed.path).name or "download.bin"
+        name = normalize_download_filename(
+            raw_name,
+            content_disp=content_disp,
+            content_type=content_type,
+            data=data,
+            explicit=filename,
+        )
+        # #region agent log
+        _agent_log(
+            "H1",
+            "http.py:upload_url:filename",
+            "normalized_download_filename",
+            {
+                "url_basename": raw_name,
+                "path_suffix": Path(raw_name).suffix,
+                "content_type": (content_type or "")[:80],
+                "has_pdf_magic": data[:4] == b"%PDF",
+                "final_name": name,
+                "final_suffix": Path(name).suffix,
+                "supported": _has_supported_suffix(name),
+            },
+            run_id="post-fix",
+        )
+        # #endregion
         suffix = Path(name).suffix or ".bin"
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
             tmp.write(data)

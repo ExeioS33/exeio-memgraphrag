@@ -46,13 +46,17 @@ class LegacyParser(BaseParser):
             raise FileNotFoundError(f"legacy source file not found: {source}")
 
         suffix = source.suffix.lower().lstrip(".")
-        if suffix and suffix not in suffix_capabilities(self.engine_name):
+        file_bytes = await asyncio.to_thread(source.read_bytes)
+        # Defense in depth: arXiv-style names (``2605.18490v1``) may lack ``.pdf``
+        # even though the payload is a real PDF. Prefer magic over a bogus suffix.
+        if file_bytes[:4] == b"%PDF" or file_bytes[:5] == b"%PDF-":
+            suffix = "pdf"
+        elif suffix and suffix not in suffix_capabilities(self.engine_name):
             raise ValueError(
                 f"legacy parser does not support .{suffix}: "
                 f"doc_id={ctx.doc_id} file={ctx.file_path}"
             )
 
-        file_bytes = await asyncio.to_thread(source.read_bytes)
         pdf_password = os.getenv("PDF_DECRYPT_PASSWORD") or None
         text = await asyncio.to_thread(
             extract_text, file_bytes, suffix or "txt", pdf_password=pdf_password
