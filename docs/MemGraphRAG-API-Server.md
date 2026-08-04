@@ -34,6 +34,29 @@ docker compose --profile docling up -d
 
 Compose wires `PGKVStorage` / `PGVectorStorage` / `PGDocStatusStorage` / `Neo4JStorage`.
 
+## LLM bindings (including self-hosted vLLM)
+
+MemGraphRAG talks to any OpenAI-compatible chat API via `LLM_BINDING_*`. For a local/remote **vLLM** Mistral service (Compose `vllm-mistal`, host port `8001`, `--served-model-name mistral`):
+
+```bash
+# Helper vars (see env.example) — used by your vLLM compose stack
+VLLM_HOST=localhost
+VLLM_PORT=8001
+VLLM_BASE_URL=http://localhost:8001/v1
+VLLM_SERVED_MODEL_NAME=mistral
+VLLM_API_KEY=EMPTY
+HF_TOKEN=...
+MISTRAL_MODEL_7B_GPTQ_4=...
+
+# Wire MemGraphRAG to that endpoint
+LLM_BINDING=openai
+LLM_BINDING_HOST=http://localhost:8001/v1
+LLM_BINDING_API_KEY=EMPTY
+LLM_MODEL=mistral
+```
+
+Keep a **separate** embedding endpoint (`EMBEDDING_BINDING_*`); the Mistral vLLM service is chat/completions only.
+
 ## Auth
 
 | Mode | Env |
