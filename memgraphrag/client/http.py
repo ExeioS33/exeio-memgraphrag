@@ -1,0 +1,221 @@
+"""Synchronous HTTP client for the MemGraphRAG API server."""
+
+from __future__ import annotations
+
+import mimetypes
+import os
+import tempfile
+from pathlib import Path
+from typing import Any, Iterator, Optional
+from urllib.parse import urlparse
+
+import httpx
+
+from memgraphrag.client.params import SUPPORTED_EXTENSIONS, clean_params
+
+DEFAULT_BASE_URL = "http://localhost:9621"
+DEFAULT_TIMEOUT = httpx.Timeout(connect=10.0, read=300.0, write=120.0, pool=10.0)
+
+
+class MemGraphRAGClient:
+    """Thin httpx wrapper around MemGraphRAG REST endpoints.
+
+    Auth: set ``api_key`` (or env ``MEMGRAPHRAG_API_KEY``) → ``X-API-Key``.
+    Base URL: ``base_url`` or env ``MEMGRAPHRAG_SERVER_URL`` (default localhost:9621).
+    """
+
+    def __init__(
+        self,
+        base_url: Optional[str] = None,
+        api_key: Optional[str] = None,
+        timeout: Optional[httpx.Timeout] = None,
+        transport: Optional[httpx.BaseTransport] = None,
+    ) -> None:
+        self.base_url = (
+            base_url
+            or os.environ.get("MEMGRAPHRAG_SERVER_URL")
+            or DEFAULT_BASE_URL
+        ).rstrip("/")
+        self.api_key = api_key if api_key is not None else os.environ.get(
+            "MEMGRAPHRAG_API_KEY"
+        )
+        headers: dict[str, str] = {"Accept": "application/json"}
+        if self.api_key:
+            headers["X-API-Key"] = self.api_key
+        self._client = httpx.Client(
+            base_url=self.base_url,
+            headers=headers,
+            timeout=timeout or DEFAULT_TIMEOUT,
+            transport=transport,
+            follow_redirects=True,
+        )
+
+    def close(self) -> None:
+        self._client.close()
+
+    def __enter__(self) -> "MemGraphRAGClient":
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self.close()
+
+    # ------------------------------------------------------------------ health
+    def health(self) -> dict[str, Any]:
+        return self._get("/health")
+
+    # ------------------------------------------------------------------ query
+    def query(self, question: str, **params: Any) -> dict[str, Any]:
+        body = {"query": question, **self._query_body(params)}
+        return self._post("/query", json=body)
+
+    def query_data(self, question: str, **params: Any) -> dict[str, Any]:
+        body = {"query": question, **self._query_body(params)}
+        return self._post("/query/data", json=body)
+
+    def query_stream(self, question: str, **params: Any) -> Iterator[str]:
+        """Yield SSE ``data:`` payloads (raw JSON strings or ``[DONE]``)."""
+        body = {"query": question, "stream": True, **self._query_body(params)}
+        with self._client.stream("POST", "/query/stream", json=body) as resp:
+            self._raise(resp)
+            for line in resp.iter_lines():
+                if not line:
+                    continue
+                if line.startswith("data:"):
+                    yield line[5:].strip()
+
+    # -------------------------------------------------------------- documents
+    def list_documents(self) -> dict[str, Any]:
+        return self._get("/documents/")
+
+    def upload_file(self, path: str | Path, filename: Optional[str] = None) -> dict[str, Any]:
+        path = Path(path)
+        if not path.is_file():
+            raise FileNotFoundError(f"Not a file: {path}")
+        name = filename or path.name
+        mime, _ = mimetypes.guess_type(name)
+        mime = mime or "application/octet-stream"
+        with path.open("rb") as fh:
+            files = {"file": (name, fh, mime)}
+            resp = self._client.post("/documents/upload", files=files)
+        self._raise(resp)
+        return resp.json()
+
+    def upload_bytes(
+        self, data: bytes, filename: str, content_type: Optional[str] = None
+    ) -> dict[str, Any]:
+        mime = content_type or mimetypes.guess_type(filename)[0] or "application/octet-stream"
+        files = {"file": (filename, data, mime)}
+        resp = self._client.post("/documents/upload", files=files)
+        self._raise(resp)
+        return resp.json()
+
+    def upload_directory(
+        self,
+        directory: str | Path,
+        recursive: bool = True,
+        extensions: Optional[set[str]] = None,
+    ) -> list[dict[str, Any]]:
+        directory = Path(directory)
+        if not directory.is_dir():
+            raise NotADirectoryError(f"Not a directory: {directory}")
+        exts = {e.lower() if e.startswith(".") else f".{e.lower()}" for e in (extensions or SUPPORTED_EXTENSIONS)}
+        pattern = "**/*" if recursive else "*"
+        results: list[dict[str, Any]] = []
+        for path in sorted(directory.glob(pattern)):
+            if not path.is_file():
+                continue
+            if path.name.startswith("."):
+                continue
+            if path.suffix.lower() not in exts:
+                continue
+            results.append(self.upload_file(path))
+        return results
+
+    def upload_url(self, url: str, filename: Optional[str] = None) -> dict[str, Any]:
+        """Download ``url`` then multipart-upload it to the server."""
+        with httpx.Client(timeout=DEFAULT_TIMEOUT, follow_redirects=True) as dl:
+            resp = dl.get(url)
+            resp.raise_for_status()
+            data = resp.content
+            content_disp = resp.headers.get("content-disposition", "")
+            content_type = resp.headers.get("content-type", "")
+        name = filename or Path(urlparse(url).path).name or "download.bin"
+        if not Path(name).suffix:
+            if "filename=" in content_disp:
+                name = content_disp.split("filename=")[-1].strip("\"' ")
+            else:
+                guessed = mimetypes.guess_extension(content_type.split(";")[0].strip())
+                if guessed:
+                    name = f"{name}{guessed}"
+        suffix = Path(name).suffix or ".bin"
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp.write(data)
+            tmp_path = Path(tmp.name)
+        try:
+            return self.upload_file(tmp_path, filename=name)
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
+    def insert_text(self, text: str, doc_id: Optional[str] = None) -> dict[str, Any]:
+        body: dict[str, Any] = {"text": text}
+        if doc_id:
+            body["doc_id"] = doc_id
+        return self._post("/documents/text", json=body)
+
+    def scan_input_dir(self) -> dict[str, Any]:
+        return self._post("/documents/scan")
+
+    def clear_documents(self) -> dict[str, Any]:
+        resp = self._client.delete("/documents/")
+        self._raise(resp)
+        return resp.json()
+
+    # ------------------------------------------------------------------ graph
+    def list_labels(self) -> dict[str, Any]:
+        return self._get("/graph/label/list")
+
+    def explore_graph(
+        self, label: Optional[str] = None, limit: int = 200
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {"limit": limit}
+        if label:
+            params["label"] = label
+        return self._get("/graphs", params=params)
+
+    # --------------------------------------------------------------- helpers
+    @staticmethod
+    def _query_body(params: dict[str, Any]) -> dict[str, Any]:
+        """Clean tunable knobs; preserve API flags like ``only_need_context``."""
+        params = dict(params)
+        only_need_context = params.pop("only_need_context", None)
+        body = clean_params(params)
+        if only_need_context is not None:
+            body["only_need_context"] = bool(only_need_context)
+        return body
+
+    def _get(self, path: str, params: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+        resp = self._client.get(path, params=params)
+        self._raise(resp)
+        return resp.json()
+
+    def _post(
+        self, path: str, json: Optional[dict[str, Any]] = None
+    ) -> dict[str, Any]:
+        resp = self._client.post(path, json=json)
+        self._raise(resp)
+        return resp.json()
+
+    @staticmethod
+    def _raise(resp: httpx.Response) -> None:
+        if resp.is_success:
+            return
+        detail: Any
+        try:
+            detail = resp.json()
+        except Exception:
+            detail = resp.text
+        raise httpx.HTTPStatusError(
+            f"{resp.status_code} {resp.reason_phrase}: {detail}",
+            request=resp.request,
+            response=resp,
+        )
