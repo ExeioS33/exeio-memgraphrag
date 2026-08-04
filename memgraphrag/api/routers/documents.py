@@ -6,12 +6,12 @@ Adapted from LightRAG ``lightrag/api/routers/document_routes.py`` (heavily slimm
 from __future__ import annotations
 
 import logging
-import os
 import uuid
 from pathlib import Path
 from typing import Any, Optional
 
 from memgraphrag.base import DocStatus
+from memgraphrag.pipeline import enqueue_document, process_pending
 from memgraphrag.utils.hashing import compute_mdhash_id
 
 logger = logging.getLogger("memgraphrag.api.documents")
@@ -44,65 +44,21 @@ class TextInsertRequest(BaseModel):
     doc_id: Optional[str] = Field(default=None, description="Optional document id")
 
 
-def _read_text_file(path: Path) -> str:
-    raw = path.read_bytes()
-    for enc in ("utf-8", "utf-8-sig", "latin-1"):
-        try:
-            return raw.decode(enc)
-        except UnicodeDecodeError:
-            continue
-    return raw.decode("utf-8", errors="replace")
+async def _run_pipeline(rag: Any, input_dir: Path) -> dict[str, Any]:
+    """Drain PENDING docs through parse → chunk → index."""
+    return await process_pending(rag, rag.doc_status, input_dir=input_dir)
 
 
-async def _index_texts(rag: Any, texts: list[str], doc_ids: list[str] | None = None) -> dict:
-    payloads: list[dict[str, str]] = []
-    for i, text in enumerate(texts):
-        idx = (doc_ids[i] if doc_ids and i < len(doc_ids) else None) or compute_mdhash_id(
-            text, prefix="chunk-"
-        )
-        payloads.append({"idx": idx, "passage": text, "content": text})
-        try:
-            await rag.doc_status.upsert(
-                {
-                    idx: {
-                        "status": DocStatus.PROCESSING.value,
-                        "content_length": len(text),
-                    }
-                }
-            )
-        except Exception as exc:
-            logger.debug("doc_status upsert skipped: %s", exc)
-
-    try:
-        result = await rag.aindex_with_memory(payloads)
-        for item in payloads:
-            try:
-                await rag.doc_status.upsert(
-                    {
-                        item["idx"]: {
-                            "status": DocStatus.PROCESSED.value,
-                            "content_length": len(item.get("content") or item.get("passage", "")),
-                        }
-                    }
-                )
-            except Exception:
-                pass
-        return result if isinstance(result, dict) else {"ok": True}
-    except Exception as exc:
-        logger.exception("Indexing failed: %s", exc)
-        for item in payloads:
-            try:
-                await rag.doc_status.upsert(
-                    {
-                        item["idx"]: {
-                            "status": DocStatus.FAILED.value,
-                            "error": str(exc),
-                        }
-                    }
-                )
-            except Exception:
-                pass
-        raise
+async def _index_inline_text(rag: Any, text: str, doc_id: str) -> dict[str, Any]:
+    """Enqueue inline text with legacy engine and process immediately."""
+    await enqueue_document(
+        doc_id=doc_id,
+        file_path=f"inline:{doc_id}",
+        doc_status_storage=rag.doc_status,
+        content=text,
+        parse_engine="legacy",
+    )
+    return await process_pending(rag, rag.doc_status, input_dir=None)
 
 
 def create_documents_router(api_key: Optional[str] = None) -> Any:
@@ -128,20 +84,29 @@ def create_documents_router(api_key: Optional[str] = None) -> Any:
         dest = input_dir / safe_name
         content = await file.read()
         dest.write_bytes(content)
+        doc_id = compute_mdhash_id(f"{safe_name}:{len(content)}", prefix="doc-")
 
         async def _bg() -> None:
             try:
-                text = _read_text_file(dest)
-                if text.strip():
-                    await _index_texts(rag, [text], [compute_mdhash_id(text, prefix="doc-")])
+                request.app.state.pipeline_busy = True
+                await enqueue_document(
+                    doc_id=doc_id,
+                    file_path=str(dest),
+                    doc_status_storage=rag.doc_status,
+                )
+                summary = await _run_pipeline(rag, input_dir)
+                logger.info("Upload pipeline finished for %s: %s", safe_name, summary)
             except Exception as exc:
                 logger.exception("Background upload index failed: %s", exc)
+            finally:
+                request.app.state.pipeline_busy = False
 
         background_tasks.add_task(_bg)
         return {
             "status": "queued",
             "filename": safe_name,
             "path": str(dest),
+            "doc_id": doc_id,
             "message": "File saved; indexing started in background",
         }
 
@@ -149,7 +114,7 @@ def create_documents_router(api_key: Optional[str] = None) -> Any:
     async def insert_text(request: Request, body: TextInsertRequest):
         rag = request.app.state.rag
         doc_id = body.doc_id or compute_mdhash_id(body.text, prefix="doc-")
-        result = await _index_texts(rag, [body.text], [doc_id])
+        result = await _index_inline_text(rag, body.text, doc_id)
         return {"status": "ok", "doc_id": doc_id, "result": result}
 
     @router.get("/", dependencies=[Depends(combined_auth)])
@@ -183,22 +148,32 @@ def create_documents_router(api_key: Optional[str] = None) -> Any:
         files = [
             p
             for p in input_dir.rglob("*")
-            if p.is_file() and not p.name.startswith(".")
+            if p.is_file()
+            and not p.name.startswith(".")
+            and "__parsed__" not in p.parts
         ]
 
         async def _bg() -> None:
-            for path in files:
-                try:
-                    text = _read_text_file(path)
-                    if not text.strip():
-                        continue
-                    await _index_texts(
-                        rag,
-                        [text],
-                        [compute_mdhash_id(str(path) + text[:64], prefix="doc-")],
-                    )
-                except Exception as exc:
-                    logger.warning("Scan skip %s: %s", path, exc)
+            try:
+                request.app.state.pipeline_busy = True
+                for path in files:
+                    try:
+                        doc_id = compute_mdhash_id(
+                            f"{path}:{path.stat().st_size}", prefix="doc-"
+                        )
+                        await enqueue_document(
+                            doc_id=doc_id,
+                            file_path=str(path),
+                            doc_status_storage=rag.doc_status,
+                        )
+                    except Exception as exc:
+                        logger.warning("Scan enqueue skip %s: %s", path, exc)
+                summary = await _run_pipeline(rag, input_dir)
+                logger.info("Scan pipeline finished: %s", summary)
+            except Exception as exc:
+                logger.exception("Scan pipeline failed: %s", exc)
+            finally:
+                request.app.state.pipeline_busy = False
 
         background_tasks.add_task(_bg)
         return {
