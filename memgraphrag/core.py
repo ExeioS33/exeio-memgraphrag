@@ -794,3 +794,24 @@ class MemGraphRAG:
         self, query: str, param: QueryParam | None = None
     ) -> Union[str, QuerySolution]:
         return _run_sync(self.aquery(query, param=param))
+
+    # Research-engine aliases (MemGraphRAG/code naming)
+    async def aindex_with_memory(
+        self, chunks: Sequence[str] | Sequence[dict[str, str]]
+    ) -> dict[str, Any]:
+        return await self.ainsert(chunks)
+
+    def index_with_memory(
+        self, chunks: Sequence[str] | Sequence[dict[str, str]]
+    ) -> dict[str, Any]:
+        return _run_sync(self.aindex_with_memory(chunks))
+
+    async def arag_qa(
+        self, query: str, param: QueryParam | None = None
+    ) -> Union[str, QuerySolution]:
+        return await self.aquery(query, param=param)
+
+    def rag_qa(
+        self, query: str, param: QueryParam | None = None
+    ) -> Union[str, QuerySolution]:
+        return _run_sync(self.arag_qa(query, param=param))
