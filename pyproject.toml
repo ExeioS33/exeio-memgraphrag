@@ -66,13 +66,19 @@ pytest = [
     "httpx==0.28.1",
     "ruff==0.16.1",
 ]
+client = [
+    "streamlit==1.60.0",
+    "typer==0.27.1",
+    "rich==15.0.0",
+]
 test = [
-    "memgraphrag[api,pytest]",
+    "memgraphrag[api,pytest,client]",
 ]
 
 [project.scripts]
 memgraphrag-server = "memgraphrag.api.server:main"
 memgraphrag-gunicorn = "memgraphrag.api.gunicorn_runner:main"
+memgraphrag-cli = "memgraphrag.client.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["memgraphrag*"]
