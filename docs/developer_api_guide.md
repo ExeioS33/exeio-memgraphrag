@@ -25,13 +25,17 @@ Expected LLM object:
 
 ```json
 {
-  "thought": "<brief reasoning grounded in the passages and Source filenames>",
-  "answer": "<answer that names Source filename(s) and uses [n] citations>",
+  "thought": "<reasoning: domain detected + which passages support each claim>",
+  "answer": "<detailed Markdown answer (tables/quotes/equations as needed) with [n] + Source filenames>",
   "citations": [1, 2],
   "sources": [{"passage": 1, "file_path": "paper.pdf"}],
   "confidence": "high"
 }
 ```
+
+The QA system prompt is **domain-adaptive**: benchmarks get Markdown tables,
+legal answers quote articles, math includes equations, procedures use numbered
+steps, etc. — always grounded in the passages.
 
 Passages are labeled `[Passage N | Source: <filename>]`. The API **always**
 returns a `references` array built from retrieved passage sources (even if the

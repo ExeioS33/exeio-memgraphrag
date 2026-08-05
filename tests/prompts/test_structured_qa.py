@@ -22,6 +22,9 @@ def test_render_rag_qa_structured_numbers_passages() -> None:
     assert "What is MemGraphRAG?" in user
     assert "Always cite Source filenames" in user
     assert "MUST reference document sources" in system
+    assert "Benchmarks" in system
+    assert "Markdown tables" in system
+    assert "domain-adapted" in user
 
 
 def test_parse_structured_qa_valid_json() -> None:
