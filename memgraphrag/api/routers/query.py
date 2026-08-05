@@ -42,34 +42,19 @@ class QueryRequest(BaseModel):
     schema_top_k: Optional[int] = Field(default=None, ge=0)
     schema_node_weight: Optional[float] = None
     only_need_context: Optional[bool] = False
-    structured_output: Optional[bool] = Field(
-        default=True,
-        description=(
-            "Ask the QA LLM for JSON with answer/thought/citations/confidence "
-            "(default true). Set false for legacy Thought:/Answer: freeform."
-        ),
-    )
     conversation_history: Optional[list[dict[str, str]]] = None
     user_prompt: Optional[str] = None
     stream: Optional[bool] = False
 
 
 class QueryResponse(BaseModel):
-    """Documented API response shape for ``POST /query``."""
+    """LightRAG-compatible ``POST /query`` response shape."""
 
-    question: Optional[str] = None
-    response: Optional[str] = None
-    answer: Optional[str] = None
-    thought: Optional[str] = None
-    citations: list[int] = Field(default_factory=list)
-    confidence: Optional[str] = None
-    structured: bool = False
-    sources: list[str] = Field(default_factory=list)
-    references: list[dict[str, Any]] = Field(default_factory=list)
-    docs: list[str] = Field(default_factory=list)
-    doc_scores: Optional[list[float]] = None
-    gold_answers: Optional[list[str]] = None
-    gold_docs: Optional[list[str]] = None
+    response: Optional[str] = Field(default=None, description="Generated answer text")
+    references: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Unique source documents supporting the answer",
+    )
 
 
 def _build_param(body: QueryRequest, rag: Any) -> QueryParam:
@@ -94,8 +79,6 @@ def _build_param(body: QueryRequest, rag: Any) -> QueryParam:
         kwargs["schema_node_weight"] = body.schema_node_weight
     if body.only_need_context is not None:
         kwargs["only_need_context"] = body.only_need_context
-    if body.structured_output is not None:
-        kwargs["structured_output"] = body.structured_output
     if body.conversation_history is not None:
         kwargs["conversation_history"] = body.conversation_history
     if body.user_prompt is not None:
@@ -106,21 +89,27 @@ def _build_param(body: QueryRequest, rag: Any) -> QueryParam:
 
 
 def _solution_payload(sol: QuerySolution | str) -> dict[str, Any]:
+    """LightRAG-style envelope: ``response`` + ``references``."""
     if isinstance(sol, str):
-        return {
-            "response": sol,
-            "answer": sol,
-            "thought": None,
-            "citations": [],
-            "confidence": None,
-            "structured": False,
-        }
+        return {"response": sol, "references": []}
     if hasattr(sol, "ensure_references"):
         sol.ensure_references()
+    return {
+        "response": sol.answer,
+        "references": list(getattr(sol, "references", None) or []),
+    }
+
+
+def _query_data_payload(sol: QuerySolution | str) -> dict[str, Any]:
+    """Richer retrieval payload for ``/query/data`` (includes docs)."""
+    base = _solution_payload(sol)
+    if isinstance(sol, str):
+        return base
     data = sol.to_dict()
-    data["response"] = sol.answer
-    data["answer"] = sol.answer
-    return data
+    base["docs"] = data.get("docs") or []
+    base["doc_scores"] = data.get("doc_scores")
+    base["question"] = data.get("question")
+    return base
 
 
 def create_query_router(api_key: Optional[str] = None) -> Any:
@@ -149,12 +138,11 @@ def create_query_router(api_key: Optional[str] = None) -> Any:
             query=truncate(body.query),
             stream=False,
             only_need_context=bool(param.only_need_context),
-            structured_output=bool(param.structured_output),
         )
         try:
             sol = await rag.arag_qa(body.query, param=param)
             payload = _solution_payload(sol)
-            answer = payload.get("answer") or payload.get("response") or ""
+            answer = payload.get("response") or ""
             docs = getattr(sol, "docs", None) or []
             done_step(
                 logger,
@@ -162,7 +150,7 @@ def create_query_router(api_key: Optional[str] = None) -> Any:
                 mode=param.mode,
                 docs=len(docs),
                 answer_chars=len(str(answer)),
-                structured=bool(payload.get("structured")),
+                references=len(payload.get("references") or []),
             )
             return payload
         except Exception as exc:
@@ -194,6 +182,7 @@ def create_query_router(api_key: Optional[str] = None) -> Any:
         try:
             sols = await rag.aretrieve(body.query, param=param)
             sol = sols[0] if sols else QuerySolution(question=body.query, docs=[])
+            sol.ensure_references()
             done_step(
                 logger,
                 "api.query.data",
@@ -202,7 +191,7 @@ def create_query_router(api_key: Optional[str] = None) -> Any:
             )
             return {
                 "status": "success",
-                "data": _solution_payload(sol),
+                "data": _query_data_payload(sol),
                 "metadata": {"mode": param.mode},
             }
         except Exception as exc:
@@ -231,7 +220,8 @@ def create_query_router(api_key: Optional[str] = None) -> Any:
             try:
                 sol = await rag.arag_qa(body.query, param=param)
                 payload = _solution_payload(sol)
-                answer = payload.get("answer") or payload.get("response") or ""
+                answer = payload.get("response") or ""
+                refs = payload.get("references") or []
                 docs = getattr(sol, "docs", None) or []
                 done_step(
                     logger,
@@ -239,19 +229,11 @@ def create_query_router(api_key: Optional[str] = None) -> Any:
                     mode=param.mode,
                     docs=len(docs),
                     answer_chars=len(str(answer)),
+                    references=len(refs),
                 )
-                # Yield structured payload then DONE (no token streaming yet)
-                stream_payload = {
-                    "response": answer,
-                    "answer": answer,
-                    "thought": payload.get("thought"),
-                    "citations": payload.get("citations") or [],
-                    "confidence": payload.get("confidence"),
-                    "structured": bool(payload.get("structured")),
-                    "sources": payload.get("sources") or [],
-                    "references": payload.get("references") or [],
-                }
-                yield f"data: {json.dumps(stream_payload, ensure_ascii=False)}\n\n"
+                # LightRAG-compatible order: references first, then response.
+                yield f"data: {json.dumps({'references': refs}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'response': answer}, ensure_ascii=False)}\n\n"
                 yield "data: [DONE]\n\n"
             except Exception as exc:
                 fail_step(

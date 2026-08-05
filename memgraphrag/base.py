@@ -35,9 +35,6 @@ class QueryParam:
     only_need_context: bool = False
     """If True, return retrieved context without generating an answer."""
 
-    structured_output: bool = True
-    """If True, ask the LLM for JSON (answer/thought/citations/confidence)."""
-
     stream: bool = False
     """If True, stream the LLM response."""
 
@@ -91,7 +88,7 @@ class QueryParam:
     """Past turns: [{"role": "user"|"assistant", "content": "..."}]."""
 
     user_prompt: str | None = None
-    """Optional extra instruction injected into the QA user prompt."""
+    """Optional extra instruction injected into the QA prompt."""
 
 
 @dataclass

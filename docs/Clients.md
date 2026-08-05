@@ -65,8 +65,6 @@ uv run memgraphrag-cli params
 uv run memgraphrag-cli query "What is MemGraphRAG?" --preset "⚖️ Balanced"
 uv run memgraphrag-cli query "…" --data-only --top-k 10
 uv run memgraphrag-cli query "…" --stream
-uv run memgraphrag-cli query "…" --structured   # JSON QA + document sources (default)
-uv run memgraphrag-cli query "…" --freeform     # legacy Thought:/Answer: prompt
 
 uv run memgraphrag-cli docs upload ./paper.pdf
 uv run memgraphrag-cli docs upload-dir ./corpus --recursive
@@ -86,9 +84,7 @@ uv run memgraphrag-cli optimize "What is the three-layer memory?" \
   --top-n 3 --output /tmp/opt.json
 ```
 
-Tunable query flags include `--mode`, `--top-k`, `--linking-top-k`, `--passage-node-weight`, `--damping`, `--fact-similarity-threshold`, `--skip-fact-rerank`, `--schema-top-k`, `--schema-node-weight`, `--user-prompt`, `--structured` / `--freeform`, and `--preset`.
-
-`/query` responses are structured by default (`answer`, `thought`, `citations`, `confidence`, `sources`, `references`). Both the CLI and Streamlit Query tab render Sources + evidence with per-passage `file_path` labels.
+Tunable query flags include `--mode`, `--top-k`, `--linking-top-k`, `--passage-node-weight`, `--damping`, `--fact-similarity-threshold`, `--skip-fact-rerank`, `--user-prompt`, and `--preset`.
 
 ## Streamlit UI
 
@@ -103,7 +99,7 @@ Opens at `http://localhost:8501` by default. Sidebar: server URL, API key, prese
 Tabs:
 
 1. **Home** — connect / health (core + API versions, pipeline busy).
-2. **Query** — structured answer (thought / citations / sources / references), context-only, or SSE stream; sidebar presets + sliders including `structured_output`.
+2. **Query** — full answer, context-only, or SSE stream; sidebar presets + sliders.
 3. **Ingest** — file upload, local directory, URL, inline text, server inbox scan; document status with per-doc delete/requeue/detail and guarded clear-all.
 4. **Optimize** — hybrid param lab (see below); apply winners back to the Query tab.
 5. **Graph** — label filter + node/edge explorer.

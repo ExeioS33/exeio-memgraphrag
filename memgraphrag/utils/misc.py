@@ -22,10 +22,6 @@ class QuerySolution:
     docs: List[str]
     doc_scores: Optional[ArrayLike] = None
     answer: Optional[str] = None
-    thought: Optional[str] = None
-    citations: Optional[List[int]] = None
-    confidence: Optional[str] = None
-    structured: bool = False
     sources: Optional[List[str]] = None
     """Document source label per retrieved passage (basename / file_path)."""
     passage_ids: Optional[List[str]] = None
@@ -36,19 +32,21 @@ class QuerySolution:
     gold_docs: Optional[List[str]] = None
 
     def ensure_references(self) -> list[dict[str, Any]]:
-        """Build ``references`` from retrieved passage sources (always)."""
+        """Build unique ``references`` from retrieved passage sources (LightRAG-style)."""
         if self.references is not None:
             return list(self.references)
+        seen: dict[str, str] = {}
         refs: list[dict[str, Any]] = []
-        sources = list(self.sources or [])
-        for i, _doc in enumerate(self.docs or [], start=1):
-            src = ""
-            if i - 1 < len(sources):
-                src = str(sources[i - 1] or "").strip()
+        for src in list(self.sources or []):
+            label = str(src or "").strip() or "unknown"
+            if label in seen:
+                continue
+            rid = str(len(refs) + 1)
+            seen[label] = rid
             refs.append(
                 {
-                    "reference_id": str(i),
-                    "file_path": src or "unknown",
+                    "reference_id": rid,
+                    "file_path": label,
                     "content": None,
                 }
             )
@@ -66,14 +64,10 @@ class QuerySolution:
         return {
             "question": self.question,
             "answer": self.answer,
-            "thought": self.thought,
-            "citations": list(self.citations or []),
-            "confidence": self.confidence,
-            "structured": bool(self.structured),
-            "sources": list(self.sources or [])[:5],
-            "references": refs[:5],
             "gold_answers": self.gold_answers,
             "docs": self.docs[:5],
             "doc_scores": doc_scores,
             "gold_docs": self.gold_docs,
+            "sources": list(self.sources or [])[:5],
+            "references": refs,
         }

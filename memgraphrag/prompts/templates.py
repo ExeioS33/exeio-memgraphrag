@@ -213,25 +213,15 @@ Output JSON:
 )
 
 # ---------------------------------------------------------------------------
-# RAG QA (legacy freeform Thought:/Answer:)
+# RAG QA
 # ---------------------------------------------------------------------------
 
-RAG_QA_SYSTEM = """You are an expert domain-adaptive reading-comprehension assistant for a GraphRAG system.
-Analyze the passages meticulously, then answer after "Thought:" and "Answer:".
-
-Answer quality (mandatory):
-- Be thorough and specific. Prefer concrete facts, numbers, names, dates, and mechanisms over vague summary.
-- Adapt the presentation to the question domain using Markdown in the Answer:
-  * Benchmarks / comparisons / metrics → Markdown tables of models, datasets, scores, deltas; call out winners and caveats.
-  * Scientific / technical → methods, results, limitations; reconstruct key figures or result tables when the passages contain them.
-  * Legal / regulatory → quote articles, clauses, and definitions with quotation marks; preserve article/section numbers.
-  * Mathematics / formal → give equations (LaTeX `$...$` / `$$...$$`) and short derivation steps when present in the sources.
-  * Finance / economics → include figures, units, periods, and tables of values when available.
-  * Procedures / how-to → ordered steps with prerequisites and failure modes.
-  * Definitions / surveys → structured sections (definition, properties, examples, related work).
-- Never invent numbers, quotes, equations, or article text that are not supported by the passages.
-- If evidence is incomplete, say what is missing and answer only what the passages support.
-"""
+RAG_QA_SYSTEM = (
+    'As an advanced reading comprehension assistant, your task is to analyze text passages '
+    'and corresponding questions meticulously. Your response starts after "Thought: ", where '
+    "you methodically break down the reasoning process. Conclude with \"Answer: \" to present "
+    "a concise, definitive response."
+)
 
 RAG_QA_USER_TEMPLATE = Template(
     """$context
@@ -239,179 +229,6 @@ RAG_QA_USER_TEMPLATE = Template(
 Question: $question
 Thought: """
 )
-
-# ---------------------------------------------------------------------------
-# RAG QA (structured JSON — default for API consumers)
-# ---------------------------------------------------------------------------
-
-RAG_QA_STRUCTURED_SYSTEM = """You are an expert domain-adaptive reading-comprehension assistant for a GraphRAG system.
-Analyze the numbered passages and produce a rich, well-structured answer.
-
-Grounding and citations (mandatory):
-- Ground every claim in the passages. If evidence is missing, say so clearly in "answer" and do not invent facts.
-- EVERY answer MUST reference document sources. Each passage header includes "Source: <filename>".
-- In "answer", cite supporting passages with [n] markers (1-based) and name the Source filename(s).
-- "citations" must be 1-based passage numbers that support the answer (empty list only if no passage applies).
-- "sources" must list {passage, file_path} for every cited passage; use the Source filename from the header.
-- "confidence" is one of: high, medium, low.
-
-Answer depth and domain adaptation (mandatory):
-- "answer" is a detailed Markdown string (still inside JSON). Do NOT settle for a one-line summary when the passages contain usable detail.
-- Infer the question domain and choose the best illustrative form:
-  * Benchmarks / leaderboards / ablation / metrics → include Markdown tables (models × datasets/metrics, scores, Δ vs baseline); highlight best results and note experimental caveats from the sources.
-  * Scientific / engineering papers → organize with short headings (Setup, Results, Analysis); reconstruct quantitative tables or describe figure trends when the passages provide them.
-  * Legal / compliance / standards → quote relevant articles, sections, and definitions verbatim in quotation marks; keep article/§/article numbers exact.
-  * Mathematics / algorithms → state key equations in LaTeX (`$...$` or `$$...$$`) and brief step-by-step reasoning when present in the sources.
-  * Finance / markets / reporting → report exact figures with units and periods; use tables for multi-period or multi-entity numbers.
-  * Procedures / operations → numbered steps with inputs, outputs, and edge cases.
-  * Conceptual / survey questions → structured sections with definitions, properties, examples, and contrasts.
-- Prefer tables, quoted excerpts, equations, and enumerated steps over prose-only answers when the domain calls for them.
-- Use only values, quotes, and equations that appear in (or are directly implied by) the passages. Never fabricate benchmarks or legal text.
-
-Output format:
-- Respond with a single JSON object only. No markdown fences wrapping the JSON, no prose outside JSON.
-- Inside the "answer" string, Markdown (tables, headings, lists, LaTeX) is encouraged.
-
-Required JSON shape:
-{
-  "thought": "<reasoning: domain detected, which passages/Source files support each claim>",
-  "answer": "<detailed Markdown answer adapted to the domain; cite [n] and Source filenames>",
-  "citations": [<int>, ...],
-  "sources": [{"passage": <int>, "file_path": "<Source filename>"}],
-  "confidence": "high|medium|low"
-}
-"""
-
-RAG_QA_STRUCTURED_USER_TEMPLATE = Template(
-    """Passages:
-$context
-
-Question: $question
-
-Respond with JSON only. Produce a detailed, domain-adapted Markdown answer.
-Always cite Source filenames with [n] markers. Use tables, quotes, or equations when the domain requires them.
-"""
-)
-
-RAG_QA_STRUCTURED_BYPASS_SYSTEM = """You are an expert domain-adaptive assistant.
-Answer the user question and return a single JSON object only (no markdown fences wrapping the JSON).
-There is no retrieved document corpus in bypass mode, so sources/citations stay empty.
-
-Answer depth and domain adaptation (mandatory):
-- "answer" is detailed Markdown. Adapt to the domain: tables for benchmarks, quoted articles for legal,
-  LaTeX equations for math, numbered steps for procedures, structured sections for concepts.
-- Be thorough and concrete; do not invent citations to documents you do not have.
-
-Required JSON shape:
-{
-  "thought": "<reasoning: domain detected and how you structure the answer>",
-  "answer": "<detailed Markdown answer adapted to the domain>",
-  "citations": [],
-  "sources": [],
-  "confidence": "high|medium|low"
-}
-"""
-
-
-def _numbered_context(
-    docs: list[str], sources: list[str] | None = None
-) -> str:
-    """Format passages as ``[Passage N | Source: …]`` blocks for grounding."""
-    parts: list[str] = []
-    source_list = list(sources or [])
-    for i, doc in enumerate(docs, start=1):
-        text = str(doc or "").strip()
-        if not text:
-            continue
-        src = ""
-        if i - 1 < len(source_list):
-            src = str(source_list[i - 1] or "").strip()
-        if src:
-            parts.append(f"[Passage {i} | Source: {src}]\n{text}")
-        else:
-            parts.append(f"[Passage {i} | Source: unknown]\n{text}")
-    return "\n\n".join(parts)
-
-
-def parse_structured_qa(raw: str) -> dict[str, object]:
-    """Parse a structured QA LLM response into normalized fields.
-
-    Returns keys: ``answer``, ``thought``, ``citations``, ``sources``,
-    ``confidence``, ``structured`` (bool), ``raw``.
-    Falls back to freeform text when JSON is missing or invalid.
-    """
-    from memgraphrag.utils.json_llm import extract_json_object
-
-    text = str(raw or "").strip()
-    data = extract_json_object(text)
-    if not data:
-        # Legacy Thought:/Answer: fallback
-        answer = text
-        thought: str | None = None
-        if "Answer:" in text:
-            before, _, after = text.partition("Answer:")
-            answer = after.strip()
-            if "Thought:" in before:
-                thought = before.split("Thought:", 1)[-1].strip() or None
-            elif before.strip():
-                thought = before.strip()
-        return {
-            "answer": answer,
-            "thought": thought,
-            "citations": [],
-            "sources": [],
-            "confidence": None,
-            "structured": False,
-            "raw": text,
-        }
-
-    citations_raw = data.get("citations") or []
-    citations: list[int] = []
-    if isinstance(citations_raw, list):
-        for item in citations_raw:
-            try:
-                citations.append(int(item))
-            except (TypeError, ValueError):
-                continue
-
-    sources_out: list[dict[str, object]] = []
-    sources_raw = data.get("sources") or []
-    if isinstance(sources_raw, list):
-        for item in sources_raw:
-            if not isinstance(item, dict):
-                continue
-            passage = item.get("passage")
-            file_path = item.get("file_path") or item.get("source") or item.get("name")
-            try:
-                passage_i = int(passage) if passage is not None else None
-            except (TypeError, ValueError):
-                passage_i = None
-            if file_path is None and passage_i is None:
-                continue
-            sources_out.append(
-                {
-                    "passage": passage_i,
-                    "file_path": str(file_path).strip() if file_path is not None else "",
-                }
-            )
-
-    confidence = data.get("confidence")
-    if confidence is not None:
-        confidence = str(confidence).strip().lower() or None
-        if confidence not in {"high", "medium", "low"}:
-            confidence = None
-
-    answer = data.get("answer")
-    thought_val = data.get("thought")
-    return {
-        "answer": str(answer).strip() if answer is not None else text,
-        "thought": str(thought_val).strip() if thought_val is not None else None,
-        "citations": citations,
-        "sources": sources_out,
-        "confidence": confidence,
-        "structured": True,
-        "raw": text,
-    }
 
 
 def render_ner(passage: str) -> tuple[str, str]:
@@ -430,19 +247,6 @@ def render_triple_extraction(passage: str, named_entities: list[str]) -> tuple[s
 
 
 def render_rag_qa(question: str, docs: list[str]) -> tuple[str, str]:
-    """Return (system, user) prompts for legacy freeform RAG QA."""
+    """Return (system, user) prompts for RAG QA."""
     context = "\n\n".join(docs)
     return RAG_QA_SYSTEM, RAG_QA_USER_TEMPLATE.substitute(context=context, question=question)
-
-
-def render_rag_qa_structured(
-    question: str,
-    docs: list[str],
-    sources: list[str] | None = None,
-) -> tuple[str, str]:
-    """Return (system, user) prompts for structured JSON RAG QA."""
-    context = _numbered_context(docs, sources=sources)
-    return (
-        RAG_QA_STRUCTURED_SYSTEM,
-        RAG_QA_STRUCTURED_USER_TEMPLATE.substitute(context=context, question=question),
-    )

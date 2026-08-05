@@ -232,12 +232,6 @@ def tab_home() -> None:
 
 
 def tab_query() -> None:
-    from memgraphrag.client.result import (
-        merge_stream_event,
-        normalize_query_payload,
-        source_label,
-    )
-
     st.markdown("## 💬 Ask away")
     question = st.text_area(
         "Your question",
@@ -254,43 +248,33 @@ def tab_query() -> None:
         try:
             with get_client() as c, st.spinner("🧠 Thinking really hard…"):
                 if use_stream and not data_only:
-                    acc: dict[str, Any] = {}
-                    display_parts: list[str] = []
+                    chunks: list[str] = []
+                    refs: list[Any] = []
                     placeholder = st.empty()
                     for payload in c.query_stream(question, **params):
                         if payload == "[DONE]":
                             break
                         try:
                             obj = json.loads(payload)
-                            if not isinstance(obj, dict):
-                                display_parts.append(str(payload))
-                                placeholder.markdown("".join(display_parts))
+                            if isinstance(obj, dict) and "references" in obj and "response" not in obj:
+                                refs = list(obj.get("references") or [])
                                 continue
-                            acc, text = merge_stream_event(acc, obj)
-                            if text:
-                                # One-shot SSE sends the full answer; replace rather
-                                # than concatenate duplicate full payloads.
-                                if obj.get("answer") or (
-                                    obj.get("response") and obj.get("structured")
-                                ):
-                                    display_parts = [text]
-                                else:
-                                    display_parts.append(text)
-                                placeholder.markdown("".join(display_parts))
+                            text = obj.get("response") or obj.get("error") or payload
                         except json.JSONDecodeError:
-                            display_parts.append(str(payload))
-                            placeholder.markdown("".join(display_parts))
-                    st.session_state.last_answer = normalize_query_payload(acc)
+                            text = payload
+                        chunks.append(str(text))
+                        placeholder.markdown("".join(chunks))
+                    st.session_state.last_answer = {
+                        "response": "".join(chunks),
+                        "references": refs,
+                        "docs": [],
+                        "doc_scores": [],
+                    }
                 elif data_only:
                     payload = c.query_data(question, **params)
-                    raw_data = payload.get("data") or payload
-                    st.session_state.last_answer = normalize_query_payload(
-                        raw_data if isinstance(raw_data, dict) else {}
-                    )
+                    st.session_state.last_answer = payload.get("data") or payload
                 else:
-                    st.session_state.last_answer = normalize_query_payload(
-                        c.query(question, **params)
-                    )
+                    st.session_state.last_answer = c.query(question, **params)
             st.toast("Answer ready!", icon="✨")
         except Exception as exc:  # noqa: BLE001
             st.error(f"💥 Query failed: {exc}")
@@ -303,44 +287,28 @@ def tab_query() -> None:
         st.json(ans)
         return
 
-    ans = normalize_query_payload(ans if isinstance(ans, dict) else {})
     answer = ans.get("answer") or ans.get("response")
     if answer:
         st.markdown("### ✨ Answer")
         st.markdown(answer)
 
-    meta_cols = st.columns(3)
-    if ans.get("confidence"):
-        meta_cols[0].metric("Confidence", str(ans["confidence"]))
-    if ans.get("structured"):
-        meta_cols[1].metric("Structured", "yes")
-    citations = ans.get("citations") or []
-    if citations:
-        meta_cols[2].metric("Citations", ", ".join(f"[{c}]" for c in citations))
-
-    thought = ans.get("thought")
-    if thought:
-        with st.expander("💭 Thought", expanded=False):
-            st.write(thought)
-
     refs = ans.get("references") or []
     if refs:
-        st.markdown("### 📚 Sources")
-        for i, ref in enumerate(refs, start=1):
-            if isinstance(ref, dict):
-                st.markdown(f"- {source_label(ref, i)}")
+        st.markdown("### 📚 References")
+        for ref in refs:
+            if not isinstance(ref, dict):
+                continue
+            rid = ref.get("reference_id") or "?"
+            path = ref.get("file_path") or "unknown"
+            st.markdown(f"- [{rid}] {path}")
 
     docs = ans.get("docs") or []
     scores = ans.get("doc_scores") or []
-    sources = ans.get("sources") or []
     if docs:
         st.markdown("### 📎 Retrieved evidence")
         for i, doc in enumerate(docs):
             score = scores[i] if i < len(scores) else "?"
-            src = sources[i] if i < len(sources) else "unknown"
-            with st.expander(
-                f"#{i + 1}  ·  score={score}  ·  source={src}", expanded=i == 0
-            ):
+            with st.expander(f"#{i + 1}  ·  score={score}", expanded=i == 0):
                 st.write(doc)
 
 

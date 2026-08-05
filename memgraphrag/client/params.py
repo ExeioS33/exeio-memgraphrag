@@ -129,21 +129,9 @@ QUERY_PARAMS: tuple[ParamSpec, ...] = (
         name="user_prompt",
         kind="str",
         emoji="📝",
-        help="Optional extra instruction appended to the QA user prompt",
+        help="Optional extra instruction appended to the system prompt",
         default=None,
         sweepable=False,
-    ),
-    ParamSpec(
-        name="structured_output",
-        kind="bool",
-        emoji="🧱",
-        help=(
-            "Ask the QA LLM for JSON with answer/thought/citations/sources "
-            "(default true; document sources always returned in references)"
-        ),
-        default=True,
-        sweepable=False,
-        grid=(True, False),
     ),
 )
 

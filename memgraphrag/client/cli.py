@@ -58,63 +58,6 @@ def _err(exc: Exception) -> None:
     raise typer.Exit(code=1) from exc
 
 
-def _print_references(data: dict[str, Any]) -> None:
-    """Print document source references from a normalized query payload."""
-    refs = data.get("references") or []
-    if not refs:
-        return
-    table = Table(title="📚 Sources", box=box.MINIMAL)
-    table.add_column("Ref", justify="right")
-    table.add_column("file_path")
-    for i, ref in enumerate(refs, start=1):
-        if not isinstance(ref, dict):
-            continue
-        table.add_row(
-            str(ref.get("reference_id") or i),
-            str(ref.get("file_path") or "unknown"),
-        )
-    console.print(table)
-
-
-def _print_query_result(data: dict[str, Any]) -> None:
-    """Pretty-print a normalized structured ``/query`` result."""
-    answer = data.get("answer") or data.get("response") or ""
-    console.print(Panel(str(answer), title="✨ Answer", border_style="magenta"))
-
-    meta_bits: list[str] = []
-    if data.get("confidence"):
-        meta_bits.append(f"confidence=[cyan]{data['confidence']}[/]")
-    if data.get("structured"):
-        meta_bits.append("structured=[green]yes[/]")
-    citations = data.get("citations") or []
-    if citations:
-        meta_bits.append(f"citations={citations}")
-    if meta_bits:
-        console.print(" · ".join(meta_bits))
-
-    thought = data.get("thought")
-    if thought:
-        console.print(Panel(str(thought), title="💭 Thought", border_style="dim"))
-
-    _print_references(data)
-
-    docs = data.get("docs") or []
-    scores = data.get("doc_scores") or []
-    sources = data.get("sources") or []
-    if docs:
-        table = Table(title="📎 Evidence", box=box.MINIMAL)
-        table.add_column("#", justify="right")
-        table.add_column("Score")
-        table.add_column("Source")
-        table.add_column("Snippet")
-        for i, doc in enumerate(docs):
-            score = str(scores[i]) if i < len(scores) else "—"
-            src = str(sources[i]) if i < len(sources) else "unknown"
-            snippet = (doc[:160] + "…") if len(doc) > 160 else doc
-            table.add_row(str(i + 1), score, src, snippet)
-        console.print(table)
-
-
 # --------------------------------------------------------------------------- #
 # Global options helpers
 # --------------------------------------------------------------------------- #
@@ -233,12 +176,7 @@ def query_cmd(
     schema_node_weight: Optional[float] = typer.Option(
         None, help="Schema-expanded seed weight"
     ),
-    user_prompt: Optional[str] = typer.Option(None, help="Extra QA user prompt"),
-    structured_output: Optional[bool] = typer.Option(
-        None,
-        "--structured/--freeform",
-        help="JSON QA with sources (default server: structured)",
-    ),
+    user_prompt: Optional[str] = typer.Option(None, help="Extra system prompt"),
     preset: Optional[str] = typer.Option(
         None, "--preset", help="Preset name (e.g. '⚖️ Balanced')"
     ),
@@ -249,8 +187,6 @@ def query_cmd(
     api_key: Optional[str] = ApiKeyOpt,
 ) -> None:
     """💬 Ask the MemGraphRAG server a question."""
-    from memgraphrag.client.result import normalize_query_payload, merge_stream_event
-
     params: dict[str, Any] = {}
     if preset:
         if preset not in PRESETS:
@@ -268,37 +204,27 @@ def query_cmd(
         "schema_top_k": schema_top_k,
         "schema_node_weight": schema_node_weight,
         "user_prompt": user_prompt,
-        "structured_output": structured_output,
     }.items():
         if val is not None:
             params[key] = val
     params = clean_params(params)
 
-    data: dict[str, Any] = {}
     try:
         with _client(server, api_key) as c:
             if stream:
                 console.print("[cyan]📡 Streaming…[/]")
-                acc: dict[str, Any] = {}
+                chunks: list[str] = []
                 for payload in c.query_stream(question, **params):
                     if payload == "[DONE]":
                         break
                     try:
                         obj = json.loads(payload)
-                        if not isinstance(obj, dict):
-                            console.print(str(payload), end="")
-                            continue
-                        acc, text = merge_stream_event(acc, obj)
-                        if text:
-                            console.print(text, end="")
+                        text = obj.get("response") or obj.get("error") or payload
                     except json.JSONDecodeError:
-                        console.print(str(payload), end="")
+                        text = payload
+                    chunks.append(str(text))
+                    console.print(text, end="")
                 console.print()
-                data = normalize_query_payload(acc)
-                if raw:
-                    _print_json(data)
-                    return
-                _print_query_result(data)
                 return
             with Progress(
                 SpinnerColumn(), TextColumn("[progress.description]{task.description}")
@@ -317,21 +243,37 @@ def query_cmd(
 
     if data_only:
         payload = data.get("data") if isinstance(data.get("data"), dict) else data
-        norm = normalize_query_payload(payload if isinstance(payload, dict) else {})
+        docs = (payload or {}).get("docs") or []
+        scores = (payload or {}).get("doc_scores") or []
         console.print(Panel.fit("📚 Retrieved context", border_style="blue"))
-        _print_references(norm)
-        docs = norm.get("docs") or []
-        scores = norm.get("doc_scores") or []
-        sources = norm.get("sources") or []
         for i, doc in enumerate(docs):
             score = scores[i] if i < len(scores) else "?"
-            src = sources[i] if i < len(sources) else "unknown"
-            console.print(
-                f"[bold]#{i + 1}[/] score={score}  source=[cyan]{src}[/]\n{doc}\n"
-            )
+            console.print(f"[bold]#{i + 1}[/] score={score}\n{doc}\n")
         return
 
-    _print_query_result(normalize_query_payload(data))
+    answer = data.get("answer") or data.get("response") or ""
+    console.print(Panel(str(answer), title="✨ Answer", border_style="magenta"))
+    refs = data.get("references") or []
+    if refs:
+        console.print(Panel.fit("📚 References", border_style="cyan"))
+        for ref in refs:
+            if not isinstance(ref, dict):
+                continue
+            rid = ref.get("reference_id") or "?"
+            path = ref.get("file_path") or "unknown"
+            console.print(f"- [{rid}] {path}")
+    docs = data.get("docs") or []
+    scores = data.get("doc_scores") or []
+    if docs:
+        table = Table(title="📎 Evidence", box=box.MINIMAL)
+        table.add_column("#", justify="right")
+        table.add_column("Score")
+        table.add_column("Snippet")
+        for i, doc in enumerate(docs):
+            score = str(scores[i]) if i < len(scores) else "—"
+            snippet = (doc[:160] + "…") if len(doc) > 160 else doc
+            table.add_row(str(i + 1), score, snippet)
+        console.print(table)
 
 
 # --------------------------------------------------------------------------- #

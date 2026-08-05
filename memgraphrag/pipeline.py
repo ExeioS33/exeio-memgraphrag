@@ -308,18 +308,11 @@ async def process_pending(
             )
             if not chunks:
                 raise ValueError("chunker produced no chunks")
-            # Attach document source so QA can always cite the originating file.
-            source_label = Path(file_path).name or file_path or doc_id
-            for chunk in chunks:
-                if isinstance(chunk, dict):
-                    chunk.setdefault("file_path", source_label)
-                    chunk.setdefault("full_doc_id", doc_id)
             sub_step(
                 logger,
                 "ingest.doc.chunk_result",
                 doc_id=doc_id,
                 chunks=len(chunks),
-                source=source_label,
             )
 
             record = await _set_status(
