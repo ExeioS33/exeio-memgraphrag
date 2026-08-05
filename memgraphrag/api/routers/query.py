@@ -102,28 +102,6 @@ def create_query_router(api_key: Optional[str] = None) -> Any:
         param = _build_param(body, rag)
         if body.only_need_context or body.mode == "context":
             param.only_need_context = True
-        # #region agent log
-        try:
-            from memgraphrag.core import _agent_dbg
-
-            _agent_dbg(
-                "H5",
-                "query.py:query",
-                "query while pipeline state",
-                {
-                    "pipeline_busy": bool(
-                        getattr(request.app.state, "pipeline_busy", False)
-                    ),
-                    "ready_to_retrieve": bool(
-                        getattr(rag, "ready_to_retrieve", False)
-                    ),
-                    "memory_is_none": getattr(rag, "memory", "missing") is None,
-                    "mode": param.mode,
-                },
-            )
-        except Exception:
-            pass
-        # #endregion
         main_step(
             logger,
             "api.query",
