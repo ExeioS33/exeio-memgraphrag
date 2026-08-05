@@ -1,107 +1,118 @@
 # MemGraphRAG structured logging
 
-Server operators can follow ingest and query flows in `docker compose logs memgraphrag` using a two-level convention: **Main step** and **sub-steps**.
+Server operators follow two conventions:
+
+1. **Framework engine logs** (MemGraphRAG indexing / retrieval) — aligned with
+   [XMUDeepLIT/MemGraphRAG](https://github.com/XMUDeepLIT/MemGraphRAG) stage
+   wording plus explicit agent / LLM / embed markers.
+2. **API / file-pipeline logs** — `[MAIN]` / `[STEP]` for HTTP and parse/chunk
+   boundaries.
+
+Helpers live in `memgraphrag.utils.step_log`.
 
 ## Prefixes
 
 | Prefix | Meaning |
 |--------|---------|
-| `[MAIN]` | Start of a major flow (API request, document process, index, retrieve, parse, chunk) |
-| `[STEP]` | Sub-step inside a main flow |
-| `[DONE]` | Successful completion of a main flow |
-| `[FAIL]` | Failure (warning, or exception with traceback when `exc_info=True`) |
+| `[INDEX]` | Banner: **Memory-based Indexing Graph Construction** |
+| `[RETRIEVE]` | Banner: **Memory-guided Online Retrieval** |
+| `[STAGE]` | Framework stage (OpenIE, schema, conflict, PPR, QA, …) |
+| `[LLM]` | Agent / chat-completion call (role id + sizes, never full prompts) |
+| `[EMBED]` | Embedding call (`context`, `n`, `model`) |
+| `[MAIN]` | API / pipeline flow start (upload, parse, chunk, admin) |
+| `[STEP]` | API / pipeline sub-step |
+| `[DONE]` | Successful completion |
+| `[FAIL]` | Failure (warning, or traceback when `exc_info=True`) |
 
-Helpers live in `memgraphrag.utils.step_log`:
+## Multi-agent / LLM roles (`agent=`)
 
-- `main_step(logger, name, **fields)`
-- `sub_step(logger, name, **fields)`
-- `done_step(logger, name, **fields)`
-- `fail_step(logger, name, *, exc=None, exc_info=False, **fields)`
-- `truncate(value, limit=160)` for safe text previews
+These ids appear on `[LLM]` lines when the corresponding stage runs:
 
-Field values are appended as `key=value` pairs (no secrets, no full prompts, no huge bodies).
+| Agent id | When |
+|----------|------|
+| `openie.ner` | Named-entity extraction per passage |
+| `openie.triple` | Relation triple extraction per passage |
+| `schema.extract` | Ontology / schema typing batches |
+| `conflict.detect` | Hard-conflict detection groups |
+| `conflict.resolve` | Conflict resolution with passage evidence |
+| `qa.reading` | RAG answer generation over retrieved docs |
+| `qa.bypass` | Direct LLM answer (`mode=bypass`) |
 
-## Example: document ingest
+Fact “LLM rerank” is currently a **threshold stub** (`FactFilter.llm_filter`); logs show `method=threshold` / `method=llm` accordingly — no live LLM call until that stub is wired.
+
+## Example: Memory-based Indexing Graph Construction
 
 ```text
-[MAIN] api.documents.upload | doc_id=doc-abc filename=report.pdf bytes=102400
-[STEP] api.documents.upload.enqueue | doc_id=doc-abc filename=report.pdf
-[MAIN] ingest.enqueue | doc_id=doc-abc file=report.pdf content_chars=0
-[DONE] ingest.enqueue | doc_id=doc-abc engine=legacy status=pending
-[MAIN] ingest.process | pending=1
-[MAIN] ingest.doc | doc_id=doc-abc file=report.pdf
-[STEP] ingest.doc.parse | doc_id=doc-abc engine=legacy source_exists=True
-[MAIN] parse.legacy | doc_id=doc-abc file=report.pdf
-[STEP] parse.legacy.extract_text | suffix=pdf bytes=102400
-[DONE] parse.legacy | doc_id=doc-abc chars=18420 suffix=pdf
-[STEP] ingest.doc.chunk | doc_id=doc-abc strategy=F chunk_token_size=1200 overlap=100
-[MAIN] chunk.run | strategy=F content_chars=18420 chunk_token_size=1200 overlap=100
-[DONE] chunk.run | strategy=F chunks=16
-[STEP] ingest.doc.index | doc_id=doc-abc chunks=16
-[MAIN] index.ainsert | chunks=16
-[STEP] index.ainsert.openie | chunks=16
-[STEP] index.ainsert.memory_build | openie_docs=16
-[STEP] index.schema.extract | batches=16 unlinked=42 cached_links=0 batch_size=20
-[DONE] index.schema.extract | linked=40 schemas=12 failed_batches=0 facts_untyped=2
-[STEP] index.ontology.filter | before=12 kept=8 dropped=4 min_frequency=2 noop=False
-[STEP] index.conflict.detect | groups=10 max_groups=50
-[DONE] index.conflict.detect | hard_conflicts=1 groups_checked=10
-[STEP] index.conflict.resolve | conflicts=1
-[DONE] index.conflict.resolve | resolved=1 discarded=1 modified=0 kept=0 facts=41
-[STEP] index.ainsert.graph_install
-[DONE] index.ainsert | passages=16 facts=41 schemas=8
-[DONE] ingest.doc | doc_id=doc-abc chunks=16 status=processed
-[DONE] ingest.process | processed=1 failed=0
-[DONE] api.documents.upload | doc_id=doc-abc filename=report.pdf processed=1 failed=0
+[INDEX] Memory-based Indexing Graph Construction | chunks=16
+[STAGE] Indexing Documents | chunks=16
+[STAGE] Performing OpenIE | chunks=16 cached=10 extract=6
+[STAGE] Performing OpenIE | docs=6 concurrency=4
+[STAGE] NER | docs=6
+[STAGE] Extracting triples | docs=6
+[LLM] agent=openie.ner action=complete model=… prompt_chars=… preview=…
+[LLM] agent=openie.ner action=complete_done model=… response_chars=…
+[LLM] agent=openie.triple action=complete …
+[STAGE] OpenIE completed | docs=6 entities=42 triples=38
+[STAGE] Building three-layer memory | openie_docs=16 run_conflicts=True
+[STAGE] Built memory structure | passages=16 facts=41 schemas=0
+[STAGE] Extracting schema | batches=3 unlinked=41 agent=schema.extract
+[LLM] agent=schema.extract action=complete …
+[STAGE] Extracting schema done | linked=40 schemas=12 failed_batches=0
+[STAGE] Ontology filtering | before=12 kept=8 dropped=4 min_frequency=2
+[STAGE] Detecting conflicts | groups=10 agent=conflict.detect
+[LLM] agent=conflict.detect action=complete …
+[STAGE] Detecting conflicts done | hard_conflicts=1 groups_checked=10
+[STAGE] Resolving conflicts | conflicts=1 agent=conflict.resolve
+[LLM] agent=conflict.resolve action=complete …
+[STAGE] Resolving conflicts done | resolved=1 discarded=1 …
+[STAGE] Encoding Entities | passages=16 facts=41 …
+[EMBED] context=document model=… n=… dim=…
+[STAGE] Encoding Facts | add_passages=… add_facts=…
+[STAGE] Constructing Graph
+[STAGE] Graph construction completed! | passages=16 facts=41 schemas=8
+[DONE] Memory-based Indexing Graph Construction | passages=16 facts=41 schemas=8
 ```
 
-## Example: document delete / clear
+## Example: Memory-guided Online Retrieval
 
 ```text
-[MAIN] api.documents.delete | doc_id=doc-abc delete_file=False
-[MAIN] admin.delete | docs=1 delete_file=False
-[STEP] admin.delete.chunks | dropped=12
-[STEP] index.memory_build | openie_docs=4 run_conflicts=False
-[STEP] index.embed.diff | add_passages=0 del_passages=12 add_facts=0 del_facts=8 …
-[DONE] admin.delete | deleted=1 not_found=0 chunks_dropped=12 files_deleted=0
-[DONE] api.documents.delete | doc_id=doc-abc status=deleted
-
-[MAIN] api.documents.clear | delete_files=False
-[MAIN] admin.clear_all | delete_files=False
-[DONE] admin.clear_all | storages=9 files_deleted=0
-[DONE] api.documents.clear | files_deleted=0
-```
-
-## Example: query
-
-```text
-[MAIN] api.query | mode=ppr query=What is MemGraphRAG? stream=False only_need_context=False
-[MAIN] query.aquery | mode=ppr query=What is MemGraphRAG? only_need_context=False
-[STEP] query.aquery.mode_select | path=ppr
-[MAIN] retrieve.aretrieve | queries=1 mode=ppr top_k=5
-[MAIN] retrieve.one | mode=ppr query=What is MemGraphRAG? top_k=5 linking_top_k=10
-[STEP] retrieve.one.fact_linking | linking_top_k=10
-[STEP] retrieve.one.fact_rerank | method=threshold hits=10 kept=4
-[STEP] retrieve.one.schema_linking | schema_top_k=5
-[STEP] retrieve.one.schema_linking_done | schema_hits=3 seed_nodes=9
-[STEP] retrieve.one.ppr | seed_nodes=18 damping=0.5
-[DONE] retrieve.one | path=ppr docs=5 top_score=0.1832
-[STEP] query.aquery.rag_qa | docs=5 history_turns=0
-[DONE] query.aquery | mode=ppr docs=5 answer_chars=312
+[MAIN] api.query | mode=ppr query=What is MemGraphRAG? stream=False
+[RETRIEVE] Memory-guided Online Retrieval | queries=1 mode=ppr top_k=5
+[STAGE] Preparing for fast retrieval.
+[STAGE] Loading keys. | loaded_memory=True
+[STAGE] Loading embeddings. | edges=5720
+[STAGE] PPR engine ready | engine=igraph
+[DONE] Preparing for fast retrieval | passages=99 facts=2115 schemas=191 ready=True
+[STAGE] Retrieving | mode=ppr query=What is MemGraphRAG? top_k=5 linking_top_k=10
+[STAGE] Encoding queries for query_to_fact.
+[EMBED] context=query model=… n=1 dim=…
+[STAGE] Fact filtering stats | method=threshold hits=10 kept=4
+[STAGE] Schema linking | schema_top_k=5
+[STAGE] Schema linking done | schema_hits=3 seed_nodes=9
+[STAGE] Encoding queries for query_to_passage.
+[STAGE] Running PPR | seed_nodes=18 damping=0.5
+[DONE] Retrieving | path=ppr docs=5 top_score=0.1832
+[STAGE] QA Reading | docs=5 history_turns=0 agent=qa.reading
+[LLM] agent=qa.reading action=complete model=… prompt_chars=…
+[LLM] agent=qa.reading action=complete_done … response_chars=312
+[DONE] Memory-guided Online Retrieval | mode=ppr docs=5 answer_chars=312
 [DONE] api.query | mode=ppr docs=5 answer_chars=312
 ```
 
 ## Filtering Compose logs
 
 ```bash
-# All structured steps
-docker compose logs memgraphrag 2>&1 | grep -E '\[(MAIN|STEP|DONE|FAIL)\]'
+# Framework engine only
+docker compose logs memgraphrag 2>&1 | grep -E '\[(INDEX|RETRIEVE|STAGE|LLM|EMBED|DONE|FAIL)\]'
 
-# Ingest only
-docker compose logs memgraphrag 2>&1 | grep -E '\[(MAIN|STEP|DONE|FAIL)\].*ingest\.|parse\.|chunk\.|index\.'
+# LLM / agent calls only
+docker compose logs memgraphrag 2>&1 | grep '\[LLM\]'
 
-# Query / retrieve only
-docker compose logs memgraphrag 2>&1 | grep -E '\[(MAIN|STEP|DONE|FAIL)\].*(api\.query|query\.|retrieve\.)'
+# Indexing vs retrieval banners
+docker compose logs memgraphrag 2>&1 | grep -E '\[(INDEX|RETRIEVE)\]'
+
+# API / parse / chunk plumbing
+docker compose logs memgraphrag 2>&1 | grep -E '\[(MAIN|STEP)\]'
 
 # Failures
 docker compose logs memgraphrag 2>&1 | grep '\[FAIL\]'
@@ -115,4 +126,6 @@ docker compose up -d --build memgraphrag
 
 ## Privacy
 
-Do not log API keys, full LLM prompts, or entire document bodies. Prefer `doc_id`, file names, byte/char counts, chunk counts, scores, and truncated previews (`truncate`, default 160 chars).
+Do not log API keys, full LLM prompts, or entire document bodies. Prefer `doc_id`,
+file names, byte/char counts, chunk counts, scores, agent ids, and truncated
+previews (`truncate`, default 160 chars; LLM preview default 80).

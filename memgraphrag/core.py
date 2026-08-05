@@ -72,7 +72,17 @@ from memgraphrag.utils.env import get_env_value
 from memgraphrag.utils.hashing import compute_mdhash_id
 from memgraphrag.utils.json_llm import extract_json_object
 from memgraphrag.utils.misc import QuerySolution
-from memgraphrag.utils.step_log import done_step, fail_step, main_step, sub_step, truncate
+from memgraphrag.utils.step_log import (
+    INDEX_PHASE,
+    RETRIEVE_PHASE,
+    done_step,
+    fail_step,
+    main_step,
+    phase,
+    stage,
+    sub_step,
+    truncate,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -390,21 +400,16 @@ class MemGraphRAG:
     async def extract_schema(self, memory: ThreeLayerMemory) -> ThreeLayerMemory:
         """Extract ontology schemas for all facts (batched, cache-aware)."""
         if not memory.fact_layer:
-            sub_step(
-                logger,
-                "index.schema.skip",
-                reason="empty_facts",
-                facts=0,
-            )
+            stage(logger, "Extracting schema", skipped=True, reason="empty_facts")
             return memory
 
         cached_links = await self._apply_cached_ontology(memory)
         unlinked = [f for f in memory.fact_layer if f.schema_idx < 0]
         if cached_links and not unlinked:
             memory.recompute_schema_frequencies()
-            done_step(
+            stage(
                 logger,
-                "index.schema.extract",
+                "Extracting schema",
                 source="cache",
                 linked=cached_links,
                 schemas=len(memory.schema_layer),
@@ -412,9 +417,10 @@ class MemGraphRAG:
             return memory
 
         if not self.llm_model_func:
-            sub_step(
+            stage(
                 logger,
-                "index.schema.skip",
+                "Extracting schema",
+                skipped=True,
                 reason="no_llm",
                 facts=len(memory.fact_layer),
                 cached_links=cached_links,
@@ -443,13 +449,14 @@ class MemGraphRAG:
             for i in range(0, len(fact_idxs), batch_size):
                 batches.append((passage, fact_idxs[i : i + batch_size]))
 
-        sub_step(
+        stage(
             logger,
-            "index.schema.extract",
+            "Extracting schema",
             batches=len(batches),
             unlinked=len(unlinked),
             cached_links=cached_links,
             batch_size=batch_size,
+            agent="schema.extract",
         )
 
         sem = asyncio.Semaphore(max(1, self.max_async_llm))
@@ -468,10 +475,13 @@ class MemGraphRAG:
             try:
                 async with sem:
                     raw = await self.llm_model_func(
-                        user, system_prompt=ONTOLOGY_EXTRACTION_SYSTEM
+                        user,
+                        system_prompt=ONTOLOGY_EXTRACTION_SYSTEM,
+                        agent="schema.extract",
+                        llm_action="complete",
                     )
             except Exception as exc:
-                fail_step(logger, "index.schema.extract_batch", exc=exc)
+                fail_step(logger, "schema.extract_batch", exc=exc)
                 failed_batches += 1
                 return 0
             pairs = self._parse_ontology_triples(str(raw))
@@ -479,7 +489,7 @@ class MemGraphRAG:
                 failed_batches += 1
                 fail_step(
                     logger,
-                    "index.schema.extract_batch",
+                    "schema.extract_batch",
                     reason="empty_or_unparsed",
                     response_chars=len(str(raw)),
                 )
@@ -501,11 +511,11 @@ class MemGraphRAG:
         try:
             await self._persist_ontology_to_openie(memory)
         except Exception as exc:
-            fail_step(logger, "index.schema.cache_write", exc=exc)
+            fail_step(logger, "schema.cache_write", exc=exc)
 
-        done_step(
+        stage(
             logger,
-            "index.schema.extract",
+            "Extracting schema done",
             linked=linked,
             schemas=len(memory.schema_layer),
             failed_batches=failed_batches,
@@ -520,9 +530,9 @@ class MemGraphRAG:
         )
         before = len(memory.schema_layer)
         stats = memory.filter_schemas_by_frequency(min_freq)
-        sub_step(
+        stage(
             logger,
-            "index.ontology.filter",
+            "Ontology filtering",
             before=before,
             kept=stats["kept"],
             dropped=stats["dropped"],
@@ -566,12 +576,13 @@ class MemGraphRAG:
         }
         enabled = get_env_value("CONFLICT_ENABLED", CONFLICT_ENABLED, bool)
         if not enabled:
-            sub_step(logger, "index.conflict.detect_skip", reason="disabled")
+            stage(logger, "Detecting conflicts", skipped=True, reason="disabled")
             return result
         if not self.llm_model_func or len(memory.fact_layer) < 2:
-            sub_step(
+            stage(
                 logger,
-                "index.conflict.detect_skip",
+                "Detecting conflicts",
+                skipped=True,
                 facts=len(memory.fact_layer),
             )
             return result
@@ -580,11 +591,12 @@ class MemGraphRAG:
             1, get_env_value("CONFLICT_MAX_GROUPS", CONFLICT_MAX_GROUPS, int)
         )
         groups = self._conflict_candidate_groups(memory, max_groups)
-        sub_step(
+        stage(
             logger,
-            "index.conflict.detect",
+            "Detecting conflicts",
             groups=len(groups),
             max_groups=max_groups,
+            agent="conflict.detect",
         )
         if not groups:
             return result
@@ -603,10 +615,13 @@ class MemGraphRAG:
             try:
                 async with sem:
                     raw = await self.llm_model_func(
-                        user, system_prompt=CONFLICT_DETECTION_SYSTEM
+                        user,
+                        system_prompt=CONFLICT_DETECTION_SYSTEM,
+                        agent="conflict.detect",
+                        llm_action="complete",
                     )
             except Exception as exc:
-                fail_step(logger, "index.conflict.detect_group", exc=exc)
+                fail_step(logger, "conflict.detect_group", exc=exc)
                 return []
             data = extract_json_object(str(raw))
             conflicts = data.get("conflicts") or []
@@ -654,9 +669,9 @@ class MemGraphRAG:
             "hard_conflicts": len(hard),
             "groups_checked": len(groups),
         }
-        done_step(
+        stage(
             logger,
-            "index.conflict.detect",
+            "Detecting conflicts done",
             hard_conflicts=len(hard),
             groups_checked=len(groups),
         )
@@ -672,7 +687,7 @@ class MemGraphRAG:
         }
         hard = list(conflicts.get("conflicts") or [])
         if not conflicts.get("has_conflict") or not hard:
-            sub_step(logger, "index.conflict.resolve_skip", hard_conflicts=0)
+            stage(logger, "Resolving conflicts", skipped=True, hard_conflicts=0)
             return memory, resolution
         if not self.llm_model_func:
             return memory, resolution
@@ -707,17 +722,21 @@ class MemGraphRAG:
         user = CONFLICT_RESOLUTION_USER_TEMPLATE.substitute(
             conflicting_triples_with_sources="\n\n====\n\n".join(bundles)
         )
-        sub_step(
+        stage(
             logger,
-            "index.conflict.resolve",
+            "Resolving conflicts",
             conflicts=len(hard),
+            agent="conflict.resolve",
         )
         try:
             raw = await self.llm_model_func(
-                user, system_prompt=CONFLICT_RESOLUTION_SYSTEM
+                user,
+                system_prompt=CONFLICT_RESOLUTION_SYSTEM,
+                agent="conflict.resolve",
+                llm_action="complete",
             )
         except Exception as exc:
-            fail_step(logger, "index.conflict.resolve", exc=exc)
+            fail_step(logger, "conflict.resolve", exc=exc)
             return memory, resolution
 
         data = extract_json_object(str(raw))
@@ -725,7 +744,7 @@ class MemGraphRAG:
         if not isinstance(resolved_items, list):
             fail_step(
                 logger,
-                "index.conflict.resolve",
+                "conflict.resolve",
                 reason="unparsed",
                 response_chars=len(str(raw)),
             )
@@ -788,9 +807,9 @@ class MemGraphRAG:
             "modified": modified,
             "kept": kept,
         }
-        done_step(
+        stage(
             logger,
-            "index.conflict.resolve",
+            "Resolving conflicts done",
             **resolution["summary"],
             facts=len(memory.fact_layer),
         )
@@ -951,13 +970,20 @@ class MemGraphRAG:
     ) -> tuple[ThreeLayerMemory, dict[str, Any], dict[str, Any]]:
         """Build three-layer memory from OpenIE docs (optionally skip conflicts)."""
         memory = ThreeLayerMemory()
-        sub_step(
+        stage(
             logger,
-            "index.memory_build",
+            "Building three-layer memory",
             openie_docs=len(openie_docs),
             run_conflicts=run_conflicts,
         )
         memory.build_from_raw_openie_results({"docs": openie_docs})
+        stage(
+            logger,
+            "Built memory structure",
+            passages=len(memory.passage_layer),
+            facts=len(memory.fact_layer),
+            schemas=len(memory.schema_layer),
+        )
         memory = await self.extract_schema(memory)
         memory = await self.filter_ontology(memory)
         if run_conflicts:
@@ -966,7 +992,7 @@ class MemGraphRAG:
         else:
             conflicts = {"summary": {"skipped": True}}
             resolution = {"summary": {"skipped": True}}
-            sub_step(logger, "index.conflict.skip", reason="delete_rebuild")
+            stage(logger, "Detecting conflicts", skipped=True, reason="delete_rebuild")
         return memory, conflicts, resolution
 
     async def ainsert(
@@ -976,7 +1002,8 @@ class MemGraphRAG:
         run_conflicts: bool = True,
     ) -> dict[str, Any]:
         """Index already-chunked texts into the accumulating corpus memory."""
-        main_step(logger, "index.ainsert", chunks=len(chunks))
+        phase(logger, INDEX_PHASE, chunks=len(chunks))
+        stage(logger, "Indexing Documents", chunks=len(chunks))
         if not self._initialized:
             await self.initialize_storages()
         prepared = self._normalize_chunks(chunks)
@@ -994,9 +1021,9 @@ class MemGraphRAG:
             if not isinstance(rec, dict)
             or not (rec.get("extracted_triples") or rec.get("extracted_entities"))
         ]
-        sub_step(
+        stage(
             logger,
-            "index.ainsert.openie",
+            "Performing OpenIE",
             chunks=len(prepared),
             cached=len(prepared) - len(missing_chunks),
             extract=len(missing_chunks),
@@ -1004,22 +1031,23 @@ class MemGraphRAG:
         if missing_chunks:
             new_docs = await self.openie.batch_openie(missing_chunks)
             await self.openie_kv.upsert({d["idx"]: d for d in new_docs})
-        sub_step(logger, "index.ainsert.openie_done", docs=len(batch_ids))
+        stage(logger, "OpenIE cache ready", docs=len(batch_ids))
 
         openie_docs = await self._load_corpus_openie_docs(extra_chunk_ids=batch_ids)
         memory, conflicts, resolution = await self._rebuild_memory_from_openie(
             openie_docs, run_conflicts=run_conflicts
         )
 
-        sub_step(
+        stage(
             logger,
-            "index.ainsert.embed_store",
+            "Encoding Entities",
             passages=len(memory.passage_layer),
             facts=len(memory.fact_layer),
+            schemas=len(memory.schema_layer),
             corpus_openie=len(openie_docs),
         )
         await self._embed_and_store_memory(memory, openie_docs)
-        sub_step(logger, "index.ainsert.graph_install")
+        stage(logger, "Constructing Graph")
         await self._install_memory_graph(memory)
 
         await self.memory_kv.upsert({"memory": memory.to_dict()})
@@ -1032,9 +1060,16 @@ class MemGraphRAG:
             "conflict_summary": conflicts.get("summary", {}),
             "resolution_summary": resolution.get("summary", {}),
         }
+        stage(
+            logger,
+            "Graph construction completed!",
+            passages=stats["num_passages"],
+            facts=stats["num_facts"],
+            schemas=stats["num_schemas"],
+        )
         done_step(
             logger,
-            "index.ainsert",
+            INDEX_PHASE,
             passages=stats["num_passages"],
             facts=stats["num_facts"],
             schemas=stats["num_schemas"],
@@ -1187,9 +1222,9 @@ class MemGraphRAG:
             }
             await self.schemas_vdb.upsert(schema_payload)
 
-        sub_step(
+        stage(
             logger,
-            "index.embed.diff",
+            "Encoding Facts",
             add_passages=len(add_passages),
             del_passages=len(orphan_passages),
             add_facts=len(add_facts),
@@ -1613,7 +1648,8 @@ class MemGraphRAG:
 
     async def prepare_retrieval(self) -> None:
         """Load memory + graph adjacency needed for PPR retrieval."""
-        main_step(logger, "retrieve.prepare")
+        phase(logger, RETRIEVE_PHASE, step="prepare")
+        stage(logger, "Preparing for fast retrieval.")
         if not self._initialized:
             await self.initialize_storages()
 
@@ -1621,9 +1657,9 @@ class MemGraphRAG:
             stored = await self.memory_kv.get_by_id("memory")
             if stored:
                 self.memory = ThreeLayerMemory.from_dict(stored)
-                sub_step(logger, "retrieve.prepare.load_memory", loaded=True)
+                stage(logger, "Loading keys.", loaded_memory=True)
             else:
-                sub_step(logger, "retrieve.prepare.load_memory", loaded=False)
+                stage(logger, "Loading keys.", loaded_memory=False)
         else:
             # Refresh from KV when in-memory object is empty but KV may have caught up
             # (e.g. concurrent ingest finished after a stale prepare).
@@ -1631,10 +1667,10 @@ class MemGraphRAG:
                 stored = await self.memory_kv.get_by_id("memory")
                 if stored:
                     self.memory = ThreeLayerMemory.from_dict(stored)
-                    sub_step(
+                    stage(
                         logger,
-                        "retrieve.prepare.load_memory",
-                        loaded=True,
+                        "Loading keys.",
+                        loaded_memory=True,
                         refreshed=True,
                     )
 
@@ -1679,7 +1715,7 @@ class MemGraphRAG:
                 if src and tgt:
                     edges.append((str(src), str(tgt)))
                     weights.append(float(e.get("weight", 1.0)))
-            sub_step(logger, "retrieve.prepare.edges", edges=len(edges))
+            stage(logger, "Loading embeddings.", edges=len(edges))
         except Exception as exc:
             fail_step(logger, "retrieve.prepare.edges", exc=exc)
 
@@ -1690,11 +1726,7 @@ class MemGraphRAG:
                 edge_weights=weights,
                 passage_ids=self._passage_ids,
             )
-            sub_step(
-                logger,
-                "retrieve.prepare.ppr",
-                engine=self.ppr_engine_name,
-            )
+            stage(logger, "PPR engine ready", engine=self.ppr_engine_name)
         except Exception as exc:
             fail_step(logger, "retrieve.prepare.ppr", exc=exc)
             self._ppr = IgraphPPREngine(
@@ -1706,7 +1738,7 @@ class MemGraphRAG:
         self.ready_to_retrieve = bool(self._passage_id_to_content)
         done_step(
             logger,
-            "retrieve.prepare",
+            "Preparing for fast retrieval",
             passages=len(self._passage_ids),
             facts=len(self._fact_ids),
             schemas=len(self._schema_ids),
@@ -1731,9 +1763,9 @@ class MemGraphRAG:
             return []
 
         param = param or QueryParam()
-        main_step(
+        phase(
             logger,
-            "retrieve.aretrieve",
+            RETRIEVE_PHASE,
             queries=len(query_list),
             mode=param.mode,
             top_k=param.top_k,
@@ -1742,9 +1774,9 @@ class MemGraphRAG:
         if self.ready_to_retrieve and not self._passage_id_to_content:
             # Sticky empty prepare — reload if memory_kv has caught up.
             need_prepare = True
-            sub_step(
+            stage(
                 logger,
-                "retrieve.aretrieve.reprepare",
+                "Reprepare retrieval",
                 reason="empty_content_map",
             )
         if need_prepare:
@@ -1760,7 +1792,7 @@ class MemGraphRAG:
             results.append(await self._retrieve_one(query, param))
         done_step(
             logger,
-            "retrieve.aretrieve",
+            RETRIEVE_PHASE,
             queries=len(query_list),
             results=len(results),
         )
@@ -1785,9 +1817,9 @@ class MemGraphRAG:
                 "skip_fact_rerank": param.skip_fact_rerank,
             },
         ) as root_span:
-            main_step(
+            stage(
                 logger,
-                "retrieve.one",
+                "Retrieving",
                 mode=param.mode,
                 query=truncate(query),
                 top_k=param.top_k,
@@ -1799,11 +1831,7 @@ class MemGraphRAG:
                 as_type="span",
                 input={"query": query, "linking_top_k": param.linking_top_k},
             ) as fact_span:
-                sub_step(
-                    logger,
-                    "retrieve.one.fact_linking",
-                    linking_top_k=param.linking_top_k,
-                )
+                stage(logger, "Encoding queries for query_to_fact.")
                 q_fact = await self.embedding_func(
                     [query],
                     context="query",
@@ -1827,9 +1855,9 @@ class MemGraphRAG:
                     kept = self.fact_filter.threshold_filter(
                         sim_scores, param.fact_similarity_threshold
                     )
-                    sub_step(
+                    stage(
                         logger,
-                        "retrieve.one.fact_rerank",
+                        "Fact filtering stats",
                         method="threshold",
                         hits=len(fact_hits),
                         kept=len(kept),
@@ -1842,9 +1870,9 @@ class MemGraphRAG:
                         scores=sim_scores,
                         threshold=param.fact_similarity_threshold,
                     )
-                    sub_step(
+                    stage(
                         logger,
-                        "retrieve.one.fact_rerank",
+                        "Fact reranking stats",
                         method="llm",
                         hits=len(fact_hits),
                         kept=len(kept),
@@ -1873,9 +1901,9 @@ class MemGraphRAG:
                     as_type="span",
                     input={"schema_top_k": param.schema_top_k},
                 ) as schema_span:
-                    sub_step(
+                    stage(
                         logger,
-                        "retrieve.one.schema_linking",
+                        "Schema linking",
                         schema_top_k=param.schema_top_k,
                     )
                     try:
@@ -1940,15 +1968,15 @@ class MemGraphRAG:
                             "seed_nodes": len(seed_weights),
                         },
                     )
-                    sub_step(
+                    stage(
                         logger,
-                        "retrieve.one.schema_linking_done",
+                        "Schema linking done",
                         schema_hits=schema_hits_n,
                         seed_nodes=len(seed_weights),
                     )
 
             if not kept_hits and not seed_weights:
-                sub_step(logger, "retrieve.one.dense_fallback", reason="no_facts")
+                stage(logger, "Dense fallback", reason="no_facts")
                 sol = await self._dense_passage_retrieve(query, param)
                 update_observation(
                     root_span,
@@ -1960,7 +1988,7 @@ class MemGraphRAG:
                 )
                 done_step(
                     logger,
-                    "retrieve.one",
+                    "Retrieving",
                     path="dense_fallback_no_facts",
                     docs=len(sol.docs),
                 )
@@ -1994,7 +2022,7 @@ class MemGraphRAG:
                 as_type="span",
                 input={"top_k": param.top_k},
             ) as seed_span:
-                sub_step(logger, "retrieve.one.passage_seed", top_k=param.top_k)
+                stage(logger, "Encoding queries for query_to_passage.")
                 q_pass = await self.embedding_func(
                     [query],
                     context="query",
@@ -2028,22 +2056,16 @@ class MemGraphRAG:
                         "seed_nodes": len(seed_weights),
                     },
                 )
-                sub_step(
-                    logger,
-                    "retrieve.one.passage_seed_done",
-                    passage_hits=len(passage_hits),
-                    seed_nodes=len(seed_weights),
-                )
 
-            sub_step(
+            stage(
                 logger,
-                "retrieve.one.ppr",
+                "Running PPR",
                 seed_nodes=len(seed_weights),
                 damping=param.damping,
             )
             passage_scores = await self._run_ppr(seed_weights, damping=param.damping)
             if not passage_scores:
-                sub_step(logger, "retrieve.one.dense_fallback", reason="empty_ppr")
+                stage(logger, "Dense fallback", reason="empty_ppr")
                 sol = await self._dense_passage_retrieve(query, param)
                 update_observation(
                     root_span,
@@ -2055,7 +2077,7 @@ class MemGraphRAG:
                 )
                 done_step(
                     logger,
-                    "retrieve.one",
+                    "Retrieving",
                     path="dense_fallback_empty_ppr",
                     docs=len(sol.docs),
                 )
@@ -2106,7 +2128,7 @@ class MemGraphRAG:
             )
             done_step(
                 logger,
-                "retrieve.one",
+                "Retrieving",
                 path="ppr",
                 docs=len(docs),
                 top_score=f"{doc_scores[0]:.4f}" if doc_scores else None,
@@ -2121,7 +2143,7 @@ class MemGraphRAG:
             as_type="retriever",
             input={"query": query, "top_k": param.top_k},
         ) as span:
-            sub_step(logger, "retrieve.dense", top_k=param.top_k)
+            stage(logger, "Retrieving (naive dense)", top_k=param.top_k)
             q_pass = await self.embedding_func(
                 [query],
                 context="query",
@@ -2141,7 +2163,7 @@ class MemGraphRAG:
                 span,
                 output={"n_docs": len(docs), "docs": truncate_docs(docs)},
             )
-            sub_step(logger, "retrieve.dense_done", docs=len(docs))
+            stage(logger, "Retrieving (naive dense) done", docs=len(docs))
             return sol
 
     async def _run_ppr(
@@ -2176,9 +2198,9 @@ class MemGraphRAG:
             update_observation(
                 span, output={"scored_passages": len(result) if result else 0}
             )
-            sub_step(
+            stage(
                 logger,
-                "retrieve.ppr_done",
+                "PPR done",
                 engine=engine_name,
                 scored_passages=len(result) if result else 0,
             )
@@ -2192,9 +2214,9 @@ class MemGraphRAG:
         """Query with modes: ppr / naive / context / bypass."""
         param = param or QueryParam()
         mode = param.mode
-        main_step(
+        phase(
             logger,
-            "query.aquery",
+            RETRIEVE_PHASE,
             mode=mode,
             query=truncate(query),
             only_need_context=bool(param.only_need_context),
@@ -2216,9 +2238,12 @@ class MemGraphRAG:
                         input={"query": query},
                         model=os.getenv("LLM_MODEL"),
                     ) as gen_span:
-                        sub_step(logger, "query.aquery.bypass")
+                        stage(logger, "mode=bypass")
                         answer = await self.llm_model_func(
-                            query, system_prompt=param.user_prompt
+                            query,
+                            system_prompt=param.user_prompt,
+                            agent="qa.bypass",
+                            llm_action="complete",
                         )
                         sol = QuerySolution(
                             question=query, docs=[], answer=str(answer)
@@ -2231,20 +2256,20 @@ class MemGraphRAG:
                     )
                     done_step(
                         logger,
-                        "query.aquery",
+                        RETRIEVE_PHASE,
                         mode=mode,
                         answer_chars=len(sol.answer or ""),
                     )
                     return sol
 
                 if mode == "naive":
-                    sub_step(logger, "query.aquery.mode_select", path="naive")
+                    stage(logger, "mode=naive")
                     sol = await self._dense_passage_retrieve(query, param)
                 else:
                     # ppr or context — both retrieve via PPR path
-                    sub_step(
+                    stage(
                         logger,
-                        "query.aquery.mode_select",
+                        f"mode={mode}",
                         path="ppr" if mode != "context" else "context",
                     )
                     sols = await self.aretrieve(query, param=param)
@@ -2261,7 +2286,7 @@ class MemGraphRAG:
                     )
                     done_step(
                         logger,
-                        "query.aquery",
+                        RETRIEVE_PHASE,
                         mode=mode,
                         docs=len(sol.docs),
                         qa=False,
@@ -2275,7 +2300,7 @@ class MemGraphRAG:
                     )
                     done_step(
                         logger,
-                        "query.aquery",
+                        RETRIEVE_PHASE,
                         mode=mode,
                         docs=len(sol.docs),
                         qa=False,
@@ -2298,14 +2323,19 @@ class MemGraphRAG:
                     model=os.getenv("LLM_MODEL"),
                     metadata={"system_prompt_chars": len(system or "")},
                 ) as gen_span:
-                    sub_step(
+                    stage(
                         logger,
-                        "query.aquery.rag_qa",
+                        "QA Reading",
                         docs=len(sol.docs),
                         history_turns=len(history or []),
+                        agent="qa.reading",
                     )
                     answer = await self.llm_model_func(
-                        user, system_prompt=system, history_messages=history
+                        user,
+                        system_prompt=system,
+                        history_messages=history,
+                        agent="qa.reading",
+                        llm_action="complete",
                     )
                     sol.answer = str(answer)
                     update_observation(
@@ -2321,7 +2351,7 @@ class MemGraphRAG:
                 )
                 done_step(
                     logger,
-                    "query.aquery",
+                    RETRIEVE_PHASE,
                     mode=mode,
                     docs=len(sol.docs),
                     answer_chars=len(sol.answer or ""),

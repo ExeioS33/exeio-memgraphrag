@@ -12,6 +12,7 @@ from typing import Any, Awaitable, Callable, Sequence
 
 from memgraphrag.prompts.templates import render_ner, render_triple_extraction
 from memgraphrag.utils.json_llm import extract_json_object as _extract_json_object
+from memgraphrag.utils.step_log import fail_step, stage
 
 logger = logging.getLogger(__name__)
 
@@ -71,11 +72,16 @@ class OpenIE:
     async def ner(self, passage: str) -> list[str]:
         system, user = render_ner(passage)
         try:
-            response = await self.llm_model_func(user, system_prompt=system)
+            response = await self.llm_model_func(
+                user,
+                system_prompt=system,
+                agent="openie.ner",
+                llm_action="complete",
+            )
             data = _extract_json_object(str(response))
             return _normalize_entities(data)
         except Exception as exc:
-            logger.warning("NER failed: %s", exc)
+            fail_step(logger, "openie.ner", exc=exc)
             return []
 
     async def triple_extraction(
@@ -83,11 +89,16 @@ class OpenIE:
     ) -> list[list[str]]:
         system, user = render_triple_extraction(passage, list(named_entities))
         try:
-            response = await self.llm_model_func(user, system_prompt=system)
+            response = await self.llm_model_func(
+                user,
+                system_prompt=system,
+                agent="openie.triple",
+                llm_action="complete",
+            )
             data = _extract_json_object(str(response))
             return _normalize_triples(data)
         except Exception as exc:
-            logger.warning("Triple extraction failed: %s", exc)
+            fail_step(logger, "openie.triple", exc=exc)
             return []
 
     async def openie_one(self, idx: str, passage: str) -> dict[str, Any]:
@@ -120,6 +131,16 @@ class OpenIE:
             else:
                 prepared.append((str(i), str(doc)))
 
+        stage(
+            logger,
+            "Performing OpenIE",
+            docs=len(prepared),
+            concurrency=self.max_concurrency,
+        )
+        # Upstream tqdm labels: NER → Extracting triples (per passage, sequential roles).
+        stage(logger, "NER", docs=len(prepared))
+        stage(logger, "Extracting triples", docs=len(prepared))
+
         sem = asyncio.Semaphore(self.max_concurrency)
 
         async def _one(idx: str, passage: str) -> dict[str, Any]:
@@ -127,4 +148,13 @@ class OpenIE:
                 return await self.openie_one(idx, passage)
 
         results = await asyncio.gather(*[_one(i, p) for i, p in prepared])
+        entities_n = sum(len(r.get("extracted_entities") or []) for r in results)
+        triples_n = sum(len(r.get("extracted_triples") or []) for r in results)
+        stage(
+            logger,
+            "OpenIE completed",
+            docs=len(results),
+            entities=entities_n,
+            triples=triples_n,
+        )
         return list(results)

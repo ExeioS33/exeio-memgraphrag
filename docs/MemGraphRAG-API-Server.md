@@ -106,10 +106,15 @@ Ollama chat messages may prefix `/naive`, `/context`, or `/bypass`.
 
 ## Structured server logging
 
-Ingest and query flows emit grep-friendly `[MAIN]` / `[STEP]` / `[DONE]` / `[FAIL]` lines (see [Logging.md](Logging.md)). Filter with:
+Ingest and query flows emit framework-aligned lines for the MemGraphRAG engine
+(`[INDEX]` / `[RETRIEVE]` / `[STAGE]` / `[LLM]` / `[EMBED]`) plus `[MAIN]` /
+`[STEP]` for HTTP and file-pipeline boundaries (see [Logging.md](Logging.md)).
+Filter with:
 
 ```bash
-docker compose logs memgraphrag 2>&1 | grep -E '\[(MAIN|STEP|DONE|FAIL)\]'
+docker compose logs memgraphrag 2>&1 | grep -E '\[(INDEX|RETRIEVE|STAGE|LLM|EMBED)\]'
+docker compose logs memgraphrag 2>&1 | grep '\[LLM\]'   # agent / chat calls
+docker compose logs memgraphrag 2>&1 | grep -E '\[(MAIN|STEP)\]'  # API / parse / chunk
 ```
 
 ## Langfuse observability

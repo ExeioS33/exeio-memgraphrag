@@ -32,6 +32,7 @@ from tenacity import (
 from memgraphrag.constants import EMBEDDING_DIM
 from memgraphrag.utils.env import get_env_value
 from memgraphrag.utils.http_ssl import ssl_verify
+from memgraphrag.utils.step_log import embed_call, llm_call, truncate
 
 logger = logging.getLogger(__name__)
 
@@ -122,8 +123,16 @@ async def openai_complete(
 
     Reads ``LLM_BINDING_HOST``, ``LLM_BINDING_API_KEY``, ``LLM_MODEL`` from the
     environment when not overridden by kwargs / ``model``.
+
+    Logging kwargs (stripped before the HTTP call, never sent to the provider):
+
+    - ``agent``: multi-agent role id (e.g. ``openie.ner``, ``schema.extract``,
+      ``conflict.detect``, ``qa.reading``)
+    - ``llm_action`` / ``action``: short verb (default ``complete``)
     """
     history_messages = history_messages or []
+    agent = kwargs.pop("agent", None)
+    llm_action = kwargs.pop("llm_action", None) or kwargs.pop("action", None)
     messages: list[dict[str, str]] = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
@@ -144,7 +153,25 @@ async def openai_complete(
             params[key] = kwargs[key]
 
     client = _llm_client()
-    logger.debug("openai_complete model=%s stream=%s", params["model"], stream)
+    if agent or llm_action:
+        llm_call(
+            logger,
+            agent=str(agent or "llm"),
+            action=str(llm_action or "complete"),
+            model=params["model"],
+            stream=stream,
+            prompt_chars=len(prompt or ""),
+            system_chars=len(system_prompt or ""),
+            history_turns=len(history_messages),
+            preview=truncate(prompt, 80),
+        )
+    else:
+        logger.debug(
+            "openai_complete model=%s stream=%s prompt_chars=%d",
+            params["model"],
+            stream,
+            len(prompt or ""),
+        )
 
     if stream:
         response = await client.chat.completions.create(**params)
@@ -159,6 +186,14 @@ async def openai_complete(
 
     response = await client.chat.completions.create(**params)
     content = response.choices[0].message.content or ""
+    if agent or llm_action:
+        llm_call(
+            logger,
+            agent=str(agent or "llm"),
+            action="complete_done",
+            model=params["model"],
+            response_chars=len(content),
+        )
     return content
 
 
@@ -311,7 +346,13 @@ async def openai_embed(
         texts_list = _truncate_for_embedding(texts_list, budget)
 
     client = _embed_client()
-    logger.debug("openai_embed model=%s n=%d dim=%s", model_name, len(texts_list), dim)
+    embed_call(
+        logger,
+        context=str(context or "document"),
+        model=model_name,
+        n=len(texts_list),
+        dim=dim,
+    )
 
     create_kwargs: dict[str, Any] = {
         "model": model_name,
