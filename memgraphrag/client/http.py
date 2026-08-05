@@ -350,6 +350,7 @@ class MemGraphRAGClient:
         """Clean tunable knobs; preserve API flags like ``only_need_context``."""
         params = dict(params)
         only_need_context = params.pop("only_need_context", None)
+        # Prefer registry cleaning; also accept structured_output via ParamSpec.
         body = clean_params(params)
         if only_need_context is not None:
             body["only_need_context"] = bool(only_need_context)
