@@ -142,7 +142,7 @@ def render_sidebar() -> None:
         st.markdown("### ✨ Presets")
         cols = st.columns(2)
         for i, name in enumerate(PRESETS):
-            if cols[i % 2].button(name, use_container_width=True):
+            if cols[i % 2].button(name, width="stretch"):
                 apply_preset(name)
                 st.toast(f"Applied {name}", icon="✨")
 
@@ -415,7 +415,7 @@ def tab_ingest() -> None:
     if df.empty:
         st.info("No documents yet — feed me! 🍽️")
     else:
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(df, width="stretch", hide_index=True)
         busy_like = df["status"].str.lower().isin(["pending", "parsing", "processing"])
         if busy_like.any():
             st.caption("⏳ Indexing in progress — hit Refresh to update.")
@@ -594,7 +594,7 @@ def tab_optimize() -> None:
     ]
     df = pd.DataFrame(rows)
     st.markdown("### 🏆 Leaderboard")
-    st.dataframe(df, use_container_width=True, hide_index=True)
+    st.dataframe(df, width="stretch", hide_index=True)
     if not df.empty:
         st.bar_chart(df.head(15).set_index("params")["final"])
 
@@ -638,9 +638,9 @@ def tab_graph() -> None:
             st.metric("Nodes", len(nodes))
             st.metric("Edges", len(edges))
             st.markdown("### Nodes")
-            st.dataframe(pd.DataFrame(nodes), use_container_width=True)
+            st.dataframe(pd.DataFrame(nodes), width="stretch")
             st.markdown("### Edges")
-            st.dataframe(pd.DataFrame(edges), use_container_width=True)
+            st.dataframe(pd.DataFrame(edges), width="stretch")
         except Exception as exc:  # noqa: BLE001
             st.error(f"💥 {exc}")
 

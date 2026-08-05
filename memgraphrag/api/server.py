@@ -27,6 +27,73 @@ load_dotenv(dotenv_path=".env", override=False)
 
 logger = logging.getLogger("memgraphrag.api.server")
 
+# Include wall-clock time on every app + uvicorn line (default uvicorn fmt has none).
+_LOG_DATEFMT = "%Y-%m-%d %H:%M:%S"
+_LOG_FMT = "%(asctime)s %(levelname)s [%(name)s] %(message)s"
+_UVICORN_DEFAULT_FMT = "%(asctime)s %(levelprefix)s %(message)s"
+_UVICORN_ACCESS_FMT = (
+    '%(asctime)s %(levelprefix)s %(client_addr)s - "%(request_line)s" %(status_code)s'
+)
+
+
+def _logging_config(level: str) -> dict[str, Any]:
+    """Uvicorn dictConfig with timestamps for default + access loggers."""
+    lvl = str(level).upper()
+    return {
+        "version": 1,
+        "disable_existing_loggers": False,
+        "formatters": {
+            "default": {
+                "()": "uvicorn.logging.DefaultFormatter",
+                "fmt": _UVICORN_DEFAULT_FMT,
+                "datefmt": _LOG_DATEFMT,
+                "use_colors": None,
+            },
+            "access": {
+                "()": "uvicorn.logging.AccessFormatter",
+                "fmt": _UVICORN_ACCESS_FMT,
+                "datefmt": _LOG_DATEFMT,
+            },
+            "app": {
+                "format": _LOG_FMT,
+                "datefmt": _LOG_DATEFMT,
+            },
+        },
+        "handlers": {
+            "default": {
+                "formatter": "default",
+                "class": "logging.StreamHandler",
+                "stream": "ext://sys.stderr",
+            },
+            "access": {
+                "formatter": "access",
+                "class": "logging.StreamHandler",
+                "stream": "ext://sys.stdout",
+            },
+            "app": {
+                "formatter": "app",
+                "class": "logging.StreamHandler",
+                "stream": "ext://sys.stderr",
+            },
+        },
+        "loggers": {
+            "uvicorn": {"handlers": ["default"], "level": lvl, "propagate": False},
+            "uvicorn.error": {"level": lvl},
+            "uvicorn.access": {
+                "handlers": ["access"],
+                "level": lvl,
+                "propagate": False,
+            },
+            "memgraphrag": {
+                "handlers": ["app"],
+                "level": lvl,
+                "propagate": False,
+            },
+        },
+        "root": {"handlers": ["app"], "level": lvl},
+    }
+
+
 try:
     import uvicorn
     from fastapi import Depends, FastAPI, HTTPException, Request, status
@@ -233,13 +300,21 @@ def main(argv: Optional[list[str]] = None) -> None:
 
     config_mod.global_args = args
 
-    logging.basicConfig(level=getattr(logging, str(args.log_level).upper(), logging.INFO))
+    log_level = str(args.log_level).upper()
+    logging.basicConfig(
+        level=getattr(logging, log_level, logging.INFO),
+        format=_LOG_FMT,
+        datefmt=_LOG_DATEFMT,
+        force=True,
+    )
+    logger.info("MemGraphRAG API logging ready (timestamps enabled)")
     app = create_app(args)
 
     uvicorn_kwargs: dict[str, Any] = {
         "host": args.host,
         "port": int(args.port),
         "log_level": str(args.log_level).lower(),
+        "log_config": _logging_config(args.log_level),
     }
     if getattr(args, "ssl", False):
         uvicorn_kwargs["ssl_certfile"] = args.ssl_certfile
