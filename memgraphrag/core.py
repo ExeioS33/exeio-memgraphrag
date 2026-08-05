@@ -53,8 +53,11 @@ from memgraphrag.prompts.templates import (
     CONFLICT_RESOLUTION_USER_TEMPLATE,
     ONTOLOGY_EXTRACTION_SYSTEM,
     ONTOLOGY_EXTRACTION_USER_TEMPLATE,
+    RAG_QA_STRUCTURED_BYPASS_SYSTEM,
     get_query_instruction,
+    parse_structured_qa,
     render_rag_qa,
+    render_rag_qa_structured,
 )
 from memgraphrag.ppr import get_ppr_engine
 from memgraphrag.ppr.base import PPREngine
@@ -843,7 +846,12 @@ class MemGraphRAG:
                 idx = str(chunk.get("idx") or chunk.get("id") or "")
                 if not idx.startswith("chunk-"):
                     idx = compute_mdhash_id(content, prefix="chunk-")
-                prepared.append({"idx": idx, "content": content})
+                row: dict[str, str] = {"idx": idx, "content": content}
+                for key in ("file_path", "full_doc_id", "source"):
+                    val = chunk.get(key)
+                    if val:
+                        row[key] = str(val)
+                prepared.append(row)
                 continue
             content = str(chunk).strip()
             if content:
@@ -1028,9 +1036,32 @@ class MemGraphRAG:
             cached=len(prepared) - len(missing_chunks),
             extract=len(missing_chunks),
         )
+        meta_by_id = {c["idx"]: c for c in prepared}
         if missing_chunks:
             new_docs = await self.openie.batch_openie(missing_chunks)
+            for d in new_docs:
+                meta = meta_by_id.get(str(d.get("idx") or "")) or {}
+                for key in ("file_path", "full_doc_id", "source"):
+                    if meta.get(key):
+                        d[key] = meta[key]
             await self.openie_kv.upsert({d["idx"]: d for d in new_docs})
+        # Backfill source metadata onto already-cached OpenIE rows for this batch.
+        cached_rows = await self.openie_kv.get_by_ids(batch_ids)
+        backfill: dict[str, dict[str, Any]] = {}
+        for cid, rec in zip(batch_ids, cached_rows):
+            if not isinstance(rec, dict):
+                continue
+            meta = meta_by_id.get(cid) or {}
+            updated = dict(rec)
+            changed = False
+            for key in ("file_path", "full_doc_id", "source"):
+                if meta.get(key) and not updated.get(key):
+                    updated[key] = meta[key]
+                    changed = True
+            if changed:
+                backfill[cid] = updated
+        if backfill:
+            await self.openie_kv.upsert(backfill)
         stage(logger, "OpenIE cache ready", docs=len(batch_ids))
 
         openie_docs = await self._load_corpus_openie_docs(extra_chunk_ids=batch_ids)
@@ -1125,15 +1156,25 @@ class MemGraphRAG:
                 for j in range(len(add_passages))
             }
             await self.chunks_vdb.upsert(chunk_payload)
-            await self.chunks_kv.upsert(
-                {
-                    passage_ids[add_passages[j]]: {
-                        "content": texts[j],
-                        "idx": add_passages[j],
-                    }
-                    for j in range(len(add_passages))
+            # Preserve optional source metadata from OpenIE / ingest chunks.
+            openie_by_id = {
+                str(d.get("idx") or ""): d
+                for d in (openie_docs or [])
+                if isinstance(d, dict)
+            }
+            kv_rows: dict[str, dict[str, Any]] = {}
+            for j in range(len(add_passages)):
+                pid = passage_ids[add_passages[j]]
+                row: dict[str, Any] = {
+                    "content": texts[j],
+                    "idx": add_passages[j],
                 }
-            )
+                src_doc = openie_by_id.get(pid) or {}
+                for key in ("file_path", "full_doc_id", "source"):
+                    if src_doc.get(key):
+                        row[key] = str(src_doc[key])
+                kv_rows[pid] = row
+            await self.chunks_kv.upsert(kv_rows)
 
         # Facts
         fact_ids = [
@@ -1675,12 +1716,31 @@ class MemGraphRAG:
                     )
 
         self._passage_id_to_content = {}
+        self._passage_id_to_source: dict[str, str] = {}
         self._passage_ids = []
         self._fact_ids = []
         self._schema_ids = []
         self._schema_id_to_idx = {}
         self._fact_id_to_triple = {}
         self._entity_to_passages = {}
+
+        # Map chunk ids → document source labels (works for already-indexed corpora).
+        try:
+            from pathlib import Path as _Path
+
+            for doc_id, record in (await self._doc_status_all()).items():
+                if not isinstance(record, dict):
+                    continue
+                fp = str(record.get("file_path") or "")
+                if fp.startswith("inline:"):
+                    label = fp.split(":", 1)[-1] or str(doc_id)
+                else:
+                    label = _Path(fp).name or fp or str(doc_id)
+                for cid in record.get("chunk_ids") or []:
+                    if cid:
+                        self._passage_id_to_source[str(cid)] = label
+        except Exception as exc:
+            logger.debug("passage source map from doc_status skipped: %s", exc)
 
         if self.memory is not None:
             for p in self.memory.passage_layer:
@@ -2087,7 +2147,10 @@ class MemGraphRAG:
             top = ranked[: param.top_k]
             docs: list[str] = []
             doc_scores: list[float] = []
+            sources: list[str] = []
+            passage_ids: list[str] = []
             missing_ids: list[str] = []
+            source_map = getattr(self, "_passage_id_to_source", {}) or {}
             for pid, score in top:
                 content = self._passage_id_to_content.get(pid, "")
                 if not content:
@@ -2095,6 +2158,8 @@ class MemGraphRAG:
                     continue
                 docs.append(content)
                 doc_scores.append(float(score))
+                sources.append(str(source_map.get(pid) or "unknown"))
+                passage_ids.append(str(pid))
             # Fallback: resolve PPR hits via chunks_kv when content map is incomplete
             if missing_ids:
                 try:
@@ -2116,7 +2181,22 @@ class MemGraphRAG:
                     self._passage_id_to_content[pid] = content
                     docs.append(content)
                     doc_scores.append(float(score))
-            sol = QuerySolution(question=query, docs=docs, doc_scores=doc_scores)
+                    src = str(
+                        source_map.get(pid)
+                        or (rec or {}).get("file_path")
+                        or (rec or {}).get("source")
+                        or "unknown"
+                    )
+                    sources.append(src)
+                    passage_ids.append(str(pid))
+            sol = QuerySolution(
+                question=query,
+                docs=docs,
+                doc_scores=doc_scores,
+                sources=sources,
+                passage_ids=passage_ids,
+            )
+            sol.ensure_references()
             update_observation(
                 root_span,
                 output={
@@ -2153,12 +2233,33 @@ class MemGraphRAG:
             hits = await self.chunks_vdb.query(q_pass_vec, top_k=param.top_k)
             docs: list[str] = []
             scores: list[float] = []
+            sources: list[str] = []
+            passage_ids: list[str] = []
+            source_map = getattr(self, "_passage_id_to_source", {}) or {}
             for hit in hits:
                 content = hit.get("content", "")
-                if content:
-                    docs.append(content)
-                    scores.append(float(hit.get("score", hit.get("distance", 0.0))))
-            sol = QuerySolution(question=query, docs=docs, doc_scores=scores)
+                if not content:
+                    continue
+                pid = str(hit.get("id") or hit.get("__id__") or "")
+                docs.append(content)
+                scores.append(float(hit.get("score", hit.get("distance", 0.0))))
+                sources.append(
+                    str(
+                        source_map.get(pid)
+                        or hit.get("file_path")
+                        or hit.get("source")
+                        or "unknown"
+                    )
+                )
+                passage_ids.append(pid)
+            sol = QuerySolution(
+                question=query,
+                docs=docs,
+                doc_scores=scores,
+                sources=sources,
+                passage_ids=passage_ids,
+            )
+            sol.ensure_references()
             update_observation(
                 span,
                 output={"n_docs": len(docs), "docs": truncate_docs(docs)},
@@ -2239,17 +2340,37 @@ class MemGraphRAG:
                         model=os.getenv("LLM_MODEL"),
                     ) as gen_span:
                         stage(logger, "mode=bypass")
-                        answer = await self.llm_model_func(
-                            query,
-                            system_prompt=param.user_prompt,
-                            agent="qa.bypass",
-                            llm_action="complete",
-                        )
-                        sol = QuerySolution(
-                            question=query, docs=[], answer=str(answer)
-                        )
+                        if param.structured_output:
+                            system = param.user_prompt or RAG_QA_STRUCTURED_BYPASS_SYSTEM
+                            raw = await self.llm_model_func(
+                                query,
+                                system_prompt=system,
+                                agent="qa.bypass",
+                                llm_action="complete",
+                            )
+                            parsed = parse_structured_qa(str(raw))
+                            sol = QuerySolution(
+                                question=query,
+                                docs=[],
+                                answer=str(parsed["answer"]),
+                                thought=parsed.get("thought"),  # type: ignore[arg-type]
+                                citations=list(parsed.get("citations") or []),  # type: ignore[arg-type]
+                                confidence=parsed.get("confidence"),  # type: ignore[arg-type]
+                                structured=bool(parsed.get("structured")),
+                            )
+                        else:
+                            answer = await self.llm_model_func(
+                                query,
+                                system_prompt=param.user_prompt,
+                                agent="qa.bypass",
+                                llm_action="complete",
+                            )
+                            sol = QuerySolution(
+                                question=query, docs=[], answer=str(answer)
+                            )
                         update_observation(
-                            gen_span, output={"answer": str(answer)[:2000]}
+                            gen_span,
+                            output={"answer": (sol.answer or "")[:2000]},
                         )
                     update_observation(
                         root_span, output={"mode": mode, "n_docs": 0}
@@ -2259,6 +2380,7 @@ class MemGraphRAG:
                         RETRIEVE_PHASE,
                         mode=mode,
                         answer_chars=len(sol.answer or ""),
+                        structured=bool(sol.structured),
                     )
                     return sol
 
@@ -2276,12 +2398,14 @@ class MemGraphRAG:
                     sol = sols[0]
 
                 if mode == "context" or param.only_need_context:
+                    sol.ensure_references()
                     update_observation(
                         root_span,
                         output={
                             "mode": mode,
                             "n_docs": len(sol.docs),
                             "docs": truncate_docs(sol.docs),
+                            "sources": list(sol.sources or [])[:5],
                         },
                     )
                     done_step(
@@ -2308,7 +2432,12 @@ class MemGraphRAG:
                     )
                     return sol
 
-                system, user = render_rag_qa(query, sol.docs)
+                if param.structured_output:
+                    system, user = render_rag_qa_structured(
+                        query, sol.docs, sources=list(sol.sources or [])
+                    )
+                else:
+                    system, user = render_rag_qa(query, sol.docs)
                 if param.user_prompt:
                     user = f"{user}\n\n{param.user_prompt}"
                 history = param.conversation_history or None
@@ -2321,7 +2450,10 @@ class MemGraphRAG:
                         "docs": truncate_docs(sol.docs),
                     },
                     model=os.getenv("LLM_MODEL"),
-                    metadata={"system_prompt_chars": len(system or "")},
+                    metadata={
+                        "system_prompt_chars": len(system or ""),
+                        "structured_output": bool(param.structured_output),
+                    },
                 ) as gen_span:
                     stage(
                         logger,
@@ -2329,17 +2461,29 @@ class MemGraphRAG:
                         docs=len(sol.docs),
                         history_turns=len(history or []),
                         agent="qa.reading",
+                        structured=bool(param.structured_output),
                     )
-                    answer = await self.llm_model_func(
+                    raw_answer = await self.llm_model_func(
                         user,
                         system_prompt=system,
                         history_messages=history,
                         agent="qa.reading",
                         llm_action="complete",
                     )
-                    sol.answer = str(answer)
+                    if param.structured_output:
+                        parsed = parse_structured_qa(str(raw_answer))
+                        sol.answer = str(parsed["answer"])
+                        sol.thought = parsed.get("thought")  # type: ignore[assignment]
+                        sol.citations = list(parsed.get("citations") or [])  # type: ignore[assignment]
+                        sol.confidence = parsed.get("confidence")  # type: ignore[assignment]
+                        sol.structured = bool(parsed.get("structured"))
+                        sol.ensure_references()
+                    else:
+                        sol.answer = str(raw_answer)
+                        sol.structured = False
+                        sol.ensure_references()
                     update_observation(
-                        gen_span, output={"answer": str(answer)[:2000]}
+                        gen_span, output={"answer": (sol.answer or "")[:2000]}
                     )
                 update_observation(
                     root_span,
@@ -2347,6 +2491,7 @@ class MemGraphRAG:
                         "mode": mode,
                         "n_docs": len(sol.docs),
                         "answer_chars": len(sol.answer or ""),
+                        "structured": bool(sol.structured),
                     },
                 )
                 done_step(
@@ -2355,6 +2500,7 @@ class MemGraphRAG:
                     mode=mode,
                     docs=len(sol.docs),
                     answer_chars=len(sol.answer or ""),
+                    structured=bool(sol.structured),
                 )
                 return sol
             finally:

@@ -85,9 +85,11 @@ Keep a **separate** embedding endpoint (`EMBEDDING_BINDING_*`); the Mistral vLLM
 | POST | `/documents/scan` | Scan `INPUT_DIR` |
 
 Admin mutate endpoints return **409** while `/health` reports `pipeline_busy=true`. Clear-all requires `confirm=true` (400 otherwise). Per-doc delete needs content-hash `chunk_ids` on the status record (re-ingest legacy docs, or use clear-all).
-| POST | `/query` | Retrieve + QA |
+| POST | `/query` | Retrieve + QA (structured JSON answer by default) |
 | POST | `/query/data` | Retrieval evidence only |
 | POST | `/query/stream` | SSE answer stream |
+
+Developer curl cookbook (login, modes, structured response fields, errors): [developer_api_guide.md](developer_api_guide.md).
 | GET | `/graphs` | Explore memory graph |
 | GET/POST | `/api/*` | Ollama emulation |
 
@@ -103,6 +105,17 @@ Unlike LightRAG's local/global/hybrid modes:
 | `bypass` | Direct LLM |
 
 Ollama chat messages may prefix `/naive`, `/context`, or `/bypass`.
+
+### Structured QA output
+
+`POST /query` defaults to `structured_output=true`. The QA system prompt
+(`RAG_QA_STRUCTURED_SYSTEM` in `memgraphrag/prompts/templates.py`) asks the LLM
+for JSON `{thought, answer, citations, sources, confidence}` and labels each
+passage with `Source: <filename>`. The API always returns a `references` array
+(`reference_id` + `file_path`) built from retrieved passage sources, plus
+`response` (= `answer`) for LightRAG-style clients. Set
+`structured_output=false` for the legacy freeform `Thought:` / `Answer:` prompt
+(references still included).
 
 ## Structured server logging
 
@@ -145,6 +158,7 @@ Full coverage matrix, optimizer notes, and UI screenshot: [Clients.md](Clients.m
 
 ## See also
 
+- [developer_api_guide.md](developer_api_guide.md)
 - [Clients.md](Clients.md)
 - [DockerDeployment.md](DockerDeployment.md)
 - [FileProcessingPipeline.md](FileProcessingPipeline.md)

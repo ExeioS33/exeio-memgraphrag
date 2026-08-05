@@ -213,7 +213,7 @@ Output JSON:
 )
 
 # ---------------------------------------------------------------------------
-# RAG QA
+# RAG QA (legacy freeform Thought:/Answer:)
 # ---------------------------------------------------------------------------
 
 RAG_QA_SYSTEM = (
@@ -229,6 +229,157 @@ RAG_QA_USER_TEMPLATE = Template(
 Question: $question
 Thought: """
 )
+
+# ---------------------------------------------------------------------------
+# RAG QA (structured JSON — default for API consumers)
+# ---------------------------------------------------------------------------
+
+RAG_QA_STRUCTURED_SYSTEM = """You are a reading-comprehension assistant for a GraphRAG system.
+Analyze the numbered passages and answer the question.
+
+Rules:
+- Ground every claim in the passages. If the passages do not contain enough information, say so clearly in "answer".
+- EVERY answer MUST reference document sources. Each passage header includes "Source: <filename>".
+- In "answer", cite supporting passages with [n] markers (1-based) and name the Source filename(s).
+- "citations" must be 1-based passage numbers that support the answer (empty list only if no passage applies).
+- "sources" must list {passage, file_path} for every cited passage; use the Source filename from the header.
+- "confidence" is one of: high, medium, low.
+- Respond with a single JSON object only. No markdown fences, no prose outside JSON.
+
+Required JSON shape:
+{
+  "thought": "<brief reasoning grounded in the passages and their Source filenames>",
+  "answer": "<concise definitive answer that names Source filename(s) and uses [n] citations>",
+  "citations": [<int>, ...],
+  "sources": [{"passage": <int>, "file_path": "<Source filename>"}],
+  "confidence": "high|medium|low"
+}
+"""
+
+RAG_QA_STRUCTURED_USER_TEMPLATE = Template(
+    """Passages:
+$context
+
+Question: $question
+
+Respond with JSON only. Always cite Source filenames in the answer.
+"""
+)
+
+RAG_QA_STRUCTURED_BYPASS_SYSTEM = """You are a helpful assistant.
+Answer the user question and return a single JSON object only (no markdown fences).
+There is no retrieved document corpus in bypass mode, so sources/citations stay empty.
+
+Required JSON shape:
+{
+  "thought": "<brief reasoning>",
+  "answer": "<concise definitive answer>",
+  "citations": [],
+  "sources": [],
+  "confidence": "high|medium|low"
+}
+"""
+
+
+def _numbered_context(
+    docs: list[str], sources: list[str] | None = None
+) -> str:
+    """Format passages as ``[Passage N | Source: …]`` blocks for grounding."""
+    parts: list[str] = []
+    source_list = list(sources or [])
+    for i, doc in enumerate(docs, start=1):
+        text = str(doc or "").strip()
+        if not text:
+            continue
+        src = ""
+        if i - 1 < len(source_list):
+            src = str(source_list[i - 1] or "").strip()
+        if src:
+            parts.append(f"[Passage {i} | Source: {src}]\n{text}")
+        else:
+            parts.append(f"[Passage {i} | Source: unknown]\n{text}")
+    return "\n\n".join(parts)
+
+
+def parse_structured_qa(raw: str) -> dict[str, object]:
+    """Parse a structured QA LLM response into normalized fields.
+
+    Returns keys: ``answer``, ``thought``, ``citations``, ``sources``,
+    ``confidence``, ``structured`` (bool), ``raw``.
+    Falls back to freeform text when JSON is missing or invalid.
+    """
+    from memgraphrag.utils.json_llm import extract_json_object
+
+    text = str(raw or "").strip()
+    data = extract_json_object(text)
+    if not data:
+        # Legacy Thought:/Answer: fallback
+        answer = text
+        thought: str | None = None
+        if "Answer:" in text:
+            before, _, after = text.partition("Answer:")
+            answer = after.strip()
+            if "Thought:" in before:
+                thought = before.split("Thought:", 1)[-1].strip() or None
+            elif before.strip():
+                thought = before.strip()
+        return {
+            "answer": answer,
+            "thought": thought,
+            "citations": [],
+            "sources": [],
+            "confidence": None,
+            "structured": False,
+            "raw": text,
+        }
+
+    citations_raw = data.get("citations") or []
+    citations: list[int] = []
+    if isinstance(citations_raw, list):
+        for item in citations_raw:
+            try:
+                citations.append(int(item))
+            except (TypeError, ValueError):
+                continue
+
+    sources_out: list[dict[str, object]] = []
+    sources_raw = data.get("sources") or []
+    if isinstance(sources_raw, list):
+        for item in sources_raw:
+            if not isinstance(item, dict):
+                continue
+            passage = item.get("passage")
+            file_path = item.get("file_path") or item.get("source") or item.get("name")
+            try:
+                passage_i = int(passage) if passage is not None else None
+            except (TypeError, ValueError):
+                passage_i = None
+            if file_path is None and passage_i is None:
+                continue
+            sources_out.append(
+                {
+                    "passage": passage_i,
+                    "file_path": str(file_path).strip() if file_path is not None else "",
+                }
+            )
+
+    confidence = data.get("confidence")
+    if confidence is not None:
+        confidence = str(confidence).strip().lower() or None
+        if confidence not in {"high", "medium", "low"}:
+            confidence = None
+
+    answer = data.get("answer")
+    thought_val = data.get("thought")
+    return {
+        "answer": str(answer).strip() if answer is not None else text,
+        "thought": str(thought_val).strip() if thought_val is not None else None,
+        "citations": citations,
+        "sources": sources_out,
+        "confidence": confidence,
+        "structured": True,
+        "raw": text,
+    }
 
 
 def render_ner(passage: str) -> tuple[str, str]:
@@ -247,6 +398,19 @@ def render_triple_extraction(passage: str, named_entities: list[str]) -> tuple[s
 
 
 def render_rag_qa(question: str, docs: list[str]) -> tuple[str, str]:
-    """Return (system, user) prompts for RAG QA."""
+    """Return (system, user) prompts for legacy freeform RAG QA."""
     context = "\n\n".join(docs)
     return RAG_QA_SYSTEM, RAG_QA_USER_TEMPLATE.substitute(context=context, question=question)
+
+
+def render_rag_qa_structured(
+    question: str,
+    docs: list[str],
+    sources: list[str] | None = None,
+) -> tuple[str, str]:
+    """Return (system, user) prompts for structured JSON RAG QA."""
+    context = _numbered_context(docs, sources=sources)
+    return (
+        RAG_QA_STRUCTURED_SYSTEM,
+        RAG_QA_STRUCTURED_USER_TEMPLATE.substitute(context=context, question=question),
+    )

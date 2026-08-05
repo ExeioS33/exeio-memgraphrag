@@ -42,9 +42,34 @@ class QueryRequest(BaseModel):
     schema_top_k: Optional[int] = Field(default=None, ge=0)
     schema_node_weight: Optional[float] = None
     only_need_context: Optional[bool] = False
+    structured_output: Optional[bool] = Field(
+        default=True,
+        description=(
+            "Ask the QA LLM for JSON with answer/thought/citations/confidence "
+            "(default true). Set false for legacy Thought:/Answer: freeform."
+        ),
+    )
     conversation_history: Optional[list[dict[str, str]]] = None
     user_prompt: Optional[str] = None
     stream: Optional[bool] = False
+
+
+class QueryResponse(BaseModel):
+    """Documented API response shape for ``POST /query``."""
+
+    question: Optional[str] = None
+    response: Optional[str] = None
+    answer: Optional[str] = None
+    thought: Optional[str] = None
+    citations: list[int] = Field(default_factory=list)
+    confidence: Optional[str] = None
+    structured: bool = False
+    sources: list[str] = Field(default_factory=list)
+    references: list[dict[str, Any]] = Field(default_factory=list)
+    docs: list[str] = Field(default_factory=list)
+    doc_scores: Optional[list[float]] = None
+    gold_answers: Optional[list[str]] = None
+    gold_docs: Optional[list[str]] = None
 
 
 def _build_param(body: QueryRequest, rag: Any) -> QueryParam:
@@ -69,6 +94,8 @@ def _build_param(body: QueryRequest, rag: Any) -> QueryParam:
         kwargs["schema_node_weight"] = body.schema_node_weight
     if body.only_need_context is not None:
         kwargs["only_need_context"] = body.only_need_context
+    if body.structured_output is not None:
+        kwargs["structured_output"] = body.structured_output
     if body.conversation_history is not None:
         kwargs["conversation_history"] = body.conversation_history
     if body.user_prompt is not None:
@@ -80,7 +107,16 @@ def _build_param(body: QueryRequest, rag: Any) -> QueryParam:
 
 def _solution_payload(sol: QuerySolution | str) -> dict[str, Any]:
     if isinstance(sol, str):
-        return {"response": sol, "answer": sol}
+        return {
+            "response": sol,
+            "answer": sol,
+            "thought": None,
+            "citations": [],
+            "confidence": None,
+            "structured": False,
+        }
+    if hasattr(sol, "ensure_references"):
+        sol.ensure_references()
     data = sol.to_dict()
     data["response"] = sol.answer
     data["answer"] = sol.answer
@@ -96,7 +132,11 @@ def create_query_router(api_key: Optional[str] = None) -> Any:
     router = APIRouter(tags=["query"])
     combined_auth = get_combined_auth_dependency(api_key)
 
-    @router.post("/query", dependencies=[Depends(combined_auth)])
+    @router.post(
+        "/query",
+        dependencies=[Depends(combined_auth)],
+        response_model=QueryResponse,
+    )
     async def query(request: Request, body: QueryRequest):
         rag = request.app.state.rag
         param = _build_param(body, rag)
@@ -109,6 +149,7 @@ def create_query_router(api_key: Optional[str] = None) -> Any:
             query=truncate(body.query),
             stream=False,
             only_need_context=bool(param.only_need_context),
+            structured_output=bool(param.structured_output),
         )
         try:
             sol = await rag.arag_qa(body.query, param=param)
@@ -121,6 +162,7 @@ def create_query_router(api_key: Optional[str] = None) -> Any:
                 mode=param.mode,
                 docs=len(docs),
                 answer_chars=len(str(answer)),
+                structured=bool(payload.get("structured")),
             )
             return payload
         except Exception as exc:
@@ -198,8 +240,18 @@ def create_query_router(api_key: Optional[str] = None) -> Any:
                     docs=len(docs),
                     answer_chars=len(str(answer)),
                 )
-                # Yield full answer as one SSE chunk (no token streaming yet)
-                yield f"data: {json.dumps({'response': answer}, ensure_ascii=False)}\n\n"
+                # Yield structured payload then DONE (no token streaming yet)
+                stream_payload = {
+                    "response": answer,
+                    "answer": answer,
+                    "thought": payload.get("thought"),
+                    "citations": payload.get("citations") or [],
+                    "confidence": payload.get("confidence"),
+                    "structured": bool(payload.get("structured")),
+                    "sources": payload.get("sources") or [],
+                    "references": payload.get("references") or [],
+                }
+                yield f"data: {json.dumps(stream_payload, ensure_ascii=False)}\n\n"
                 yield "data: [DONE]\n\n"
             except Exception as exc:
                 fail_step(
