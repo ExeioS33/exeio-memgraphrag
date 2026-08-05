@@ -145,6 +145,7 @@ Full coverage matrix, optimizer notes, and UI screenshot: [Clients.md](Clients.m
 
 ## See also
 
+- [developer_api_guide.md](developer_api_guide.md) — curl examples and `{response, references}` contract
 - [Clients.md](Clients.md)
 - [DockerDeployment.md](DockerDeployment.md)
 - [FileProcessingPipeline.md](FileProcessingPipeline.md)
