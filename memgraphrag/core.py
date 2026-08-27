@@ -1283,8 +1283,7 @@ class MemGraphRAG:
         size = max(1, get_env_value("OPENIE_CHECKPOINT_SIZE", OPENIE_CHECKPOINT_SIZE, int))
         total = len(missing_chunks)
         done = 0
-        failed_total = 0
-        first_error = ""
+        failed_idx: list[str] = []
         for start in range(0, total, size):
             sub = missing_chunks[start : start + size]
             new_docs = await self.openie.batch_openie(sub)
@@ -1293,9 +1292,7 @@ class MemGraphRAG:
             if ok_docs:
                 await self.openie_kv.upsert({d["idx"]: d for d in ok_docs})
             done += len(sub)
-            if failed_docs:
-                failed_total += len(failed_docs)
-                first_error = first_error or str(failed_docs[0].get("error", ""))
+            failed_idx.extend(str(d["idx"]) for d in failed_docs)
             stage(
                 logger,
                 "OpenIE checkpoint",
@@ -1304,12 +1301,31 @@ class MemGraphRAG:
                 cached=len(ok_docs),
                 failed=len(failed_docs),
             )
-        if failed_total:
-            raise PipelineError(
-                f"OpenIE failed for {failed_total}/{total} chunks ({first_error}). "
-                f"Successful chunks are cached; the failed ones are left unindexed "
-                f"rather than stored as fact-free and silently unreachable."
+        if failed_idx:
+            # One transient provider error among thousands of calls must not abort
+            # a corpus-sized run after the fact: give the failed chunks a second,
+            # sequential-sized pass before giving up. Only a chunk that fails twice
+            # in a row stops the run — and even then everything else is cached.
+            by_idx = {c["idx"]: c for c in missing_chunks}
+            retry_docs = await self.openie.batch_openie([by_idx[i] for i in failed_idx])
+            ok_docs = [d for d in retry_docs if not d.get("failed")]
+            still_failed = [d for d in retry_docs if d.get("failed")]
+            if ok_docs:
+                await self.openie_kv.upsert({d["idx"]: d for d in ok_docs})
+            stage(
+                logger,
+                "OpenIE retry",
+                retried=len(retry_docs),
+                recovered=len(ok_docs),
+                failed=len(still_failed),
             )
+            if still_failed:
+                raise PipelineError(
+                    f"OpenIE failed for {len(still_failed)}/{total} chunks after a retry "
+                    f"({still_failed[0].get('error', '')}). Successful chunks are cached; "
+                    f"the failed ones are left unindexed rather than stored as fact-free "
+                    f"and silently unreachable."
+                )
 
     async def ainsert(
         self,

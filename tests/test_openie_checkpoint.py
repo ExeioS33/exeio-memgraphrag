@@ -17,14 +17,18 @@ from test_document_admin import _make_rag
 pytestmark = pytest.mark.offline
 
 
-def _fake_openie(calls: list[list[str]], *, fail_idx: set[str] = frozenset()):
+def _fake_openie(calls: list[list[str]], *, fail_idx: set[str] = frozenset(), fail_times: int = 99):
+    """``fail_idx`` chunks fail on their first ``fail_times`` attempts, then succeed."""
+    attempts: dict[str, int] = {}
+
     async def fake_batch(docs):
         idxs = [str(d["idx"]) for d in docs]
         calls.append(idxs)
         out = []
         for d in docs:
             idx = str(d["idx"])
-            if idx in fail_idx:
+            attempts[idx] = attempts.get(idx, 0) + 1
+            if idx in fail_idx and attempts[idx] <= fail_times:
                 out.append({"idx": idx, "failed": True, "error": "boom"})
             else:
                 out.append(
@@ -110,11 +114,30 @@ async def test_failed_chunk_does_not_discard_its_neighbours(tmp_path, monkeypatc
     calls: list[list[str]] = []
     rag.openie.batch_openie = _fake_openie(calls, fail_idx={prepared[1]["idx"]})  # type: ignore[method-assign]
 
-    with pytest.raises(PipelineError, match="1/4"):
+    with pytest.raises(PipelineError, match="1/4 chunks after a retry"):
         await rag.ainsert(prepared, run_conflicts=False)
 
     cached = await rag.openie_kv.get_all()
     assert prepared[1]["idx"] not in cached, "a failure is never cached"
     assert {prepared[0]["idx"], prepared[2]["idx"], prepared[3]["idx"]} <= set(cached)
-    assert [len(c) for c in calls] == [2, 2], "the corpus is attempted to the end"
+    assert [len(c) for c in calls] == [2, 2, 1], "corpus attempted to the end, then one retry"
+    await rag.finalize_storages()
+
+
+@pytest.mark.asyncio
+async def test_transient_failure_is_retried_and_does_not_abort_the_run(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENIE_CHECKPOINT_SIZE", "2")
+    rag = _make_rag(tmp_path, monkeypatch=monkeypatch)
+    await rag.initialize_storages()
+    prepared = rag._normalize_chunks(_chunks(4))
+    calls: list[list[str]] = []
+    rag.openie.batch_openie = _fake_openie(  # type: ignore[method-assign]
+        calls, fail_idx={prepared[1]["idx"]}, fail_times=1
+    )
+
+    await rag.ainsert(prepared, run_conflicts=False)
+
+    assert calls[-1] == [prepared[1]["idx"]], "only the failed chunk is retried"
+    assert len(await rag.openie_kv.get_all()) == 4
+    assert rag.memory is not None and len(rag.memory.passage_layer) == 4
     await rag.finalize_storages()

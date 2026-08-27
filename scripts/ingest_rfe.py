@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import os
 import sys
 import time
@@ -103,6 +104,12 @@ async def main() -> int:
     args = parser.parse_args()
 
     load_env_file(str(REPO / ".env"))
+    # Nothing in the engine configures logging. On file backends nano-vectordb's
+    # import-time basicConfig happened to show INFO; on database backends the
+    # stage and checkpoint lines silently vanished. Configure it explicitly.
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("neo4j").setLevel(logging.WARNING)
 
     from memgraphrag.constants import CHUNK_OVERLAP_SIZE, CHUNK_SIZE
     from memgraphrag.utils.env import get_env_value
