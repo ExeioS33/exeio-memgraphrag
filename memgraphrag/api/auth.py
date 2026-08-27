@@ -179,4 +179,25 @@ class AuthHandler:
             raise  # pragma: no cover — unreachable
 
 
-auth_handler = AuthHandler()
+class _LazyAuthHandler:
+    """Backwards-compatible module-level handler, built on first use.
+
+    ``create_app`` builds its own handler from the config it is handed and stores it
+    on ``app.state``; this fallback exists only for code that still imports
+    ``auth_handler`` directly. Constructing it eagerly at import time read the
+    environment before the entry point had loaded ``.env``, which emitted a
+    misleading "TOKEN_SECRET not set" warning even when the running app had one.
+    """
+
+    _handler: AuthHandler | None = None
+
+    def _resolve(self) -> AuthHandler:
+        if self._handler is None:
+            self._handler = AuthHandler()
+        return self._handler
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._resolve(), name)
+
+
+auth_handler = _LazyAuthHandler()

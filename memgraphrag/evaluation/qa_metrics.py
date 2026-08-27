@@ -159,9 +159,7 @@ def str_acc(
         hit = any(contains_token_span(gold, predicted, window_tokens) for gold in golds)
         shortest_gold = min((len(normalize_tokens(g)) for g in golds if g), default=0)
         verbose = bool(
-            hit
-            and shortest_gold > 0
-            and len(predicted_tokens) > verbosity_ratio * shortest_gold
+            hit and shortest_gold > 0 and len(predicted_tokens) > verbosity_ratio * shortest_gold
         )
         per_example.append(
             {

@@ -26,7 +26,11 @@ except ImportError:  # pragma: no cover
     APIKeyHeader = None  # type: ignore[misc, assignment]
     OAuth2PasswordBearer = None  # type: ignore[misc, assignment]
 
-auth_configured = bool(auth_handler.accounts)
+# NOTE: there is deliberately no module-level `auth_configured` any more. Reading it
+# at import time forced the fallback AuthHandler to be built from whatever the
+# environment held at import, which both emitted a misleading "TOKEN_SECRET not set"
+# warning and risked answering with stale config. Every request resolves its own
+# handler through `resolve_auth_context`.
 
 
 def compile_whitelist(paths_csv: str) -> list[tuple[str, bool]]:
