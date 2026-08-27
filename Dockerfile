@@ -18,7 +18,7 @@ RUN apt-get update \
 
 COPY pyproject.toml uv.lock ./
 COPY memgraphrag/ ./memgraphrag/
-COPY README.md LICENSE ./
+COPY README.md LICENSE NOTICE THIRD_PARTY_LICENSES.md ./
 
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --extra api --no-editable
@@ -44,7 +44,7 @@ RUN apt-get update \
 
 COPY --from=builder /app/.venv /app/.venv
 COPY --from=builder /app/memgraphrag /app/memgraphrag
-COPY --from=builder /app/pyproject.toml /app/README.md /app/LICENSE /app/
+COPY --from=builder /app/pyproject.toml /app/README.md /app/LICENSE /app/NOTICE /app/THIRD_PARTY_LICENSES.md /app/
 COPY docker-entrypoint.sh /app/docker-entrypoint.sh
 
 RUN chmod +x /app/docker-entrypoint.sh \

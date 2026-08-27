@@ -8,6 +8,7 @@ pluggable storage (``memgraphrag.storage.factory.get_storage_class``).
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import logging
 import os
@@ -45,7 +46,16 @@ from memgraphrag.constants import (
 from memgraphrag.exceptions import NotReadyError, PipelineError
 from memgraphrag.memory import ThreeLayerMemory
 from memgraphrag.namespace import NameSpace
+from memgraphrag.observability.langfuse_trace import (
+    flush_langfuse,
+    observation,
+    truncate_docs,
+    update_observation,
+)
 from memgraphrag.openie.openai_openie import OpenIE
+from memgraphrag.ppr import get_ppr_engine
+from memgraphrag.ppr.base import PPREngine
+from memgraphrag.ppr.igraph_engine import IgraphPPREngine
 from memgraphrag.prompts.templates import (
     CONFLICT_DETECTION_SYSTEM,
     CONFLICT_DETECTION_USER_TEMPLATE,
@@ -56,18 +66,9 @@ from memgraphrag.prompts.templates import (
     get_query_instruction,
     render_rag_qa,
 )
-from memgraphrag.ppr import get_ppr_engine
-from memgraphrag.ppr.base import PPREngine
-from memgraphrag.ppr.igraph_engine import IgraphPPREngine
 from memgraphrag.rerank import FactFilter
 from memgraphrag.storage import verify_storage_implementation
 from memgraphrag.storage.factory import get_storage_class
-from memgraphrag.observability.langfuse_trace import (
-    flush_langfuse,
-    observation,
-    truncate_docs,
-    update_observation,
-)
 from memgraphrag.utils.env import get_env_value
 from memgraphrag.utils.hashing import compute_mdhash_id
 from memgraphrag.utils.json_llm import extract_json_object
@@ -102,6 +103,48 @@ def _min_max_normalize(scores: np.ndarray) -> np.ndarray:
 
 def _triple_str(triple: Sequence[str]) -> str:
     return str(tuple(str(x) for x in triple))
+
+
+def _hit_score(hit: Mapping[str, Any]) -> float:
+    """Read the cosine similarity of a vector-store hit.
+
+    Single reader for the BaseVectorStorage score contract: ``score`` is authoritative,
+    ``distance`` is the deprecated alias carrying the same value.
+    """
+    raw = hit.get("score")
+    if raw is None:
+        raw = hit.get("distance", 0.0)
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _corpus_entity_surfaces(memory: Any, openie_docs: Sequence[dict] | None) -> list[str]:
+    """Canonical, order-stable list of normalized entity surfaces for a corpus.
+
+    Single source of truth for the entity set. ``_embed_and_store_memory`` and
+    ``prepare_retrieval`` must derive the *same* list: the indexing path diffs it
+    against the stored ids to decide what to embed and what to delete, so any
+    divergence either re-embeds the whole corpus or deletes live entities. The two
+    used to disagree — indexing included OpenIE ``extracted_entities`` while the
+    retrieval path derived entities from fact endpoints only.
+    """
+    entities: list[str] = []
+    seen: set[str] = set()
+    for doc in openie_docs or []:
+        for ent in (doc or {}).get("extracted_entities") or []:
+            e = str(ent).strip().lower()
+            if e and e not in seen:
+                seen.add(e)
+                entities.append(e)
+    for fact in getattr(memory, "fact_layer", []) or []:
+        for ent in (fact.content[0], fact.content[2]):
+            e = str(ent).strip().lower()
+            if e and e not in seen:
+                seen.add(e)
+                entities.append(e)
+    return entities
 
 
 def _run_sync(coro: Awaitable[Any]) -> Any:
@@ -334,7 +377,6 @@ class MemGraphRAG:
                 continue
             for triple_key, ontology in ont_map.items():
                 try:
-                    import ast
 
                     triple_tuple = ast.literal_eval(str(triple_key))
                     if not (
@@ -1161,21 +1203,7 @@ class MemGraphRAG:
             await self.facts_vdb.upsert(fact_payload)
 
         # Entities from OpenIE + fact endpoints
-        entities: list[str] = []
-        seen: set[str] = set()
-        for doc in openie_docs:
-            for ent in doc.get("extracted_entities") or []:
-                e = str(ent).strip().lower()
-                if e and e not in seen:
-                    seen.add(e)
-                    entities.append(e)
-        for fact in memory.fact_layer:
-            for ent in (fact.content[0], fact.content[2]):
-                e = str(ent).strip().lower()
-                if e and e not in seen:
-                    seen.add(e)
-                    entities.append(e)
-
+        entities = _corpus_entity_surfaces(memory, openie_docs)
         entity_ids = [compute_mdhash_id(e, prefix="entity-") for e in entities]
         new_entities = set(entity_ids)
         orphan_entities = sorted(old_ids["entities"] - new_entities)
@@ -1250,6 +1278,11 @@ class MemGraphRAG:
 
     async def _install_memory_graph(self, memory: ThreeLayerMemory) -> None:
         """Write schema / entity / fact / passage nodes and typed edges."""
+        # One persistence step for the whole install instead of one per element.
+        async with self.graph.batch():
+            await self._install_memory_graph_inner(memory)
+
+    async def _install_memory_graph_inner(self, memory: ThreeLayerMemory) -> None:
         await self.graph.clear()
         entity_to_passages: dict[str, set[str]] = {}
 
@@ -1679,6 +1712,7 @@ class MemGraphRAG:
         self._passage_id_to_source: dict[str, str] = {}
         self._fact_ids = []
         self._schema_ids = []
+        self._entity_ids = []
         self._schema_id_to_idx = {}
         self._fact_id_to_triple = {}
         self._entity_to_passages = {}
@@ -1704,6 +1738,20 @@ class MemGraphRAG:
                 sid = compute_mdhash_id(_triple_str(s.content), prefix="schema-")
                 self._schema_ids.append(sid)
                 self._schema_id_to_idx[sid] = s.idx
+
+            # Rebuild `_entity_ids` from the same source the indexing path uses.
+            # Leaving it empty made `_previous_vector_ids` report zero existing
+            # entities, so the first insert after any restart re-embedded (and
+            # re-billed) every entity in the corpus and never purged orphans.
+            try:
+                openie_docs = await self._load_corpus_openie_docs()
+            except Exception as exc:
+                fail_step(logger, "retrieve.prepare.openie_docs", exc=exc)
+                openie_docs = []
+            self._entity_ids = [
+                compute_mdhash_id(e, prefix="entity-")
+                for e in _corpus_entity_surfaces(self.memory, openie_docs)
+            ]
 
         # Map chunk ids → document basenames for LightRAG-style references.
         try:
@@ -1857,14 +1905,11 @@ class MemGraphRAG:
                 fact_hits = await self.facts_vdb.query(
                     q_fact_vec, top_k=param.linking_top_k
                 )
-                scores = [
-                    float(h.get("score", h.get("distance", 0.0))) for h in fact_hits
-                ]
-                # nano-vectordb often returns similarity; if distance-like, invert
-                if scores and max(scores) <= 1.0 and min(scores) >= 0:
-                    sim_scores = scores
-                else:
-                    sim_scores = [1.0 / (1.0 + abs(s)) for s in scores]
+                # Backends publish cosine similarity under "score" (see the
+                # BaseVectorStorage contract). No guessing, no renormalisation: the
+                # old "invert if it looks like a distance" heuristic tested the whole
+                # list at once, so a single negative cosine flipped every ranking.
+                sim_scores = [_hit_score(h) for h in fact_hits]
 
                 if param.skip_fact_rerank:
                     kept = self.fact_filter.threshold_filter(
@@ -1931,9 +1976,7 @@ class MemGraphRAG:
                     schema_hits_n = len(schema_hits)
                     for hit in schema_hits:
                         sid = hit.get("id") or hit.get("__id__")
-                        score = float(hit.get("score", hit.get("distance", 0.0)))
-                        if score > 1.0 or score < 0:
-                            score = 1.0 / (1.0 + abs(score))
+                        score = _hit_score(hit)
                         schema_idx = None
                         if sid and sid in self._schema_id_to_idx:
                             schema_idx = self._schema_id_to_idx[str(sid)]
@@ -2017,7 +2060,14 @@ class MemGraphRAG:
                 if not triple:
                     content = hit.get("content", "")
                     try:
-                        triple = eval(content) if isinstance(content, str) else content
+                        # ast.literal_eval, not eval: `content` comes back from the vector
+                        # store, so eval() there is arbitrary code execution in the API
+                        # worker on the /query path.
+                        triple = (
+                            ast.literal_eval(content)
+                            if isinstance(content, str)
+                            else content
+                        )
                     except Exception:
                         triple = None
                 if not (isinstance(triple, (list, tuple)) and len(triple) == 3):
@@ -2057,9 +2107,7 @@ class MemGraphRAG:
                                 break
                     if not pid:
                         continue
-                    score = float(hit.get("score", hit.get("distance", 0.0)))
-                    if score > 1.0 or score < 0:
-                        score = 1.0 / (1.0 + abs(score))
+                    score = _hit_score(hit)
                     seed_weights[str(pid)] = (
                         seed_weights.get(str(pid), 0.0)
                         + score * param.passage_node_weight

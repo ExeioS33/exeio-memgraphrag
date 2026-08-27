@@ -249,10 +249,13 @@ class PGVectorStorage(BaseVectorStorage):
             meta = row["metadata"]
             if isinstance(meta, str):
                 meta = json.loads(meta)
+            # `1 - (embedding <=> $1)` is cosine similarity in [-1, 1]. Publish it as
+            # `score` per the BaseVectorStorage contract; `distance` is the alias.
             results.append(
                 {
                     "id": row["id"],
                     "content": row["content"],
+                    "score": float(row["score"]),
                     "distance": float(row["score"]),
                     **(meta or {}),
                 }

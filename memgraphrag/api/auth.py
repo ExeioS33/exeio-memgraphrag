@@ -6,7 +6,9 @@ JWT and optional bcrypt with plaintext fallback for POC.
 
 from __future__ import annotations
 
+import hmac
 import logging
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -45,7 +47,9 @@ def _verify_password(plain: str, stored: str) -> bool:
         except Exception as exc:
             logger.warning("bcrypt verification failed: %s", exc)
             return False
-    return plain == stored
+    # Constant-time comparison: a plain `==` on secrets leaks their prefix length
+    # through response timing.
+    return hmac.compare_digest(plain, stored)
 
 
 class AuthHandler:
@@ -54,16 +58,33 @@ class AuthHandler:
     def __init__(self, args: Any | None = None) -> None:
         cfg = args or global_args
         auth_accounts = getattr(cfg, "auth_accounts", "") or ""
+        api_key = (
+            os.getenv("MEMGRAPHRAG_API_KEY") or getattr(cfg, "key", None) or ""
+        )
+        require_auth = bool(getattr(cfg, "require_auth", False))
         self.secret = getattr(cfg, "token_secret", None) or ""
         if not self.secret:
+            # DEFAULT_TOKEN_SECRET is published in this repository, so tokens signed
+            # with it can be forged by anyone.
             if auth_accounts:
                 raise ValueError(
                     "TOKEN_SECRET must be explicitly set when AUTH_ACCOUNTS is configured."
                 )
             self.secret = DEFAULT_TOKEN_SECRET
-            logger.warning(
-                "TOKEN_SECRET not set; using default guest-mode JWT secret."
-            )
+            if api_key or require_auth:
+                # API-key-only mode stays usable: a forged token can only carry
+                # role="guest", and guest tokens do not bypass the key check
+                # (see dependencies.combined_dependency). Still worth flagging.
+                logger.warning(
+                    "TOKEN_SECRET not set; JWTs are signed with the public default "
+                    "secret. Access is still gated by the API key, but /login tokens "
+                    "are forgeable. Set TOKEN_SECRET."
+                )
+            else:
+                logger.warning(
+                    "TOKEN_SECRET not set and no authentication configured; using the "
+                    "public default JWT secret. Do not expose this server."
+                )
         algorithm = getattr(cfg, "jwt_algorithm", None) or "HS256"
         if algorithm.lower() == "none":
             raise ValueError("JWT_ALGORITHM 'none' is not permitted.")

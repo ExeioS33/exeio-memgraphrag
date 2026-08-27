@@ -33,6 +33,11 @@ CHUNK_OVERLAP_SIZE = 100
 HOST = "0.0.0.0"
 PORT = 9621
 
+# Request limits / anti-abuse
+MAX_UPLOAD_SIZE = 100 * 1024 * 1024  # 100 MiB per uploaded document
+LOGIN_MAX_ATTEMPTS = 10
+LOGIN_WINDOW_SECONDS = 60.0
+
 # Ollama API emulation
 DEFAULT_OLLAMA_MODEL_NAME = "memgraphrag"
 DEFAULT_OLLAMA_MODEL_TAG = "latest"

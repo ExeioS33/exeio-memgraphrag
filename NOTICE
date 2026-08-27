@@ -1,0 +1,38 @@
+MemGraphRAG (industrialized API server)
+Copyright (c) 2026 EXEIO / ExeioS33
+
+This product includes software developed by third parties, redistributed under the
+MIT License. Their copyright notices are reproduced below as required by that license.
+Full license texts are in THIRD_PARTY_LICENSES.md.
+
+-------------------------------------------------------------------------------
+1. MemGraphRAG (research reference implementation)
+-------------------------------------------------------------------------------
+Copyright (c) 2026 DeepLIT Group in Xiamen University
+https://github.com/XMUDeepLIT/MemGraphRAG
+Licensed under the MIT License.
+
+Paper: Chuanjie Wu, Zhishang Xiang, Yunbo Tang, Zerui Chen, Qinggang Zhang and
+Jinsong Su. "MemGraphRAG: Memory-based Multi-Agent System for Graph
+Retrieval-Augmented Generation." KDD 2026. arXiv:2606.00610.
+
+Portions of this repository are derived from that implementation, in particular the
+three-layer memory model, the ontology / conflict / graph-install indexing stages and
+the PPR retrieval semantics. Derived modules include (non-exhaustive):
+  memgraphrag/core.py
+  memgraphrag/memory.py
+  memgraphrag/prompts/templates.py
+  memgraphrag/storage/igraph_impl.py
+  memgraphrag/utils/step_log.py
+
+-------------------------------------------------------------------------------
+2. LightRAG
+-------------------------------------------------------------------------------
+Copyright (c) 2025 LightRAG Team
+https://github.com/HKUDS/LightRAG
+Licensed under the MIT License.
+
+Portions of this repository are adapted from LightRAG, in particular the API server
+scaffolding, authentication, configuration, storage registry and file-processing
+patterns. Each adapted module cites its upstream source in its docstring; run
+`grep -rl "Adapted from LightRAG" memgraphrag/` for the current list.

@@ -19,3 +19,9 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+---
+
+This software includes third-party components under the MIT License (LightRAG Team;
+DeepLIT Group in Xiamen University). Their required copyright notices are reproduced
+in NOTICE, and the full license texts in THIRD_PARTY_LICENSES.md.

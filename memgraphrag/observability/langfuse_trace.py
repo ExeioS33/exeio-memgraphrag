@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from contextlib import contextmanager
 from typing import Any, Iterator, Optional
 
@@ -125,12 +126,33 @@ def observation(
             yield None
             return
 
+    # Do NOT wrap `with cm as span: yield span` in a try/except that yields again.
+    # When the caller's body raises, contextlib throws into the generator at the
+    # yield; catching it and yielding a second time makes Python raise
+    # "RuntimeError: generator didn't stop after throw()", which replaced every real
+    # engine exception (timeouts, 429s) with an opaque error whenever tracing was on.
+    # Enter and exit are guarded separately so only Langfuse's own failures are
+    # swallowed; the caller's exception always propagates with its original type.
     try:
-        with cm as span:
-            yield span
+        span = cm.__enter__()
     except Exception as exc:
         logger.debug("Langfuse observation %s failed open: %s", name, exc)
         yield None
+        return
+
+    try:
+        yield span
+    except BaseException:
+        try:
+            cm.__exit__(*sys.exc_info())
+        except Exception as exc:
+            logger.debug("Langfuse observation %s failed to close: %s", name, exc)
+        raise
+    else:
+        try:
+            cm.__exit__(None, None, None)
+        except Exception as exc:
+            logger.debug("Langfuse observation %s failed to close: %s", name, exc)
 
 
 def update_observation(

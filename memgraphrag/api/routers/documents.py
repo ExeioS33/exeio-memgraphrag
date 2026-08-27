@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Any, Optional
 
 from memgraphrag.base import DocStatus
+from memgraphrag.constants import MAX_UPLOAD_SIZE
+from memgraphrag.parser.registry import available_engine_suffixes
 from memgraphrag.pipeline import enqueue_document, process_pending
 from memgraphrag.utils.hashing import compute_mdhash_id
 from memgraphrag.utils.step_log import done_step, fail_step, main_step, sub_step, truncate
@@ -157,6 +159,56 @@ def _schedule_drain(
     background_tasks.add_task(_bg)
 
 
+def _max_upload_size(request: Any) -> int:
+    args = getattr(getattr(request, "app", None), "state", None)
+    return int(getattr(getattr(args, "args", None), "max_upload_size", MAX_UPLOAD_SIZE))
+
+
+def _reject_unsupported_suffix(filename: str) -> None:
+    """Refuse extensions no configured parser can read, before writing to disk.
+
+    ``available_engine_suffixes()`` is endpoint-aware: Docling-only suffixes are
+    accepted only while DOCLING_ENDPOINT is configured.
+    """
+    suffix = Path(filename).suffix.lower().lstrip(".")
+    allowed = available_engine_suffixes()
+    if suffix not in allowed:
+        raise HTTPException(
+            status_code=415,
+            detail=(
+                f"Unsupported file type {suffix or '(none)'!r}. "
+                f"Supported: {', '.join(sorted(allowed))}"
+            ),
+        )
+
+
+async def _spool_upload(file: Any, dest: Path, max_bytes: int) -> int:
+    """Stream an upload to ``dest`` in chunks, aborting past ``max_bytes``.
+
+    Returns the number of bytes written. On overflow the partial file is removed and
+    413 is raised, so a rejected upload leaves nothing behind in the input directory.
+    """
+    written = 0
+    chunk_size = 1024 * 1024
+    try:
+        with dest.open("wb") as out:
+            while True:
+                chunk = await file.read(chunk_size)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > max_bytes:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"Upload exceeds MAX_UPLOAD_SIZE ({max_bytes} bytes).",
+                    )
+                out.write(chunk)
+    except BaseException:
+        dest.unlink(missing_ok=True)
+        raise
+    return written
+
+
 def create_documents_router(api_key: Optional[str] = None) -> Any:
     """Build ``/documents`` router."""
     if APIRouter is None:
@@ -177,17 +229,19 @@ def create_documents_router(api_key: Optional[str] = None) -> Any:
         input_dir = Path(getattr(request.app.state, "input_dir", "./data/inputs"))
         input_dir.mkdir(parents=True, exist_ok=True)
         safe_name = Path(file.filename or f"upload-{uuid.uuid4().hex}").name
+        _reject_unsupported_suffix(safe_name)
         dest = input_dir / safe_name
-        content = await file.read()
-        dest.write_bytes(content)
-        doc_id = compute_mdhash_id(f"{safe_name}:{len(content)}", prefix="doc-")
+        # Stream to disk with a hard cap: `await file.read()` used to pull the whole
+        # body into RAM with no limit, so one large POST could OOM the worker.
+        size = await _spool_upload(file, dest, _max_upload_size(request))
+        doc_id = compute_mdhash_id(f"{safe_name}:{size}", prefix="doc-")
         busy = _pipeline_is_busy(request)
         main_step(
             logger,
             "api.documents.upload",
             doc_id=doc_id,
             filename=safe_name,
-            bytes=len(content),
+            bytes=size,
             pipeline_busy=busy,
         )
         sub_step(

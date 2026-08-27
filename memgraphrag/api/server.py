@@ -17,7 +17,13 @@ from dotenv import load_dotenv
 from memgraphrag import __version__ as core_version
 from memgraphrag.api import __api_version__
 from memgraphrag.api.config import global_args, parse_args
-from memgraphrag.constants import DEFAULT_OLLAMA_MODEL_NAME, DEFAULT_OLLAMA_MODEL_TAG
+from memgraphrag.api.rate_limit import FixedWindowRateLimiter, client_key
+from memgraphrag.constants import (
+    DEFAULT_OLLAMA_MODEL_NAME,
+    DEFAULT_OLLAMA_MODEL_TAG,
+    LOGIN_MAX_ATTEMPTS,
+    LOGIN_WINDOW_SECONDS,
+)
 from memgraphrag.core import MemGraphRAG
 from memgraphrag.llm.openai_compatible import openai_complete, openai_embed
 
@@ -162,8 +168,11 @@ def create_app(
     if FastAPI is None:
         raise RuntimeError("fastapi is required; install memgraphrag[api]")
 
-    from memgraphrag.api.auth import auth_handler
-    from memgraphrag.api.dependencies import get_combined_auth_dependency
+    from memgraphrag.api.auth import AuthHandler
+    from memgraphrag.api.dependencies import (
+        compile_whitelist,
+        get_combined_auth_dependency,
+    )
     from memgraphrag.api.routers.documents import create_documents_router
     from memgraphrag.api.routers.graphs import create_graphs_router
     from memgraphrag.api.routers.ollama import create_ollama_router
@@ -174,6 +183,12 @@ def create_app(
         os.getenv("MEMGRAPHRAG_API_KEY")
         or getattr(cfg, "key", None)
         or None
+    )
+    # Built from `cfg`, not from the import-time `global_args` singleton: otherwise a
+    # programmatic create_app(args) silently runs with no accounts and no whitelist.
+    auth_handler = AuthHandler(cfg)
+    whitelist_patterns = compile_whitelist(
+        getattr(cfg, "whitelist_paths", "/health,/docs,/openapi.json")
     )
     combined_auth = get_combined_auth_dependency(
         api_key, api_key_header_name="X-API-Key"
@@ -208,21 +223,39 @@ def create_app(
     )
 
     cors_origins = getattr(cfg, "cors_origins", "*") or "*"
+    allow_any_origin = cors_origins.strip() == "*"
     origins = (
         ["*"]
-        if cors_origins.strip() == "*"
+        if allow_any_origin
         else [o.strip() for o in cors_origins.split(",") if o.strip()]
     )
+    # Starlette reflects the caller's Origin when allow_origins=["*"], so pairing it
+    # with allow_credentials=True lets any third-party page drive this API from an
+    # authenticated user's browser — including DELETE /documents/. Credentials are
+    # only enabled once CORS_ORIGINS names explicit origins.
+    if allow_any_origin:
+        logger.warning(
+            "CORS_ORIGINS='*': cookie/credential-bearing cross-origin requests are "
+            "disabled. Set CORS_ORIGINS to explicit origins to allow them."
+        )
     app.add_middleware(
         CORSMiddleware,
         allow_origins=origins,
-        allow_credentials=True,
+        allow_credentials=not allow_any_origin,
         allow_methods=["*"],
         allow_headers=["*"],
     )
 
     app.state.rag = engine
     app.state.args = cfg
+    app.state.auth_handler = auth_handler
+    app.state.whitelist_patterns = whitelist_patterns
+    app.state.login_limiter = FixedWindowRateLimiter(
+        max_attempts=int(getattr(cfg, "login_max_attempts", LOGIN_MAX_ATTEMPTS)),
+        window_seconds=float(
+            getattr(cfg, "login_window_seconds", LOGIN_WINDOW_SECONDS)
+        ),
+    )
     app.state.input_dir = getattr(cfg, "input_dir", "./data/inputs")
     app.state.testing = testing
     app.state.pipeline_lock = asyncio.Lock()
@@ -253,7 +286,21 @@ def create_app(
         }
 
     @app.post("/login")
-    async def login(form_data: OAuth2PasswordRequestForm = Depends()):
+    async def login(
+        request: Request, form_data: OAuth2PasswordRequestForm = Depends()
+    ):
+        # /login is unauthenticated by nature, so it is the one endpoint an attacker
+        # can hammer for free. Throttle per client before touching the password.
+        limiter = app.state.login_limiter
+        key = client_key(request)
+        retry_after = limiter.check(key)
+        if retry_after is not None:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Too many login attempts. Try again later.",
+                headers={"Retry-After": str(max(1, int(retry_after) + 1))},
+            )
+
         if not auth_handler.accounts:
             guest_token = auth_handler.create_token(
                 username="guest",
@@ -273,6 +320,9 @@ def create_app(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Incorrect credentials",
             )
+        # Successful login clears the budget so a legitimate user is never locked out
+        # by their own earlier typos.
+        limiter.reset(key)
         user_token = auth_handler.create_token(
             username=form_data.username,
             role="user",

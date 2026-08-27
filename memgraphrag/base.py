@@ -8,6 +8,7 @@ Query fields and modes are MemGraphRAG-native (PPR / naive / context / bypass).
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Literal
@@ -154,7 +155,23 @@ class BaseVectorStorage(StorageNameSpace, ABC):
     async def query(
         self, query_embedding: list[float], top_k: int
     ) -> list[dict[str, Any]]:
-        """Return the ``top_k`` nearest neighbours for ``query_embedding``."""
+        """Return the ``top_k`` nearest neighbours for ``query_embedding``.
+
+        Score contract (binding on every backend):
+
+        * each hit carries a ``"score"`` key holding **cosine similarity**, a float in
+          ``[-1.0, 1.0]`` where **higher means more similar**;
+        * ``"distance"`` is a deprecated alias kept at the same value;
+        * hits are ordered by decreasing ``score``.
+
+        This contract exists because it used to be implicit: both backends already
+        returned a similarity but published it under the key ``distance``, so the
+        engine tried to guess whether it held a similarity or a distance and inverted
+        the whole list through ``1/(1+abs(s))`` — a *decreasing* function — as soon as
+        one negative score appeared. Under pgvector (cosine in ``[-1,1]``) that
+        reversed the ranking: the best fact was dropped and the least similar kept.
+        Never publish a raw distance here; convert at the backend boundary.
+        """
 
     @abstractmethod
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
@@ -177,6 +194,18 @@ class BaseVectorStorage(StorageNameSpace, ABC):
 @dataclass
 class BaseGraphStorage(StorageNameSpace, ABC):
     """Typed memory-graph storage ABC."""
+
+    @asynccontextmanager
+    async def batch(self):
+        """Group many writes into one persistence step.
+
+        Backends that persist the whole graph on every write (``IgraphStorage``
+        rewrites the GraphML file) override this to defer until the block exits;
+        installing a memory graph is otherwise O(V+E) full rewrites, i.e. quadratic.
+        The default is a no-op so backends with per-statement durability (Neo4j) need
+        no change, and callers can always wrap their write loops.
+        """
+        yield self
 
     @abstractmethod
     async def has_node(self, node_id: str) -> bool:

@@ -6,6 +6,7 @@ Modes: ``ppr`` | ``naive`` | ``context`` | ``bypass``.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any, AsyncIterator, Literal, Optional
@@ -35,12 +36,15 @@ class QueryRequest(BaseModel):
     mode: Literal["ppr", "naive", "context", "bypass"] = Field(default="ppr")
     top_k: Optional[int] = Field(default=None, ge=1)
     linking_top_k: Optional[int] = Field(default=None, ge=1)
-    passage_node_weight: Optional[float] = None
-    damping: Optional[float] = None
-    fact_similarity_threshold: Optional[float] = None
+    # Bounded: unbounded values reached igraph, which raised, and the broad except in
+    # ppr/igraph_engine.py swallowed it — the client got HTTP 200 with PPR silently
+    # disabled instead of a 422.
+    passage_node_weight: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    damping: Optional[float] = Field(default=None, gt=0.0, lt=1.0)
+    fact_similarity_threshold: Optional[float] = Field(default=None, ge=-1.0, le=1.0)
     skip_fact_rerank: Optional[bool] = None
     schema_top_k: Optional[int] = Field(default=None, ge=0)
-    schema_node_weight: Optional[float] = None
+    schema_node_weight: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     only_need_context: Optional[bool] = False
     conversation_history: Optional[list[dict[str, str]]] = None
     user_prompt: Optional[str] = None
@@ -163,7 +167,9 @@ def create_query_router(api_key: Optional[str] = None) -> Any:
             )
             raise
         finally:
-            flush_langfuse()
+            # Off the event loop: flush_langfuse() does synchronous network I/O, so
+            # calling it inline froze every concurrent request on the worker.
+            await asyncio.to_thread(flush_langfuse)
 
     @router.post("/query/data", dependencies=[Depends(combined_auth)])
     async def query_data(request: Request, body: QueryRequest):

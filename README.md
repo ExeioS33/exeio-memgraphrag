@@ -198,3 +198,9 @@ Paper: [arXiv:2606.00610](https://arxiv.org/abs/2606.00610)
 ## 📄 License
 
 MIT — see [LICENSE](LICENSE). Copyright © 2026 EXEIO / ExeioS33.
+
+This project derives from two MIT-licensed upstreams — the [MemGraphRAG research
+implementation](https://github.com/XMUDeepLIT/MemGraphRAG) (DeepLIT Group, Xiamen
+University) and [LightRAG](https://github.com/HKUDS/LightRAG) (LightRAG Team). Their
+required copyright notices are reproduced in [NOTICE](NOTICE), and the full license
+texts in [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).

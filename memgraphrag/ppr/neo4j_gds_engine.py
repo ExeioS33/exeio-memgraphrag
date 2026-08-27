@@ -25,6 +25,16 @@ class Neo4jGDSPPREngine(PPREngine):
         passage_label: str = "Passage",
         **kwargs: Any,
     ) -> None:
+        if driver is None:
+            # Refuse rather than silently degrade. Without a driver this engine used
+            # to return the seed weights unchanged; those keys are `entity-` /
+            # `schema-` ids, not passage ids, so `passage_scores` came back non-empty
+            # (suppressing the dense fallback) yet resolved to no content at all —
+            # the LLM answered with zero context and the operator saw HTTP 200.
+            raise ValueError(
+                "PPR_ENGINE='neo4j_gds' requires a Neo4j driver, which the engine "
+                "is not wired to receive yet. Use PPR_ENGINE='igraph'."
+            )
         self.driver = driver
         self.graph_name = graph_name
         self.passage_label = passage_label
@@ -36,20 +46,19 @@ class Neo4jGDSPPREngine(PPREngine):
         damping: float = 0.5,
         **kwargs: Any,
     ) -> Dict[str, float]:
-        if self.driver is None:
-            logger.warning(
-                "Neo4jGDSPPREngine: no driver configured; returning seed weights"
-            )
-            return {k: float(v) for k, v in seed_weights.items() if float(v) > 0}
-
         graph_name = kwargs.get("graph_name", self.graph_name)
         try:
             return self._run_gds(seed_weights, damping=damping, graph_name=graph_name)
         except Exception as exc:
+            # Return nothing rather than the raw seeds: seed keys are entity/schema
+            # ids, so echoing them back fabricates unresolvable "passages". An empty
+            # result lets the caller fall back to dense passage retrieval instead.
             logger.warning(
-                "Neo4j GDS pageRank failed (%s); falling back to seed weights", exc
+                "Neo4j GDS pageRank failed (%s); returning no PPR scores so the "
+                "caller falls back to dense retrieval",
+                exc,
             )
-            return {k: float(v) for k, v in seed_weights.items() if float(v) > 0}
+            return {}
 
     def _run_gds(
         self,

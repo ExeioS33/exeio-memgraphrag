@@ -22,7 +22,10 @@ from memgraphrag.constants import (
     HOST,
     INPUT_DIR,
     LINKING_TOP_K,
+    LOGIN_MAX_ATTEMPTS,
+    LOGIN_WINDOW_SECONDS,
     MAX_ASYNC_LLM,
+    MAX_UPLOAD_SIZE,
     PASSAGE_NODE_WEIGHT,
     PORT,
     PPR_ENGINE,
@@ -167,11 +170,25 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     args.token_expire_hours = get_env_value("TOKEN_EXPIRE_HOURS", 48, float)
     args.guest_token_expire_hours = get_env_value("GUEST_TOKEN_EXPIRE_HOURS", 24, float)
     args.jwt_algorithm = get_env_value("JWT_ALGORITHM", "HS256")
+    # Fail-closed switch: when true, refuse to serve unauthenticated requests even if
+    # neither AUTH_ACCOUNTS nor MEMGRAPHRAG_API_KEY resolved (e.g. a .env not found
+    # because the process was started from another working directory).
+    args.require_auth = get_env_value("REQUIRE_AUTH", False, bool)
+    args.login_max_attempts = get_env_value("LOGIN_MAX_ATTEMPTS", LOGIN_MAX_ATTEMPTS, int)
+    args.login_window_seconds = get_env_value(
+        "LOGIN_WINDOW_SECONDS", LOGIN_WINDOW_SECONDS, float
+    )
+
+    # Upload limits
+    args.max_upload_size = get_env_value("MAX_UPLOAD_SIZE", MAX_UPLOAD_SIZE, int)
 
     # CORS / whitelist / Ollama emulation
     args.cors_origins = get_env_value("CORS_ORIGINS", "*")
+    # NOTE: "/api/*" is deliberately NOT whitelisted by default. The Ollama emulation
+    # router is mounted on /api and its /api/chat and /api/generate routes invoke the
+    # billed LLM (including the /bypass mode, which skips retrieval entirely).
     args.whitelist_paths = get_env_value(
-        "WHITELIST_PATHS", "/health,/docs,/openapi.json,/api/*"
+        "WHITELIST_PATHS", "/health,/docs,/openapi.json"
     )
     args.ollama_model_name = get_env_value(
         "OLLAMA_EMULATING_MODEL_NAME", DEFAULT_OLLAMA_MODEL_NAME

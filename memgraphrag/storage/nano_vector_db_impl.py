@@ -84,11 +84,14 @@ class NanoVectorDBStorage(BaseVectorStorage):
                 top_k=top_k,
                 better_than_threshold=self.cosine_better_than_threshold,
             )
+        # `__metrics__` is already a cosine similarity. Publish it as `score` per the
+        # BaseVectorStorage contract; `distance` stays as a deprecated alias.
         return [
             {
                 **{k: v for k, v in dp.items() if k not in ("__vector__", "vector")},
                 "id": dp["__id__"],
-                "distance": dp.get("__metrics__"),
+                "score": float(dp.get("__metrics__") or 0.0),
+                "distance": float(dp.get("__metrics__") or 0.0),
                 "created_at": dp.get("__created_at__"),
             }
             for dp in results

@@ -197,17 +197,6 @@ async def openai_complete(
     return content
 
 
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=2, max=30),
-    retry=(
-        retry_if_exception_type(RateLimitError)
-        | retry_if_exception_type(APIConnectionError)
-        | retry_if_exception_type(APITimeoutError)
-        | retry_if_exception_type(InternalServerError)
-    ),
-    reraise=True,
-)
 def _embedding_max_tokens() -> int | None:
     """Optional hard cap for embed inputs (e.g. e5 family = 512)."""
     raw = (os.getenv("EMBEDDING_MAX_TOKENS") or "").strip()
@@ -317,6 +306,20 @@ def _parse_context_length_error(exc: BaseException) -> tuple[int, int] | None:
     return int(match.group("max")), int(match.group("req"))
 
 
+# This block used to sit above `_embedding_max_tokens`, a synchronous pure function
+# that reads an env var — so embeddings had no retry at all while completions did.
+# A transient 429 from the embedding provider failed the whole document.
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=30),
+    retry=(
+        retry_if_exception_type(RateLimitError)
+        | retry_if_exception_type(APIConnectionError)
+        | retry_if_exception_type(APITimeoutError)
+        | retry_if_exception_type(InternalServerError)
+    ),
+    reraise=True,
+)
 async def openai_embed(
     texts: Sequence[str],
     model: str | None = None,
