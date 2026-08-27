@@ -59,6 +59,18 @@ def test_importing_auth_does_not_load_dotenv(tmp_path: Path) -> None:
 
 
 @pytest.mark.offline
+def test_importing_the_server_module_does_not_load_dotenv(tmp_path: Path) -> None:
+    # server.py kept its own module-level load_dotenv after config/auth lost theirs,
+    # so importing the app (which every API test does) still leaked the developer
+    # .env into the interpreter. The file is now read by main() instead.
+    output = _run_in_dir_with_dotenv(
+        tmp_path,
+        f"import os\nimport memgraphrag.api.server  # noqa: F401\nprint(os.getenv('{MARKER}'))\n",
+    )
+    assert output == "None"
+
+
+@pytest.mark.offline
 def test_load_env_file_still_loads_dotenv_for_entry_points(tmp_path: Path) -> None:
     # The real server must keep working: an explicit call reads the same file.
     output = _run_in_dir_with_dotenv(

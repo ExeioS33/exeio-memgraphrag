@@ -13,7 +13,7 @@ site/
 .venv/
 venv/
 
-# Environment (keep env.example and .env.example tracked for testing)
+# Environment (env.example is the single tracked template)
 .env
 .env.backup.*
 # Note: dataset_url.txt is committed (paper + corpus/QA paths for tests)
@@ -26,12 +26,18 @@ venv/
 .mypy_cache/
 .pytest_cache/
 .coverage
+coverage.xml
 htmlcov/
 .cursor/
 
 # Runtime data
 data/rag_storage/**
 !data/rag_storage/.gitkeep
+# Generated working dirs and evaluation artefacts: doc examples, scripts/e2e_arxiv.py,
+# scripts/evaluate.py (data/eval/) and scripts/bench.py (data/eval_storage/).
+data/rag_storage_*/
+data/eval/
+data/eval_storage/
 data/inputs/**
 !data/inputs/.gitkeep
 *.log

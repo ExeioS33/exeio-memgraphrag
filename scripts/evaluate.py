@@ -40,6 +40,7 @@ from memgraphrag.api.config import load_env_file  # noqa: E402
 load_env_file(str(REPO / ".env"))
 
 from memgraphrag.base import QueryParam  # noqa: E402
+from memgraphrag.constants import CHUNK_OVERLAP_SIZE, CHUNK_SIZE  # noqa: E402
 from memgraphrag.core import MemGraphRAG  # noqa: E402
 from memgraphrag.evaluation import (  # noqa: E402
     CallMeter,
@@ -114,6 +115,18 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=0,
         help="index only the first N corpus documents (0 = all)",
+    )
+    parser.add_argument(
+        "--chunk-size",
+        type=int,
+        default=CHUNK_SIZE,
+        help="tokens per corpus chunk (matches production ingestion)",
+    )
+    parser.add_argument(
+        "--chunk-overlap",
+        type=int,
+        default=CHUNK_OVERLAP_SIZE,
+        help="token overlap between corpus chunks",
     )
     parser.add_argument(
         "--judge", action="store_true", help="score LLM-Acc with the versioned judge prompt"
@@ -196,6 +209,46 @@ def _print_metrics(report: Any) -> None:
         print("      calling any difference a regression or an improvement.")
 
 
+def _chunk_corpus(corpus, chunk_size: int, chunk_overlap: int) -> list[str]:
+    """Split corpus documents so no single chunk can overflow the model context.
+
+    ``ainsert`` takes chunks already cut; only the file-ingestion pipeline chunks for
+    you. Two of the four datasets ship their corpus as ONE plain-text file
+    (``medical.txt`` is ~1 MB, about 218k tokens), so passing documents straight
+    through sent a single passage far past any context window and the whole run
+    aborted on a 400 from the provider. Chunking here uses the same fixed-token
+    strategy and the same defaults as production ingestion.
+    """
+    from memgraphrag.chunker.token_size import chunking_by_fixed_token
+    from memgraphrag.utils.tokenizer import TiktokenTokenizer
+
+    tokenizer = TiktokenTokenizer()
+    chunks: list[str] = []
+    for doc in corpus:
+        # A title with a blank body would still yield one title-only chunk, costing
+        # two LLM calls to extract nothing.
+        if not (getattr(doc, "text", None) or "").strip():
+            continue
+        text = doc.to_chunk()
+        pieces = chunking_by_fixed_token(
+            tokenizer,
+            text,
+            chunk_token_size=chunk_size,
+            chunk_overlap_token_size=chunk_overlap,
+        )
+        if not pieces:
+            continue
+        title = (doc.title or "").strip()
+        for piece in pieces:
+            content = piece["content"]
+            # Keep the title on every chunk: scoring recovers the source document
+            # from the passage's first line.
+            if title and not content.startswith(title):
+                content = f"{title}\n{content}"
+            chunks.append(content)
+    return chunks
+
+
 async def main() -> int:
     args = build_parser().parse_args()
 
@@ -230,9 +283,13 @@ async def main() -> int:
 
     if args.ingest:
         corpus = load_corpus(args.dataset, root=args.dataset_root, limit=args.corpus_limit or None)
-        print(f"indexing   : {len(corpus)} corpus documents (this is the expensive part)")
+        chunks = _chunk_corpus(corpus, args.chunk_size, args.chunk_overlap)
+        print(
+            f"indexing   : {len(corpus)} corpus documents "
+            f"-> {len(chunks)} chunks (this is the expensive part)"
+        )
         started = time.perf_counter()
-        await rag.ainsert([doc.to_chunk() for doc in corpus])
+        await rag.ainsert(chunks)
         print(f"indexed in : {time.perf_counter() - started:.1f}s")
     await rag.prepare_retrieval()
 

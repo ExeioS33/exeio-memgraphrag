@@ -167,8 +167,47 @@ class MemGraphRAGClient:
                     yield line[5:].strip()
 
     # -------------------------------------------------------------- documents
-    def list_documents(self) -> dict[str, Any]:
-        return self._get("/documents/")
+    def list_documents(
+        self,
+        *,
+        limit: Optional[int] = None,
+        offset: int = 0,
+        status: Optional[str] = None,
+        all_pages: bool = True,
+    ) -> dict[str, Any]:
+        """List document status records.
+
+        ``GET /documents/`` is paginated (100 records per page by default), so a
+        caller that just read ``statuses`` silently saw only the first page. With
+        ``all_pages`` the client follows ``next_offset`` and returns the merged
+        mapping; pass ``all_pages=False`` to keep one page and page by hand.
+        """
+        params: dict[str, Any] = {"offset": offset}
+        if limit is not None:
+            params["limit"] = limit
+        if status:
+            params["status"] = status
+        resp = self._client.get("/documents/", params=params)
+        self._raise(resp)
+        data = resp.json()
+        if not all_pages:
+            return data
+        statuses = dict(data.get("statuses") or {})
+        next_offset = data.get("next_offset")
+        while next_offset is not None:
+            params["offset"] = next_offset
+            resp = self._client.get("/documents/", params=params)
+            self._raise(resp)
+            page = resp.json()
+            statuses.update(page.get("statuses") or {})
+            # A server that keeps echoing the same offset would loop forever.
+            if page.get("next_offset") == next_offset:
+                break
+            next_offset = page.get("next_offset")
+        data["statuses"] = statuses
+        data["returned"] = len(statuses)
+        data["next_offset"] = None
+        return data
 
     def get_document(self, doc_id: str) -> dict[str, Any]:
         return self._get(f"/documents/{doc_id}")

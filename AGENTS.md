@@ -30,7 +30,7 @@ This repository packages that engine as a production FastAPI service inspired by
 - OpenAI-compatible bindings only for POC (no local torch/HF embedders in the service image).
 - Storage selected by `MEMGRAPHRAG_{KV,VECTOR,GRAPH,DOC_STATUS}_STORAGE`.
 - PPR hybrid: igraph default + Neo4j GDS alternative.
-- LightRAG-*shaped* API, not a drop-in replacement: the same four surfaces (documents / query / graph / Ollama `/api`) with 21 routes against LightRAG's ~47, and differing response shapes on several of them. A LightRAG client can be pointed at this server for the common query/ingest calls, but expect to adapt; treat parity as partial and unverified per route.
+- LightRAG-*shaped* API, not a drop-in replacement: the same four surfaces (documents / query / graph / Ollama `/api`) with 23 operations against LightRAG's ~47, and differing response shapes on several of them. A LightRAG client can be pointed at this server for the common query/ingest calls, but expect to adapt; treat parity as partial and unverified per route.
 - Optional Streamlit/CLI clients talk to the API (not embedded in the service image).
 - Docling via optional compose profile; VLM ANALYZING stage reserved, not implemented.
 - One local commit per advancement; single-line messages; details live in `docs/`.
@@ -46,6 +46,7 @@ This repository packages that engine as a production FastAPI service inspired by
 - **`ppr/`**: `IgraphPPREngine`, `Neo4jGDSPPREngine`.
 - **`llm/`**, **`openie/`**, **`prompts/`**, **`rerank.py`**: Bindings and extraction.
 - **`observability/`**: Optional Langfuse tracing for query/retrieval (`langfuse_trace.py`).
+- **`evaluation/`**: Offline scoring harness — metrics, dataset loaders, LLM judge, multi-run campaigns, golden-set gate. Every definition is frozen in `docs/Evaluation.md`; change a metric there and in code together, or a golden set stops being comparable.
 - **`client/`**: HTTP client, Typer CLI (`memgraphrag-cli`), Streamlit playground, hybrid optimizer.
 - **`api/`**: FastAPI app (`server.py`), `config.py`, `auth.py`, `dependencies.py`, `routers/`.
 
@@ -87,14 +88,14 @@ docker compose --profile docling up -d   # optional Docling
 not implemented is labelled as such rather than listed as a knob. Before adding a
 row to it, prove the read: `grep -rn "NAME" memgraphrag --include='*.py'`.
 
-Environment loading is explicit: `api/config.py` and `api/auth.py` no longer call
-`load_dotenv` at import, entry points call
-`memgraphrag.api.config.load_env_file()` instead. Importing the API package used to
-inject the developer's `.env` — real provider keys included — into every process,
-which turned `pytest --run-integration` into a false green (79 passed / 0 skipped
-instead of skipping for want of credentials). **`api/server.py` still calls
-`load_dotenv` at module level and must get the same treatment** before the test
-suite is truly hermetic.
+Environment loading is explicit: no module under `memgraphrag/api/` calls
+`load_dotenv` at import; the entry points (`server.main`, `gunicorn_runner.main`,
+`gunicorn_config.py`) call `memgraphrag.api.config.load_env_file()` instead.
+Importing the API package used to inject the developer's `.env` — real provider
+keys included — into every process, which turned `pytest --run-integration` into a
+false green (79 passed / 0 skipped instead of skipping for want of credentials).
+`tests/api/test_env_loading.py` pins this per module; keep new API modules out of
+`load_dotenv`.
 
 ## Divergences from the paper
 

@@ -17,13 +17,14 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from memgraphrag.base import BaseKVStorage
+from memgraphrag.exceptions import CorruptKVFileError
 from memgraphrag.utils.env import get_env_value
 
 logger = logging.getLogger(__name__)
 
-
-class CorruptKVFileError(RuntimeError):
-    """Raised when an existing KV file exists but cannot be parsed."""
+# Re-exported: the exception is raised here but lives next to the other storage
+# errors, so a caller can catch it without importing a backend module.
+__all__ = ["CorruptKVFileError", "JsonKVStorage"]
 
 
 def _workspace_dir(working_dir: str, workspace: str) -> str:

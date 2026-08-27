@@ -9,7 +9,6 @@
 # Local env and secrets
 .env
 .env.*
-!.env.example
 
 # Python caches / venvs
 .venv

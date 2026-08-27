@@ -101,6 +101,21 @@ class StorageNameSpace(ABC):
     async def finalize(self) -> None:
         """Flush and release resources."""
 
+    @asynccontextmanager
+    async def batch(self):
+        """Group many writes into one persistence step.
+
+        Backends that rewrite their whole state on every write (``IgraphStorage``
+        rewrites the GraphML file, ``JsonKVStorage`` the JSON index, and
+        ``NanoVectorDBStorage`` the vector file) override this to defer the write
+        until the outermost block exits; an ingestion loop is otherwise O(N) full
+        rewrites, i.e. quadratic in the corpus. Declared here rather than per
+        storage kind so a caller can wrap any write loop without asking which
+        backend it got: the default is a no-op, which is already correct for
+        backends with per-statement durability (PostgreSQL, Neo4j).
+        """
+        yield self
+
 
 @dataclass
 class BaseKVStorage(StorageNameSpace, ABC):
@@ -178,18 +193,6 @@ class BaseVectorStorage(StorageNameSpace, ABC):
 @dataclass
 class BaseGraphStorage(StorageNameSpace, ABC):
     """Typed memory-graph storage ABC."""
-
-    @asynccontextmanager
-    async def batch(self):
-        """Group many writes into one persistence step.
-
-        Backends that persist the whole graph on every write (``IgraphStorage``
-        rewrites the GraphML file) override this to defer until the block exits;
-        installing a memory graph is otherwise O(V+E) full rewrites, i.e. quadratic.
-        The default is a no-op so backends with per-statement durability (Neo4j) need
-        no change, and callers can always wrap their write loops.
-        """
-        yield self
 
     @abstractmethod
     async def has_node(self, node_id: str) -> bool:

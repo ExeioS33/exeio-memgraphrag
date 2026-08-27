@@ -1,9 +1,9 @@
 # Ruff configuration for MemGraphRAG.
 #
-# This file supersedes `[tool.ruff]` in pyproject.toml: ruff reads ruff.toml
-# first and ignores the pyproject section entirely, so line-length and
-# target-version are restated here rather than inherited. Drop the pyproject
-# section once this file is committed, so there is one source of truth.
+# This file is the only ruff configuration: ruff reads ruff.toml first and
+# ignores `[tool.ruff]` in pyproject.toml entirely, so line-length and
+# target-version are restated here rather than inherited. The pyproject section
+# has been removed, so this file is the single source of truth.
 #
 # Adapted from the LightRAG lint setup (ruff-format + ruff --fix in pre-commit),
 # with the rule set pinned rather than left implicit.

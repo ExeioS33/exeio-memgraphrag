@@ -90,6 +90,14 @@ def health_cmd(
         _err(exc)
     busy = data.get("pipeline_busy")
     badge = "🟡 BUSY indexing" if busy else "🟢 IDLE"
+    # working_dir was dropped from /health: the endpoint is whitelisted, so it was
+    # handing the server's filesystem layout to anonymous callers. Readiness is the
+    # useful bit in its place — /health stays 200 even when retrieval failed to warm up.
+    retrieval = data.get("retrieval_status", "unknown")
+    ready = "🟢 yes" if data.get("ready") else f"🔴 no ({retrieval})"
+    error = data.get("retrieval_error")
+    if error:
+        ready = f"{ready}\n[bold]error[/]  = {error}"
     console.print(
         Panel.fit(
             f"[bold]status[/] = {data.get('status')}\n"
@@ -97,7 +105,7 @@ def health_cmd(
             f"[bold]api[/]    = {data.get('api_version')}\n"
             f"[bold]auth[/]   = {data.get('auth_mode')}\n"
             f"[bold]pipe[/]   = {badge}\n"
-            f"[bold]dir[/]    = {data.get('working_dir')}",
+            f"[bold]ready[/]  = {ready}",
             title="🏥 MemGraphRAG Health",
             border_style="green",
         )

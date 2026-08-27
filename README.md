@@ -135,8 +135,9 @@ Personalized PageRank over the memory graph:
 This is an adaptation of the paper's retrieval, not a faithful reimplementation:
 the seeding and scoring rules are simplified, several equations of the paper have
 no counterpart here, and nothing in the repository has been benchmarked against
-the published results. Do not describe it as paper-exact — see
-[`docs/Reproduce.md`](docs/Reproduce.md) for what measuring it would actually take.
+the published results. Do not describe it as paper-exact — the harness that would
+measure it ships in [`docs/Evaluation.md`](docs/Evaluation.md), and
+[`docs/Reproduce.md`](docs/Reproduce.md) covers the A/B protocol around it.
 
 ### 📡 Langfuse observability
 
@@ -193,6 +194,7 @@ Guides under [`docs/`](docs/), including:
 - [`docs/FileProcessingPipeline.md`](docs/FileProcessingPipeline.md) — parsers & chunkers
 - [`docs/LangfuseObservability.md`](docs/LangfuseObservability.md) — Langfuse retrieval traces
 - [`docs/ProgramingWithCore.md`](docs/ProgramingWithCore.md) — engine usage
+- [`docs/Evaluation.md`](docs/Evaluation.md) — evaluation metrics, judge prompt, golden set
 
 ## 🤖 Agent maintenance
 

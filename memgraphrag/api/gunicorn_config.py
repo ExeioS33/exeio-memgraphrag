@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 
 from memgraphrag.api.config import load_env_file, validate_worker_count
+from memgraphrag.api.server import _logging_config
 
 load_env_file()
 
@@ -35,6 +36,13 @@ worker_class = "uvicorn.workers.UvicornWorker"
 
 accesslog = os.getenv("ACCESS_LOG", "-")
 errorlog = os.getenv("ERROR_LOG", "-")
+
+# Gunicorn installs its own logging, so the request-id filter that
+# ``server._logging_config`` wires into uvicorn never reached this entry point and
+# every line came out without its [req=...] tag — exactly where correlation matters
+# most, since several workers interleave on one stream. Reuse the same dictConfig
+# rather than a second copy that can drift from it.
+logconfig_dict = _logging_config(loglevel)
 
 
 def on_starting(server):  # noqa: ANN001

@@ -11,8 +11,6 @@ import os
 from contextlib import asynccontextmanager
 from typing import Any, Optional
 
-from dotenv import load_dotenv
-
 from memgraphrag import __version__ as core_version
 from memgraphrag.api import __api_version__
 from memgraphrag.api.config import global_args, parse_args
@@ -33,10 +31,6 @@ from memgraphrag.constants import (
 from memgraphrag.core import MemGraphRAG
 from memgraphrag.llm.openai_compatible import openai_complete, openai_embed
 from memgraphrag.pipeline import reset_interrupted_documents
-
-# Prefer the mounted/project .env over stale process env after compose recreates.
-# Do not override process env (Compose / k8s inject storage bindings).
-load_dotenv(dotenv_path=".env", override=False)
 
 logger = logging.getLogger("memgraphrag.api.server")
 
@@ -498,10 +492,16 @@ def main(argv: Optional[list[str]] = None) -> None:
     if uvicorn is None:
         raise RuntimeError("uvicorn is required; install memgraphrag[api]")
 
-    args = parse_args(argv)
-    # Refresh module-level global_args for auth/dependencies
+    # Entry points ask for .env explicitly. Importing this module used to call
+    # load_dotenv() as a side effect, so `import memgraphrag.api.server` from a
+    # directory holding a .env injected it — provider keys included — into the
+    # process, which made the test suite non-hermetic and --run-integration a
+    # false green. Loaded before parse_args so CLI flags still win over the file.
     import memgraphrag.api.config as config_mod
 
+    config_mod.load_env_file()
+    args = parse_args(argv)
+    # Refresh module-level global_args for auth/dependencies
     config_mod.global_args = args
 
     log_level = str(args.log_level).upper()

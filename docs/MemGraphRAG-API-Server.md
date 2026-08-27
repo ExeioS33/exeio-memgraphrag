@@ -103,11 +103,13 @@ guarantee below only holds within the worker that owns the running ingest.
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/health` | Liveness |
+| GET | `/health` | Liveness — 200 while the process answers, plus `ready` / `retrieval_status`. No `working_dir`/`workspace`: the path is whitelisted. |
+| GET | `/health/ready` | Readiness — 503 until retrieval is warmed up (unauthenticated, carries only the bit) |
+| GET | `/metrics` | Prometheus exposition (authenticated) |
 | POST | `/login` | JWT login |
 | POST | `/documents/upload` | Upload file (locks pipeline) |
 | POST | `/documents/text` | Insert raw text (locks pipeline) |
-| GET | `/documents` | List doc statuses |
+| GET | `/documents/` | List doc statuses — paginated (`limit` 1..1000, default 100, `offset`, optional `status`); returns `total`/`returned`/`next_offset` and never the document body |
 | GET | `/documents/{doc_id}` | Document detail (chunk ids, paths) |
 | DELETE | `/documents/{doc_id}` | Delete one doc + rebuild corpus |
 | POST | `/documents/delete` | Batch delete `{doc_ids, delete_file}` |
@@ -121,7 +123,7 @@ guarantee below only holds within the worker that owns the running ingest.
 | GET | `/graph/label/list` | List node labels |
 | GET/POST | `/api/*` | Ollama emulation (`/api/chat`, `/api/generate`, `/api/tags`, `/api/ps`, `/api/version`) |
 
-That is the whole surface: 21 routes in total.
+That is the whole surface: 23 operations in total.
 
 Admin mutate endpoints return **409** while `/health` reports `pipeline_busy=true`.
 Clear-all requires `confirm=true` (400 otherwise). Per-doc delete needs content-hash

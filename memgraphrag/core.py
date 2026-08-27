@@ -11,6 +11,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import logging
+from contextlib import AsyncExitStack, asynccontextmanager
 import math
 import os
 from pathlib import Path
@@ -1189,6 +1190,40 @@ class MemGraphRAG:
             "schemas": schema_ids,
         }
 
+    @asynccontextmanager
+    async def _storage_batch(self):
+        """Hold every store in batch mode for the duration of a corpus rewrite.
+
+        The file-backed backends persist their whole state on each write, so a caller
+        that upserts record by record pays a full rewrite per record. Measured today
+        this changes nothing — ``_embed_and_store_memory`` already issues one bulk
+        ``upsert`` per store, so the flush count is 9 with or without the batch (the
+        quadratic cost that mattered was ``IgraphStorage`` writing the GraphML per node
+        and per edge, fixed in the backend itself). It is wired here so the guarantee
+        holds by construction: any future per-record loop inside this block collapses
+        to one flush instead of silently reintroducing the problem.
+
+        ``batch()`` is a no-op on the ABCs, so database backends (PostgreSQL, Neo4j)
+        pass straight through.
+        """
+        stores = [
+            self.chunks_vdb,
+            self.facts_vdb,
+            self.entities_vdb,
+            self.schemas_vdb,
+            self.chunks_kv,
+            self.memory_kv,
+            self.openie_kv,
+            self.graph,
+        ]
+        async with AsyncExitStack() as stack:
+            for store in stores:
+                batch = getattr(store, "batch", None)
+                if batch is None:
+                    continue
+                await stack.enter_async_context(batch())
+            yield
+
     async def _rebuild_memory_from_openie(
         self,
         openie_docs: list[dict[str, Any]],
@@ -1293,7 +1328,7 @@ class MemGraphRAG:
         # swapped, so a concurrent query resolved a NEW schema id against the OLD
         # memory object and seeded PPR on unrelated entities.
         self.ready_to_retrieve = False
-        async with self._corpus_lock:
+        async with self._corpus_lock, self._storage_batch():
             await self._embed_and_store_memory(memory, openie_docs)
             stage(logger, "Constructing Graph")
             await self._install_memory_graph(memory)
