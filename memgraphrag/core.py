@@ -557,19 +557,27 @@ class MemGraphRAG:
             user = ONTOLOGY_EXTRACTION_USER_TEMPLATE.substitute(
                 passage=passage, triples=str(triples)
             )
-            try:
-                async with sem:
-                    raw = await self.llm_model_func(
-                        user,
-                        system_prompt=with_language(ONTOLOGY_EXTRACTION_SYSTEM),
-                        agent="schema.extract",
-                        llm_action="complete",
-                    )
-            except Exception as exc:
-                fail_step(logger, "schema.extract_batch", exc=exc)
-                failed_batches += 1
-                return 0
-            pairs = self._parse_ontology_triples(str(raw))
+            pairs: list = []
+            raw = ""
+            # A batch whose answer cannot be parsed is asked once more before its
+            # facts are left untyped: on the RFE corpus 2 % of batches came back as
+            # malformed JSON on the first call, almost none on the second.
+            for _attempt in range(2):
+                try:
+                    async with sem:
+                        raw = await self.llm_model_func(
+                            user,
+                            system_prompt=with_language(ONTOLOGY_EXTRACTION_SYSTEM),
+                            agent="schema.extract",
+                            llm_action="complete",
+                        )
+                except Exception as exc:
+                    fail_step(logger, "schema.extract_batch", exc=exc)
+                    failed_batches += 1
+                    return 0
+                pairs = self._parse_ontology_triples(str(raw))
+                if pairs:
+                    break
             if not pairs:
                 failed_batches += 1
                 fail_step(

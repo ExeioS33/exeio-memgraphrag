@@ -40,6 +40,7 @@ dependencies = [
     # (memgraphrag/api/config.py); re-add the pin the day a real lock is written.
     "packaging==25.0",
     "PyYAML==6.0.3",
+    "json-repair==0.63.4",
 ]
 
 [project.optional-dependencies]
