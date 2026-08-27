@@ -75,7 +75,10 @@ def test_to_dict_from_dict_roundtrip() -> None:
     assert restored.fact_layer[0].content == memory.fact_layer[0].content
     assert restored.passage_layer[0].chunk_id == memory.passage_layer[0].chunk_id
     assert restored.passage_layer[0].modality == "text"
-    assert restored._fact_to_idx[("X", "relates_to", "Y")] == 0
+    # The index is keyed on the canonical (case- and accent-folded) form so that
+    # "Réforme" and "reforme" resolve to one fact; the node keeps its display text.
+    assert restored._fact_to_idx[("x", "relates_to", "y")] == 0
+    assert restored.fact_layer[0].content == ("X", "relates_to", "Y")
     assert restored._chunk_id_to_idx["c1"] == 0
 
 
@@ -183,3 +186,67 @@ def test_modality_field_default() -> None:
     del payload["passage_layer"][0]["modality"]
     restored = ThreeLayerMemory.from_dict(payload)
     assert restored.passage_layer[0].modality == "text"
+
+
+def test_accent_and_case_variants_are_one_fact() -> None:
+    """A French corpus must not grow one entity per spelling.
+
+    `Réforme de la Facture Électronique`, its uppercase form and its unaccented form
+    all name the same thing. Keyed on the raw tuple, each produced its own FactNode,
+    its own vector and its own graph node — and its own schema at frequency 1, which
+    is what pushes the deactivation ratio past its ceiling and silently switches the
+    ontology filter off.
+    """
+    memory = ThreeLayerMemory()
+    memory.build_from_raw_openie_results(
+        {
+            "docs": [
+                {
+                    "idx": "c1",
+                    "passage": "La Réforme de la Facture Électronique impose le format Factur-X.",
+                    "extracted_triples": [
+                        ["Réforme de la Facture Électronique", "impose", "Factur-X"]
+                    ],
+                },
+                {
+                    "idx": "c2",
+                    "passage": "La reforme de la facture electronique impose Factur-X.",
+                    "extracted_triples": [
+                        ["REFORME DE LA FACTURE ELECTRONIQUE", "impose", "factur-x"]
+                    ],
+                },
+            ]
+        }
+    )
+
+    assert len(memory.fact_layer) == 1, [f.content for f in memory.fact_layer]
+    # Both passages support the single surviving fact.
+    assert memory.fact_layer[0].passage_indices == [0, 1]
+    # Display text keeps the first, properly accented spelling.
+    assert memory.fact_layer[0].content[0] == "Réforme de la Facture Électronique"
+
+
+def test_schema_variants_collapse_to_one_node() -> None:
+    """`Organisation`/`organization` typed the same relation must be one schema."""
+    memory = ThreeLayerMemory()
+    memory.build_from_raw_openie_results(
+        {
+            "docs": [
+                {
+                    "idx": "c1",
+                    "passage": "p1",
+                    "extracted_triples": [["A", "émet", "B"]],
+                },
+                {
+                    "idx": "c2",
+                    "passage": "p2",
+                    "extracted_triples": [["C", "émet", "D"]],
+                },
+            ]
+        }
+    )
+    memory.link_fact_to_schema(0, ("Organisation", "émet", "Facture"))
+    memory.link_fact_to_schema(1, ("organisation", "EMET", "facture"))
+
+    assert len(memory.schema_layer) == 1
+    assert memory.schema_layer[0].frequency == 2, "frequency must accumulate, not split"

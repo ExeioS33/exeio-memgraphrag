@@ -34,6 +34,11 @@ CONFLICT_MAX_GROUPS = 50
 # correct knowledge. Aligned with the research implementation.
 CONFLICT_MIN_CONFIDENCE = 0.85
 
+# Language of extracted entities, relations, types and answers. "auto" keeps the
+# model's own choice, which on a non-English corpus mixes languages and fragments the
+# schema layer. Set to e.g. "French" for a French corpus.
+MEMGRAPHRAG_LANGUAGE = "auto"
+
 # Chunking
 CHUNK_SIZE = 1200
 CHUNK_OVERLAP_SIZE = 100

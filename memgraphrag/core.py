@@ -64,6 +64,7 @@ from memgraphrag.prompts.templates import (
     CONFLICT_RESOLUTION_SYSTEM,
     CONFLICT_RESOLUTION_USER_TEMPLATE,
     ONTOLOGY_EXTRACTION_SYSTEM,
+    with_language,
     ONTOLOGY_EXTRACTION_USER_TEMPLATE,
     get_query_instruction,
     render_rag_qa,
@@ -72,6 +73,7 @@ from memgraphrag.rerank import FactFilter
 from memgraphrag.storage import verify_storage_implementation
 from memgraphrag.storage.factory import get_storage_class
 from memgraphrag.utils.env import get_env_value
+from memgraphrag.utils.canonical import canonical_key, canonical_triple
 from memgraphrag.utils.hashing import compute_mdhash_id
 from memgraphrag.utils.json_llm import extract_json_object
 from memgraphrag.utils.misc import QuerySolution
@@ -196,13 +198,13 @@ def _corpus_entity_surfaces(memory: Any, openie_docs: Sequence[dict] | None) -> 
     seen: set[str] = set()
     for doc in openie_docs or []:
         for ent in (doc or {}).get("extracted_entities") or []:
-            e = str(ent).strip().lower()
+            e = canonical_key(ent)
             if e and e not in seen:
                 seen.add(e)
                 entities.append(e)
     for fact in getattr(memory, "fact_layer", []) or []:
         for ent in (fact.content[0], fact.content[2]):
-            e = str(ent).strip().lower()
+            e = canonical_key(ent)
             if e and e not in seen:
                 seen.add(e)
                 entities.append(e)
@@ -376,8 +378,12 @@ class MemGraphRAG:
 
     @staticmethod
     def _triple_lookup_key(triple: Sequence[str]) -> tuple[str, str, str]:
-        h, r, t = MemGraphRAG._normalize_triple_key(triple)
-        return (h.lower(), r.lower(), t.lower())
+        """Matching key for a triple: accent- and case-insensitive.
+
+        `.lower()` alone left `Réforme` and `reforme` as different facts, so a French
+        corpus grew one entity, one vector and one graph node per spelling.
+        """
+        return canonical_triple(MemGraphRAG._normalize_triple_key(triple))
 
     def _parse_ontology_triples(
         self, raw: str
@@ -554,7 +560,7 @@ class MemGraphRAG:
                 async with sem:
                     raw = await self.llm_model_func(
                         user,
-                        system_prompt=ONTOLOGY_EXTRACTION_SYSTEM,
+                        system_prompt=with_language(ONTOLOGY_EXTRACTION_SYSTEM),
                         agent="schema.extract",
                         llm_action="complete",
                     )
@@ -1180,7 +1186,7 @@ class MemGraphRAG:
             content = f.get("content") or ()
             if isinstance(content, (list, tuple)) and len(content) == 3:
                 for ent in (content[0], content[2]):
-                    e = str(ent).strip().lower()
+                    e = canonical_key(ent)
                     if e:
                         entity_ids.add(compute_mdhash_id(e, prefix="entity-"))
         return {
@@ -1541,8 +1547,8 @@ class MemGraphRAG:
                 },
             )
             h_type, rel, t_type = schema.content
-            hid = compute_mdhash_id(str(h_type).strip().lower(), prefix="type-")
-            tid = compute_mdhash_id(str(t_type).strip().lower(), prefix="type-")
+            hid = compute_mdhash_id(canonical_key(h_type), prefix="type-")
+            tid = compute_mdhash_id(canonical_key(t_type), prefix="type-")
             for type_id, type_name in ((hid, h_type), (tid, t_type)):
                 if not await self.graph.has_node(type_id):
                     await self.graph.upsert_node(
@@ -1589,7 +1595,7 @@ class MemGraphRAG:
 
             endpoint_ids: list[str] = []
             for ent in (h, t):
-                eid = compute_mdhash_id(str(ent).strip().lower(), prefix="entity-")
+                eid = compute_mdhash_id(canonical_key(ent), prefix="entity-")
                 endpoint_ids.append(eid)
                 if not await self.graph.has_node(eid):
                     await self.graph.upsert_node(
@@ -1598,7 +1604,7 @@ class MemGraphRAG:
                             "id": eid,
                             "label": "Entity",
                             "layer": "entity",
-                            "content": str(ent).strip().lower(),
+                            "content": canonical_key(ent),
                         },
                     )
                 for pidx in fact.passage_indices:
@@ -1649,7 +1655,7 @@ class MemGraphRAG:
                         (head_id, h_type),
                         (tail_id, t_type),
                     ):
-                        tid = compute_mdhash_id(str(type_name).strip().lower(), prefix="type-")
+                        tid = compute_mdhash_id(canonical_key(type_name), prefix="type-")
                         entity_types.setdefault(ent_id, set()).add(tid)
                         type_members.setdefault(tid, set()).add(ent_id)
 
@@ -2019,7 +2025,7 @@ class MemGraphRAG:
                 self._fact_ids.append(fid)
                 self._fact_id_to_triple[fid] = tuple(f.content)
                 for ent in (f.content[0], f.content[2]):
-                    eid = compute_mdhash_id(str(ent).strip().lower(), prefix="entity-")
+                    eid = compute_mdhash_id(canonical_key(ent), prefix="entity-")
                     for pidx in f.passage_indices:
                         passage = self.memory.get_passage_by_idx(pidx)
                         if passage is None:
@@ -2303,7 +2309,7 @@ class MemGraphRAG:
                             if fact is None:
                                 continue
                             for ent in (fact.content[0], fact.content[2]):
-                                eid = compute_mdhash_id(str(ent).strip().lower(), prefix="entity-")
+                                eid = compute_mdhash_id(canonical_key(ent), prefix="entity-")
                                 seed_weights[eid] = (
                                     seed_weights.get(eid, 0.0) + score * param.schema_node_weight
                                 )
@@ -2363,7 +2369,7 @@ class MemGraphRAG:
                 if not (isinstance(triple, (list, tuple)) and len(triple) == 3):
                     continue
                 for ent in (triple[0], triple[2]):
-                    eid = compute_mdhash_id(str(ent).strip().lower(), prefix="entity-")
+                    eid = compute_mdhash_id(canonical_key(ent), prefix="entity-")
                     # Eq.17 is a MEAN over the retrieved facts that mention the
                     # entity, not a sum. Summing rewarded entities merely for
                     # appearing in many retrieved facts, amplifying hubs — the exact

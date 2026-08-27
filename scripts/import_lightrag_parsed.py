@@ -30,10 +30,12 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -73,6 +75,75 @@ class Stats:
     per_document: list[tuple[str, int, int, int]] = field(default_factory=list)
 
 
+@lru_cache(maxsize=1)
+def _tokenizer():
+    """One tokenizer for the whole run: building it per block dominated the runtime."""
+    from memgraphrag.utils.tokenizer import TiktokenTokenizer
+
+    return TiktokenTokenizer()
+
+
+CAPTION_TRANSLATION_PROMPT = (
+    "Tu traduis en français des légendes d'images extraites de documents sur la "
+    "Réforme de la Facture Électronique. Traduis fidèlement, garde les sigles "
+    "(RFE, PA, PDP, TVA, Factur-X, UBL, CII, B2B, e-invoicing) et les noms propres "
+    "tels quels. Ne commente pas, ne reformule pas.\n\n"
+    'Entrée : un objet JSON {"1": "...", "2": "..."}.\n'
+    "Sortie : le MÊME objet JSON avec les mêmes clés et les valeurs traduites. "
+    "Rien d'autre."
+)
+
+
+def _caption_key(text: str) -> str:
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()
+
+
+async def translate_captions(
+    texts: list[str], cache: dict[str, str], batch_size: int = 40
+) -> dict[str, str]:
+    """Translate VLM captions to French, caching by content hash.
+
+    LightRAG generated all 3 378 captions with SUMMARY_LANGUAGE=English on a French
+    corpus, so entities extracted from images ("invoice", "seller") would never join
+    the ones extracted from the surrounding French text ("facture", "vendeur") — which
+    is exactly what fragments the schema layer and neutralises the ontology filter.
+
+    The cache is keyed by the source text, so re-running the import is free.
+    """
+    from memgraphrag.llm.openai_compatible import openai_complete
+    from memgraphrag.utils.json_llm import extract_json_object
+
+    pending = [t for t in dict.fromkeys(texts) if _caption_key(t) not in cache]
+    if not pending:
+        return cache
+
+    batches = [pending[i : i + batch_size] for i in range(0, len(pending), batch_size)]
+    print(f"traduction : {len(pending)} légendes en {len(batches)} appels LLM")
+
+    for index, batch in enumerate(batches, start=1):
+        payload = {str(i): t for i, t in enumerate(batch, start=1)}
+        try:
+            raw = await openai_complete(
+                json.dumps(payload, ensure_ascii=False),
+                system_prompt=CAPTION_TRANSLATION_PROMPT,
+                agent="import.translate_caption",
+                llm_action="complete",
+            )
+            translated = extract_json_object(str(raw))
+        except Exception as exc:
+            # A failed batch keeps its English captions rather than losing them.
+            print(f"  lot {index}/{len(batches)} : échec ({exc}); légendes gardées en anglais")
+            continue
+        hits = 0
+        for i, source in enumerate(batch, start=1):
+            value = translated.get(str(i))
+            if isinstance(value, str) and value.strip():
+                cache[_caption_key(source)] = value.strip()
+                hits += 1
+        print(f"  lot {index}/{len(batches)} : {hits}/{len(batch)} traduites")
+    return cache
+
+
 def unkern(text: str) -> tuple[str, int]:
     """Reglue letter-spaced runs. Returns (text, number of runs fixed)."""
     fixed = 0
@@ -107,7 +178,7 @@ def table_to_markdown(payload: str) -> str | None:
     return "\n".join(lines)
 
 
-def drawing_to_text(entry: dict | None) -> str | None:
+def drawing_to_text(entry: dict | None, translations: dict[str, str] | None = None) -> str | None:
     """Render a VLM-captioned drawing as prose the extractor can read."""
     if not entry:
         return None
@@ -117,8 +188,11 @@ def drawing_to_text(entry: dict | None) -> str | None:
         name = str(result.get("name") or "").strip()
         description = str(result.get("description") or "").strip()
         if name:
+            # Names are machine slugs ("schema_des_4_coins"); readable, not worth a call.
             parts.append(name if name.endswith(".") else f"{name}.")
         if description:
+            if translations:
+                description = translations.get(_caption_key(description), description)
             parts.append(description)
     caption = str(entry.get("caption") or "").strip()
     if caption:
@@ -149,6 +223,7 @@ def transform_block(
     tables: dict,
     equations: dict,
     stats: Stats,
+    translations: dict[str, str] | None = None,
 ) -> str:
     """Replace markup with readable text, in place, preserving block order."""
 
@@ -165,7 +240,7 @@ def transform_block(
 
     def _drawing(match: re.Match[str]) -> str:
         entry = drawings.get(match.group("id")) or {}
-        rendered = drawing_to_text(entry)
+        rendered = drawing_to_text(entry, translations)
         if rendered is None:
             # LightRAG skips anything under 64px: bullets, rules, logos. They carry
             # no knowledge, so dropping them is correct, not a loss.
@@ -196,7 +271,13 @@ def transform_block(
     return re.sub(r"\n{3,}", "\n\n", content).strip()
 
 
-def import_document(parsed_dir: Path, out_dir: Path, stats: Stats, dry_run: bool) -> None:
+def import_document(
+    parsed_dir: Path,
+    out_dir: Path,
+    stats: Stats,
+    dry_run: bool,
+    translations: dict[str, str] | None = None,
+) -> None:
     blocks_files = sorted(parsed_dir.glob("*.blocks.jsonl"))
     if not blocks_files:
         return
@@ -225,7 +306,7 @@ def import_document(parsed_dir: Path, out_dir: Path, stats: Stats, dry_run: bool
             out_rows.append(row)
             continue
         transformed = transform_block(
-            str(row.get("content") or ""), drawings, tables, equations, stats
+            str(row.get("content") or ""), drawings, tables, equations, stats, translations
         )
         if not transformed:
             continue
@@ -238,12 +319,9 @@ def import_document(parsed_dir: Path, out_dir: Path, stats: Stats, dry_run: bool
     stats.documents += 1
     stats.blocks += doc_blocks
     stats.characters += doc_chars
-    from memgraphrag.utils.tokenizer import TiktokenTokenizer
-
+    encode = _tokenizer().encode
     doc_tokens = sum(
-        len(TiktokenTokenizer().encode(str(r.get("content") or "")))
-        for r in out_rows
-        if r.get("type") == "content"
+        len(encode(str(r.get("content") or ""))) for r in out_rows if r.get("type") == "content"
     )
     stats.per_document.append((stem, doc_blocks, doc_chars, doc_tokens))
 
@@ -256,12 +334,40 @@ def import_document(parsed_dir: Path, out_dir: Path, stats: Stats, dry_run: bool
             fh.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
+def collect_captions(parsed_dirs: list[Path]) -> list[str]:
+    """Every VLM description that will actually reach the index."""
+    out: list[str] = []
+    for d in parsed_dirs:
+        for blocks_path in sorted(d.glob("*.blocks.jsonl")):
+            stem = blocks_path.name[: -len(".blocks.jsonl")]
+            drawings = (_load_json(d / f"{stem}.drawings.json") or {}).get("drawings") or {}
+            for entry in drawings.values():
+                result = entry.get("llm_analyze_result") or {}
+                if str(result.get("status", "")) != "success":
+                    continue
+                description = str(result.get("description") or "").strip()
+                if description:
+                    out.append(description)
+            break
+    return out
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, default=DEFAULT_SOURCE)
     parser.add_argument("--out", type=Path, default=REPO / "data/inputs/rfe/__parsed__")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--limit", type=int, default=0)
+    parser.add_argument(
+        "--translate",
+        action="store_true",
+        help="translate VLM captions to French (cached; costs LLM calls once)",
+    )
+    parser.add_argument(
+        "--translation-cache",
+        type=Path,
+        default=REPO / "data/rfe/caption_translations.json",
+    )
     args = parser.parse_args()
 
     if not args.source.exists():
@@ -274,9 +380,29 @@ def main() -> int:
     if args.limit:
         parsed_dirs = parsed_dirs[: args.limit]
 
+    translations: dict[str, str] = {}
+    cache_path = Path(args.translation_cache)
+    if cache_path.exists():
+        translations = _load_json(cache_path) or {}
+        print(f"cache de traduction : {len(translations)} légendes déjà traduites")
+
+    if args.translate:
+        import asyncio
+
+        from memgraphrag.api.config import load_env_file
+
+        load_env_file(str(REPO / ".env"))
+        captions = collect_captions(parsed_dirs)
+        translations = asyncio.run(translate_captions(captions, translations))
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(
+            json.dumps(translations, ensure_ascii=False, indent=0), encoding="utf-8"
+        )
+        print(f"cache écrit : {cache_path} ({len(translations)} entrées)")
+
     stats = Stats()
     for d in parsed_dirs:
-        import_document(d, args.out, stats, args.dry_run)
+        import_document(d, args.out, stats, args.dry_run, translations or None)
 
     print(f"{'DRY RUN — ' if args.dry_run else ''}source: {args.source}")
     if not args.dry_run:
@@ -291,9 +417,6 @@ def main() -> int:
     )
 
     # Tokens are what drives the ingestion bill, so report them, not characters.
-    from memgraphrag.utils.tokenizer import TiktokenTokenizer
-
-    enc = TiktokenTokenizer().encode
     total_tokens = sum(t for _, _, _, t in stats.per_document)
     print(f"total tokens (cl100k) : {total_tokens:,}")
     for size in (400, 1200, 2000):

@@ -11,6 +11,41 @@ from __future__ import annotations
 
 from string import Template
 
+from memgraphrag.constants import MEMGRAPHRAG_LANGUAGE
+from memgraphrag.utils.env import get_env_value
+
+# ---------------------------------------------------------------------------
+# Output language
+# ---------------------------------------------------------------------------
+# Every prompt below is written in English, which is fine for an English corpus and
+# quietly corrosive on any other. On a French corpus the model mixes languages
+# unpredictably: it emits ("Entreprise", "doit émettre", "facture") next to
+# ("Company", "must issue", "invoice"), and the type layer splits `Organisation` from
+# `Organization`. Since a schema is keyed by its (head_type, relation, tail_type)
+# tuple, that doubles the schema layer with every concept at frequency 1 — which in
+# turn pushes the deactivation ratio past ONTOLOGY_MAX_DEACTIVATION_RATIO and turns
+# the ontology filter off entirely. Pinning the language is what keeps the graph
+# from fragmenting.
+
+
+def language_directive(language: str | None = None) -> str:
+    """Return the sentence that pins extraction and answer language, or ""."""
+    name = (language or get_env_value("MEMGRAPHRAG_LANGUAGE", MEMGRAPHRAG_LANGUAGE, str)).strip()
+    if not name or name.lower() in ("", "auto", "source"):
+        return ""
+    return (
+        f"\n\nWrite every entity name, relation label and type label in {name}, "
+        f"regardless of the language of these instructions. Keep acronyms, product "
+        f"names and proper nouns exactly as they appear in the source. Answer the "
+        f"user in {name}."
+    )
+
+
+def with_language(prompt: str, language: str | None = None) -> str:
+    """Append the language directive to a system prompt."""
+    return prompt + language_directive(language)
+
+
 # ---------------------------------------------------------------------------
 # Untrusted-input fencing
 # ---------------------------------------------------------------------------
@@ -285,7 +320,7 @@ Thought: """
 def render_ner(passage: str) -> tuple[str, str]:
     """Return (system, user) prompts for NER."""
     return (
-        NER_SYSTEM + "\n" + UNTRUSTED_CONTEXT_NOTICE,
+        with_language(NER_SYSTEM) + "\n" + UNTRUSTED_CONTEXT_NOTICE,
         NER_USER_TEMPLATE.substitute(passage=fence_passages([passage])),
     )
 
@@ -296,7 +331,7 @@ def render_triple_extraction(passage: str, named_entities: list[str]) -> tuple[s
 
     named_entity_json = json.dumps({"named_entities": named_entities}, ensure_ascii=False)
     return (
-        TRIPLE_EXTRACTION_SYSTEM + "\n" + UNTRUSTED_CONTEXT_NOTICE,
+        with_language(TRIPLE_EXTRACTION_SYSTEM) + "\n" + UNTRUSTED_CONTEXT_NOTICE,
         TRIPLE_EXTRACTION_USER_TEMPLATE.substitute(
             passage=fence_passages([passage]), named_entity_json=named_entity_json
         ),
@@ -308,7 +343,10 @@ def render_rag_qa(
 ) -> tuple[str, str]:
     """Return (system, user) prompts for RAG QA."""
     context = fence_passages(docs, sources)
-    return RAG_QA_SYSTEM, RAG_QA_USER_TEMPLATE.substitute(context=context, question=question)
+    return (
+        with_language(RAG_QA_SYSTEM),
+        RAG_QA_USER_TEMPLATE.substitute(context=context, question=question),
+    )
 
 
 # ---------------------------------------------------------------------------

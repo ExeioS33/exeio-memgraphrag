@@ -21,6 +21,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
+from memgraphrag.utils.canonical import canonical_triple
+
 logger = logging.getLogger(__name__)
 
 # Optional CLI defaults (no hardcoded absolute paths).
@@ -78,25 +80,35 @@ class ThreeLayerMemory:
         self._chunk_id_to_idx: Dict[str, int] = {}
 
     def _get_or_create_schema(self, ontology: Tuple[str, str, str]) -> int:
-        """Get or create schema node, return index."""
-        if ontology in self._schema_to_idx:
-            return self._schema_to_idx[ontology]
+        """Get or create schema node, return index.
+
+        Keyed on the canonical form, not the raw tuple: the engine looks facts and
+        schemas up case- and accent-insensitively, so keying the store on the raw
+        text meant `("Organisation", "emet", "Facture")` and
+        `("organisation", "émet", "facture")` created two SchemaNodes, each at
+        frequency 1 — the exact fragmentation that disables the ontology filter.
+        The *display* content keeps the first spelling seen.
+        """
+        key = canonical_triple(ontology)
+        if key in self._schema_to_idx:
+            return self._schema_to_idx[key]
 
         idx = len(self.schema_layer)
         node = SchemaNode(idx=idx, content=ontology)
         self.schema_layer.append(node)
-        self._schema_to_idx[ontology] = idx
+        self._schema_to_idx[key] = idx
         return idx
 
     def _get_or_create_fact(self, triple: Tuple[str, str, str], schema_idx: int) -> int:
-        """Get or create fact node, return index."""
-        if triple in self._fact_to_idx:
-            return self._fact_to_idx[triple]
+        """Get or create fact node, return index (canonical key; see above)."""
+        key = canonical_triple(triple)
+        if key in self._fact_to_idx:
+            return self._fact_to_idx[key]
 
         idx = len(self.fact_layer)
         node = FactNode(idx=idx, content=triple, schema_idx=schema_idx)
         self.fact_layer.append(node)
-        self._fact_to_idx[triple] = idx
+        self._fact_to_idx[key] = idx
         return idx
 
     def _get_or_create_passage(self, chunk_id: str, passage_text: str) -> int:
@@ -376,7 +388,7 @@ class ThreeLayerMemory:
             schema.frequency = len(schema.fact_indices)
 
         self.schema_layer = kept_nodes
-        self._schema_to_idx = {s.content: s.idx for s in self.schema_layer}
+        self._schema_to_idx = {canonical_triple(s.content): s.idx for s in self.schema_layer}
         return {
             "kept": len(self.schema_layer),
             "dropped": dropped,
@@ -390,7 +402,7 @@ class ThreeLayerMemory:
             old_to_new[fact.idx] = new_idx
             fact.idx = new_idx
 
-        self._fact_to_idx = {f.content: f.idx for f in self.fact_layer}
+        self._fact_to_idx = {canonical_triple(f.content): f.idx for f in self.fact_layer}
 
         for schema in self.schema_layer:
             schema.fact_indices = [old_to_new[i] for i in schema.fact_indices if i in old_to_new]
@@ -434,7 +446,7 @@ class ThreeLayerMemory:
         if fact.content == new_triple:
             return fact_idx
 
-        existing = self._fact_to_idx.get(new_triple)
+        existing = self._fact_to_idx.get(canonical_triple(new_triple))
         if existing is not None and existing != fact_idx:
             # Merge passages into the existing fact, then remove this one.
             target = self.fact_layer[existing]
@@ -447,7 +459,7 @@ class ThreeLayerMemory:
                     if existing not in passage.fact_indices:
                         passage.fact_indices.append(existing)
             self.remove_fact(fact_idx)
-            surviving = self._fact_to_idx.get(new_triple)
+            surviving = self._fact_to_idx.get(canonical_triple(new_triple))
             if surviving is None:
                 return -1
             if old_schema >= 0 and self.fact_layer[surviving].schema_idx < 0:
@@ -458,9 +470,9 @@ class ThreeLayerMemory:
             return surviving
 
         # Rename in place.
-        del self._fact_to_idx[fact.content]
+        self._fact_to_idx.pop(canonical_triple(fact.content), None)
         fact.content = new_triple
-        self._fact_to_idx[new_triple] = fact_idx
+        self._fact_to_idx[canonical_triple(new_triple)] = fact_idx
         return fact_idx
 
     def add_fact_with_passages(
@@ -547,7 +559,7 @@ class ThreeLayerMemory:
                 fact_indices=item.get("fact_indices", []),
             )
             memory.schema_layer.append(node)
-            memory._schema_to_idx[node.content] = node.idx
+            memory._schema_to_idx[canonical_triple(node.content)] = node.idx
 
         # Restore fact layer
         for item in data.get("fact_layer", []):
@@ -561,7 +573,7 @@ class ThreeLayerMemory:
                 passage_indices=passage_indices,
             )
             memory.fact_layer.append(node)
-            memory._fact_to_idx[node.content] = node.idx
+            memory._fact_to_idx[canonical_triple(node.content)] = node.idx
 
         # Restore passage layer
         for item in data.get("passage_layer", []):
