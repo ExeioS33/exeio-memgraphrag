@@ -30,7 +30,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
-from memgraphrag.api.config import load_env_file  # noqa: E402
+from memgraphrag.api.config import load_env_file, resolve_storage_backends  # noqa: E402
 
 DEFAULT_SIDECARS = REPO / "data/rfe/parsed"
 
@@ -124,10 +124,6 @@ async def main() -> int:
         print("aucun chunk produit")
         return 1
 
-    if args.dry_run:
-        print("\nDRY RUN — aucun appel LLM")
-        return 0
-
     # The workspace is what keeps this run away from LightRAG's graph; Neo4JStorage
     # refuses to start on a workspace another engine populated, but say it out loud.
     os.environ["WORKSPACE"] = args.workspace
@@ -150,6 +146,11 @@ async def main() -> int:
             **kwargs,
         )
 
+    # MemGraphRAG's constructor defaults are literals (core.py:233-236); only
+    # api/config.py reads MEMGRAPHRAG_*_STORAGE. A script that omits them silently
+    # ignores the configured backends and always writes files.
+    backends = resolve_storage_backends()
+    print("stockage   : " + ", ".join(f"{k.split('_')[0]}={v}" for k, v in backends.items()))
     rag = MemGraphRAG(
         working_dir=str(REPO / "data/rfe/storage"),
         workspace=args.workspace,
@@ -157,8 +158,19 @@ async def main() -> int:
         embedding_func=embedding_func,
         embedding_dim=int(os.getenv("EMBEDDING_DIM") or 1024),
         max_async_llm=int(os.getenv("MAX_ASYNC_LLM") or 4),
+        **backends,
     )
     await rag.initialize_storages()
+
+    # --dry-run used to return before this point, so it checked chunking and nothing
+    # else. That is exactly how a run announced as "Postgres + Neo4j" went to files
+    # instead: the only evidence anyone had was a dry-run that never built a storage.
+    # It now constructs the real backends and reports what it actually reached.
+    if args.dry_run:
+        nodes = len(await rag.graph.get_all_nodes())
+        print(f"\nDRY RUN — {nodes} noeuds dans le workspace, aucun appel LLM")
+        await rag.finalize_storages()
+        return 0
 
     started = time.perf_counter()
     stats = await rag.ainsert(chunks, run_conflicts=not args.no_conflicts)

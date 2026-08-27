@@ -21,6 +21,9 @@ SCHEMA_NODE_WEIGHT = 0.1
 
 # Ontology / conflict construction
 ONTOLOGY_BATCH_SIZE = 20
+#: Chunks extracted between two OpenIE cache writes. A killed run keeps every
+#: completed sub-batch and re-bills only the one in flight.
+OPENIE_CHECKPOINT_SIZE = 64
 ONTOLOGY_MIN_FREQUENCY = 2
 # Safety valve for the ontology filter. A corpus small enough that almost every
 # schema is seen once carries no frequency signal, and applying an absolute

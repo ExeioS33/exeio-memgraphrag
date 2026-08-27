@@ -37,6 +37,7 @@ from memgraphrag.constants import (
     LINKING_TOP_K,
     MAX_ASYNC_LLM,
     ONTOLOGY_BATCH_SIZE,
+    OPENIE_CHECKPOINT_SIZE,
     ONTOLOGY_MAX_DEACTIVATION_RATIO,
     ONTOLOGY_MIN_FREQUENCY,
     PASSAGE_NODE_WEIGHT,
@@ -1263,6 +1264,53 @@ class MemGraphRAG:
             stage(logger, "Detecting conflicts", skipped=True, reason="delete_rebuild")
         return memory, conflicts, resolution
 
+    async def _extract_openie_checkpointed(self, missing_chunks: list[dict[str, Any]]) -> None:
+        """Run OpenIE in sub-batches and persist each one before starting the next.
+
+        The cache used to be written once, after every chunk of the corpus had been
+        extracted. On a 1 716-chunk corpus that is ~3 400 billed LLM calls with no
+        durable result until the very last one returns: a kill, a crash or a provider
+        outage at minute 35 threw away minute 0 to 35. Each sub-batch is now upserted
+        as soon as it completes, so a relaunch finds it through `_is_cached_openie`
+        and re-bills only the sub-batch that was in flight.
+
+        Failures are still never cached (a provider outage must not become a
+        permanent "this chunk has no facts"), but a failed sub-batch no longer
+        discards the successful chunks of the same sub-batch: they are written
+        first, and the error is raised after the whole corpus has been attempted.
+        """
+        assert self.openie is not None
+        size = max(1, get_env_value("OPENIE_CHECKPOINT_SIZE", OPENIE_CHECKPOINT_SIZE, int))
+        total = len(missing_chunks)
+        done = 0
+        failed_total = 0
+        first_error = ""
+        for start in range(0, total, size):
+            sub = missing_chunks[start : start + size]
+            new_docs = await self.openie.batch_openie(sub)
+            ok_docs = [d for d in new_docs if not d.get("failed")]
+            failed_docs = [d for d in new_docs if d.get("failed")]
+            if ok_docs:
+                await self.openie_kv.upsert({d["idx"]: d for d in ok_docs})
+            done += len(sub)
+            if failed_docs:
+                failed_total += len(failed_docs)
+                first_error = first_error or str(failed_docs[0].get("error", ""))
+            stage(
+                logger,
+                "OpenIE checkpoint",
+                done=done,
+                total=total,
+                cached=len(ok_docs),
+                failed=len(failed_docs),
+            )
+        if failed_total:
+            raise PipelineError(
+                f"OpenIE failed for {failed_total}/{total} chunks ({first_error}). "
+                f"Successful chunks are cached; the failed ones are left unindexed "
+                f"rather than stored as fact-free and silently unreachable."
+            )
+
     async def ainsert(
         self,
         chunks: Sequence[str] | Sequence[dict[str, str]],
@@ -1294,22 +1342,7 @@ class MemGraphRAG:
             extract=len(missing_chunks),
         )
         if missing_chunks:
-            new_docs = await self.openie.batch_openie(missing_chunks)
-            # Never cache a failed extraction: it would freeze a provider outage into
-            # a permanent "this chunk has no facts". Only successful runs are stored,
-            # including successful-but-empty ones (flagged so they are not re-billed
-            # on every later insert).
-            ok_docs = [d for d in new_docs if not d.get("failed")]
-            failed_docs = [d for d in new_docs if d.get("failed")]
-            if ok_docs:
-                await self.openie_kv.upsert({d["idx"]: d for d in ok_docs})
-            if failed_docs:
-                sample = failed_docs[0].get("error", "")
-                raise PipelineError(
-                    f"OpenIE failed for {len(failed_docs)}/{len(new_docs)} chunks "
-                    f"({sample}). The document is left unindexed rather than stored "
-                    f"as fact-free and silently unreachable."
-                )
+            await self._extract_openie_checkpointed(missing_chunks)
         stage(logger, "OpenIE cache ready", docs=len(batch_ids))
 
         openie_docs = await self._load_corpus_openie_docs(extra_chunk_ids=batch_ids)

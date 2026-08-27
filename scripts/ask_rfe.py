@@ -26,7 +26,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
-from memgraphrag.api.config import load_env_file  # noqa: E402
+from memgraphrag.api.config import load_env_file, resolve_storage_backends  # noqa: E402
 
 QUESTIONS = REPO / "data/rfe/questions.json"
 _CITATION = re.compile(r"[\[【]\s*\d+\s*[\]】]")
@@ -77,6 +77,10 @@ async def main() -> int:
             **kwargs,
         )
 
+    # MemGraphRAG's constructor defaults are literals (core.py:233-236); only
+    # api/config.py reads MEMGRAPHRAG_*_STORAGE. A script that omits them silently
+    # ignores the configured backends and always writes files.
+    backends = resolve_storage_backends()
     rag = MemGraphRAG(
         working_dir=str(args.storage),
         workspace=args.workspace,
@@ -84,6 +88,7 @@ async def main() -> int:
         embedding_func=embedding_func,
         embedding_dim=int(os.getenv("EMBEDDING_DIM") or 1024),
         max_async_llm=int(os.getenv("MAX_ASYNC_LLM") or 4),
+        **backends,
     )
     await rag.initialize_storages()
     await rag.prepare_retrieval()
