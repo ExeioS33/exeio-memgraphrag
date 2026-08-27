@@ -1218,8 +1218,11 @@ class MemGraphRAG:
         holds by construction: any future per-record loop inside this block collapses
         to one flush instead of silently reintroducing the problem.
 
-        ``batch()`` is a no-op on the ABCs, so database backends (PostgreSQL, Neo4j)
-        pass straight through.
+        ``batch()`` is a no-op on the ABCs, so PostgreSQL passes straight through.
+        ``Neo4JStorage`` overrides it for a different reason than the file backends:
+        not to avoid rewrites but to amortise round trips — it buffers the writes and
+        flushes them with UNWIND, which took the graph install from ~5 to ~3 800
+        writes per second on the RFE corpus.
         """
         stores = [
             self.chunks_vdb,

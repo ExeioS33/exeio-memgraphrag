@@ -112,7 +112,8 @@ class StorageNameSpace(ABC):
         rewrites, i.e. quadratic in the corpus. Declared here rather than per
         storage kind so a caller can wrap any write loop without asking which
         backend it got: the default is a no-op, which is already correct for
-        backends with per-statement durability (PostgreSQL, Neo4j).
+        PostgreSQL. ``Neo4JStorage`` overrides it too, to buffer writes and send
+        them as UNWIND batches instead of one round trip per node or edge.
         """
         yield self
 
