@@ -214,3 +214,93 @@ async def test_neo4j_methods_with_mocked_driver() -> None:
         await storage.clear()
         await storage.finalize()
         fake_driver.close.assert_awaited()
+
+
+def _fake_session(single_result: dict[str, Any] | None = None):
+    """Session double capturing every Cypher query it is asked to run."""
+    queries: list[str] = []
+    result = MagicMock()
+    result.consume = AsyncMock()
+    result.single = AsyncMock(return_value=single_result)
+
+    session = MagicMock()
+
+    async def _run(query: str, **kwargs: Any):
+        queries.append(query)
+        return result
+
+    session.run = AsyncMock(side_effect=_run)
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=False)
+    return session, queries
+
+
+async def test_clear_only_deletes_memgraphrag_owned_nodes() -> None:
+    """`clear()` must never touch another engine's graph.
+
+    LightRAG uses the same workspace-as-Neo4j-label convention. An unscoped
+    `MATCH (n:\\`default\\`) DETACH DELETE n` — what this used to run at the start of
+    every `_install_memory_graph` — destroys its graph. Verified against the shared
+    server: the `default` workspace holds 14 556 nodes and 26 938 relationships.
+    """
+    from memgraphrag.storage.neo4j_impl import MGR_OWNED_PROPERTY, Neo4JStorage
+
+    storage = Neo4JStorage(workspace="default", namespace="ns", global_config={})
+    session, queries = _fake_session()
+    with patch.object(Neo4JStorage, "_session", return_value=session):
+        await storage.clear()
+
+    assert len(queries) == 1
+    query = queries[0]
+    assert "DETACH DELETE" in query
+    assert f"n.`{MGR_OWNED_PROPERTY}` = true" in query, (
+        "clear() is unscoped and would delete foreign nodes"
+    )
+
+
+async def test_upsert_node_stamps_the_ownership_marker() -> None:
+    """Without the marker written on insert, `clear()` would delete nothing."""
+    from memgraphrag.storage.neo4j_impl import MGR_OWNED_PROPERTY, Neo4JStorage
+
+    storage = Neo4JStorage(workspace="rfe_mgr", namespace="ns", global_config={})
+    session, _ = _fake_session()
+    with patch.object(Neo4JStorage, "_session", return_value=session):
+        await storage.upsert_node("entity-1", {"id": "entity-1", "label": "Entity"})
+
+    _, kwargs = session.run.await_args_list[0]
+    assert kwargs["properties"][MGR_OWNED_PROPERTY] is True
+
+
+async def test_initialize_refuses_a_workspace_owned_by_another_engine() -> None:
+    """Sharing a label mixes two knowledge graphs in every traversal."""
+    from memgraphrag.storage.neo4j_impl import Neo4JStorage
+
+    storage = Neo4JStorage(workspace="default", namespace="ns", global_config={})
+    with patch.object(Neo4JStorage, "foreign_node_count", AsyncMock(return_value=14556)):
+        with pytest.raises(RuntimeError) as exc:
+            await storage._assert_workspace_not_shared()
+
+    message = str(exc.value)
+    assert "14556" in message
+    assert "default" in message
+    assert "WORKSPACE" in message, "the message must say how to fix it"
+
+
+async def test_shared_workspace_can_be_allowed_explicitly(monkeypatch) -> None:
+    from memgraphrag.storage.neo4j_impl import Neo4JStorage
+
+    monkeypatch.setenv("MEMGRAPHRAG_ALLOW_SHARED_NEO4J_WORKSPACE", "true")
+    storage = Neo4JStorage(workspace="default", namespace="ns", global_config={})
+    with patch.object(Neo4JStorage, "foreign_node_count", AsyncMock(return_value=14556)):
+        await storage._assert_workspace_not_shared()  # must not raise
+
+
+async def test_ownership_audit_failure_does_not_block_startup() -> None:
+    """A probe error must degrade to a warning, not refuse to serve."""
+    from memgraphrag.storage.neo4j_impl import Neo4JStorage
+
+    storage = Neo4JStorage(workspace="rfe_mgr", namespace="ns", global_config={})
+    with patch.object(
+        Neo4JStorage, "foreign_node_count", AsyncMock(side_effect=OSError("bolt down"))
+    ):
+        await storage._assert_workspace_not_shared()

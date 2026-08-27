@@ -14,6 +14,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from memgraphrag.utils.env import get_env_value
 from memgraphrag.base import BaseGraphStorage
 
 logger = logging.getLogger(__name__)
@@ -40,6 +41,8 @@ EDGE_TYPES = frozenset(
         "FACT_PASSAGE",
     }
 )
+MGR_OWNED_PROPERTY = "mgr_owned"
+
 _SAFE_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
@@ -170,6 +173,31 @@ class Neo4JStorage(BaseGraphStorage):
             raise ConnectionError(f"Unable to connect to Neo4j at {uri}")
 
         await self._ensure_indexes()
+        await self._assert_workspace_not_shared()
+
+    async def _assert_workspace_not_shared(self) -> None:
+        """Refuse to start on a workspace another engine already populated.
+
+        `clear()` is scoped to MemGraphRAG-owned nodes, so nothing would be deleted —
+        but sharing a workspace label still mixes two knowledge graphs in every
+        traversal, and PPR would walk a foreign engine's edges. Fail loudly instead,
+        unless the operator opts in.
+        """
+        if get_env_value("MEMGRAPHRAG_ALLOW_SHARED_NEO4J_WORKSPACE", False, bool):
+            return
+        try:
+            foreign = await self.foreign_node_count()
+        except Exception as exc:  # a probe failure must not block startup
+            logger.warning("[%s] Could not audit workspace ownership: %s", self.workspace, exc)
+            return
+        if foreign:
+            raise RuntimeError(
+                f"Neo4j workspace {self._raw_workspace()!r} already holds {foreign} nodes "
+                f"that MemGraphRAG did not create (no {MGR_OWNED_PROPERTY!r} marker). "
+                "Another engine — LightRAG uses the same workspace-as-label convention — "
+                "is very likely using it. Pick a distinct WORKSPACE / NEO4J_WORKSPACE, or "
+                "set MEMGRAPHRAG_ALLOW_SHARED_NEO4J_WORKSPACE=true to share it knowingly."
+            )
 
     async def _ensure_indexes(self) -> None:
         ws = self._workspace_label()
@@ -268,6 +296,12 @@ class Neo4JStorage(BaseGraphStorage):
         props["node_type"] = node_label
         props["label"] = node_label
         props["workspace"] = self._raw_workspace()
+        # Ownership marker. `clear()` deletes only nodes carrying it, so pointing
+        # MemGraphRAG at a Neo4j workspace that another engine already populated can
+        # never wipe that engine's graph. Without it, `clear()` matched the whole
+        # workspace label and a single ainsert against LightRAG's `default` workspace
+        # would have destroyed 14 556 nodes and 26 938 relationships.
+        props[MGR_OWNED_PROPERTY] = True
 
         # MERGE on workspace + entity_id, then attach typed label (no APOC).
         merge_q = f"""
@@ -402,11 +436,27 @@ class Neo4JStorage(BaseGraphStorage):
         return edges
 
     async def clear(self) -> None:
+        """Delete this workspace's MemGraphRAG nodes, and only those.
+
+        Scoped by the ownership marker rather than by the workspace label: the label
+        is just the workspace name, and other engines (LightRAG in particular) use the
+        same convention, so an unscoped delete silently destroys their graph.
+        """
         ws = self._workspace_label()
-        query = f"MATCH (n:`{ws}`) DETACH DELETE n"
+        query = f"MATCH (n:`{ws}`) WHERE n.`{MGR_OWNED_PROPERTY}` = true DETACH DELETE n"
         async with self._session() as session:
             result = await session.run(query)
             await result.consume()
+
+    async def foreign_node_count(self) -> int:
+        """Nodes in this workspace label that MemGraphRAG did not create."""
+        ws = self._workspace_label()
+        query = f"MATCH (n:`{ws}`) WHERE n.`{MGR_OWNED_PROPERTY}` IS NULL RETURN count(n) AS c"
+        async with self._session(default_access_mode="READ") as session:
+            result = await session.run(query)
+            record = await result.single()
+            await result.consume()
+            return int((record or {}).get("c") or 0)
 
     async def node_degree(self, node_id: str) -> int:
         ws = self._workspace_label()
