@@ -11,6 +11,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import logging
+import math
 import os
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping, Sequence, Union
@@ -103,6 +104,49 @@ def _min_max_normalize(scores: np.ndarray) -> np.ndarray:
 
 def _triple_str(triple: Sequence[str]) -> str:
     return str(tuple(str(x) for x in triple))
+
+
+def _information_density(
+    entity_to_passages: Mapping[str, set], passage_ids: Sequence[str]
+) -> dict[str, float]:
+    """Per-passage information density, the sigma(...) factor of the paper's Eq. 19.
+
+    ``P_init(p) = Sim(q, d_p) * alpha * sigma( sum_{e in E_p} IDF(e) / log(|E_p|+1) )``
+
+    Only ``Sim(q, d_p) * alpha`` was implemented; the density factor was missing
+    entirely, so every retrieved passage was weighted the same regardless of how
+    discriminating its entities are. IDF is computed over the passage collection
+    (each passage is a document), which is the only collection the engine has.
+
+    The sigmoid is centred on the mean raw density of the corpus so the factor
+    actually spreads over (0, 1): an uncentred sigmoid on unbounded positive values
+    saturates at 1 and silently reduces to the constant it replaced.
+    """
+    passage_entities: dict[str, set] = {pid: set() for pid in passage_ids}
+    for eid, pids in (entity_to_passages or {}).items():
+        for pid in pids or ():
+            bucket = passage_entities.get(str(pid))
+            if bucket is not None:
+                bucket.add(eid)
+
+    total = len(passage_ids) or 1
+    doc_freq: dict[str, int] = {}
+    for entities in passage_entities.values():
+        for eid in entities:
+            doc_freq[eid] = doc_freq.get(eid, 0) + 1
+
+    raw: dict[str, float] = {}
+    for pid, entities in passage_entities.items():
+        if not entities:
+            raw[pid] = 0.0
+            continue
+        idf_sum = sum(math.log(total / (1.0 + doc_freq.get(eid, 0))) + 1.0 for eid in entities)
+        raw[pid] = idf_sum / math.log(len(entities) + 1.0)
+
+    values = [v for v in raw.values() if v]
+    centre = (sum(values) / len(values)) if values else 0.0
+    spread = max(1e-6, (max(values) - min(values)) / 4.0) if len(values) > 1 else 1.0
+    return {pid: 1.0 / (1.0 + math.exp(-(value - centre) / spread)) for pid, value in raw.items()}
 
 
 def _hit_score(hit: Mapping[str, Any]) -> float:
@@ -290,6 +334,7 @@ class MemGraphRAG:
         self._passage_ids: list[str] = []
         self._entity_ids: list[str] = []
         self._inactive_fact_idxs: set[int] = set()
+        self._passage_density: dict[str, float] = {}
         # Guards the corpus rewrite (embed + graph install) against readers.
         self._corpus_lock = asyncio.Lock()
         self._fact_ids: list[str] = []
@@ -1927,6 +1972,7 @@ class MemGraphRAG:
         self._schema_id_to_idx = {}
         self._fact_id_to_triple = {}
         self._entity_to_passages = {}
+        self._passage_density = {}
 
         if self.memory is not None:
             for p in self.memory.passage_layer:
@@ -1963,6 +2009,12 @@ class MemGraphRAG:
                 compute_mdhash_id(e, prefix="entity-")
                 for e in _corpus_entity_surfaces(self.memory, openie_docs)
             ]
+
+            # Eq.19 density factor; corpus-wide, so it is computed once here rather
+            # than per query.
+            self._passage_density = _information_density(
+                self._entity_to_passages, self._passage_ids
+            )
 
         # Map chunk ids → document basenames for LightRAG-style references.
         try:
@@ -2319,8 +2371,10 @@ class MemGraphRAG:
                     if not pid:
                         continue
                     score = _hit_score(hit)
+                    density = self._passage_density.get(str(pid), 0.5)
                     seed_weights[str(pid)] = (
-                        seed_weights.get(str(pid), 0.0) + score * param.passage_node_weight
+                        seed_weights.get(str(pid), 0.0)
+                        + score * param.passage_node_weight * density
                     )
                 update_observation(
                     seed_span,

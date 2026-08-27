@@ -167,3 +167,28 @@ async def test_fact_rerank_falls_back_when_llm_fails() -> None:
         "q", facts, [0, 1], scores=[0.9, 0.2], threshold=0.6, llm_model_func=broken_llm
     )
     assert kept == [0]
+
+
+@pytest.mark.offline
+def test_information_density_favours_discriminating_entities() -> None:
+    """Eq.19's density factor must actually separate passages.
+
+    Only `Sim(q, d_p) * alpha` was implemented; the sigma(sum IDF / log(|E_p|+1))
+    factor was missing, so every passage carried the same weight no matter how
+    discriminating its entities were. An uncentred sigmoid would saturate at 1 and
+    quietly reduce to the same constant, so the spread is checked too.
+    """
+    from memgraphrag.core import _information_density
+
+    entity_to_passages = {
+        "e-common": {"p1", "p2", "p3", "p4"},  # appears everywhere: low IDF
+        "e-rare1": {"p2"},
+        "e-rare2": {"p2"},
+        "e-rare3": {"p2"},
+    }
+    density = _information_density(entity_to_passages, ["p1", "p2", "p3", "p4"])
+
+    assert density["p2"] > density["p1"], "rare entities must raise density"
+    assert all(0.0 < v < 1.0 for v in density.values()), "sigma must stay in (0, 1)"
+    # A passage with no known entity must not be boosted.
+    assert _information_density({}, ["lonely"])["lonely"] < 0.6
