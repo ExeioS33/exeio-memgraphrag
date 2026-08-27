@@ -102,7 +102,7 @@ def _caption_key(text: str) -> str:
 async def translate_captions(
     texts: list[str],
     cache: dict[str, str],
-    batch_size: int = 8,
+    batch_size: int = 3,
     concurrency: int = 12,
 ) -> dict[str, str]:
     """Translate VLM captions to French, caching by content hash.
@@ -112,10 +112,11 @@ async def translate_captions(
     the ones extracted from the surrounding French text ("facture", "vendeur") — which
     is exactly what fragments the schema layer and neutralises the ontology filter.
 
-    Batches are small on purpose. At 40 captions per call the model ran out of output
-    tokens mid-JSON and every one of the 31 batches returned nothing usable; a caption
-    averages ~500 characters, so 8 in means ~4 000 characters out, well inside any
-    budget. `max_tokens` is set explicitly rather than left to the provider's default.
+    Batches are small on purpose, and smaller than they look like they should be. At
+    40 captions per call all 31 batches came back empty; at 8 the response still cut
+    off mid-sentence around 5 200 characters — the served model stops well before the
+    requested `max_tokens`, so the JSON was never closed and `json_repair` salvaged
+    nothing. Three captions (~2 000 characters out) leaves a wide margin.
 
     The cache is keyed by the source text, so re-running the import is free.
     """
@@ -151,18 +152,24 @@ async def translate_captions(
                 print(f"  lot en échec ({type(exc).__name__}); légendes gardées en anglais")
                 return {}
         out: dict[str, str] = {}
-        for i, source in enumerate(batch, start=1):
-            value = translated.get(str(i))
-            if isinstance(value, str) and value.strip():
-                out[_caption_key(source)] = value.strip()
+        if isinstance(translated, dict):
+            for i, source in enumerate(batch, start=1):
+                value = translated.get(str(i))
+                if isinstance(value, str) and value.strip():
+                    out[_caption_key(source)] = value.strip()
+        if len(out) < len(batch):
+            # A truncated response parses to nothing and used to be counted as a
+            # success, so the run reported "0 failures" while translating 15 %.
+            failed += 1
         done += len(out)
-        if failed == 0 and done % 200 < len(batch):
-            print(f"  {done}/{len(pending)} traduites")
         return out
 
     for result in await asyncio.gather(*(_translate(b) for b in batches)):
         cache.update(result)
-    print(f"traduites : {done}/{len(pending)} ({failed} lots en échec)")
+    print(
+        f"traduites : {done}/{len(pending)} légendes ; "
+        f"{failed}/{len(batches)} lots incomplets ou en échec"
+    )
     return cache
 
 
