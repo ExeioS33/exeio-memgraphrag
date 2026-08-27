@@ -30,6 +30,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import hashlib
 import json
 import re
@@ -99,7 +100,10 @@ def _caption_key(text: str) -> str:
 
 
 async def translate_captions(
-    texts: list[str], cache: dict[str, str], batch_size: int = 40
+    texts: list[str],
+    cache: dict[str, str],
+    batch_size: int = 8,
+    concurrency: int = 12,
 ) -> dict[str, str]:
     """Translate VLM captions to French, caching by content hash.
 
@@ -107,6 +111,11 @@ async def translate_captions(
     corpus, so entities extracted from images ("invoice", "seller") would never join
     the ones extracted from the surrounding French text ("facture", "vendeur") — which
     is exactly what fragments the schema layer and neutralises the ontology filter.
+
+    Batches are small on purpose. At 40 captions per call the model ran out of output
+    tokens mid-JSON and every one of the 31 batches returned nothing usable; a caption
+    averages ~500 characters, so 8 in means ~4 000 characters out, well inside any
+    budget. `max_tokens` is set explicitly rather than left to the provider's default.
 
     The cache is keyed by the source text, so re-running the import is free.
     """
@@ -120,27 +129,40 @@ async def translate_captions(
     batches = [pending[i : i + batch_size] for i in range(0, len(pending), batch_size)]
     print(f"traduction : {len(pending)} légendes en {len(batches)} appels LLM")
 
-    for index, batch in enumerate(batches, start=1):
+    semaphore = asyncio.Semaphore(concurrency)
+    done = 0
+    failed = 0
+
+    async def _translate(batch: list[str]) -> dict[str, str]:
+        nonlocal done, failed
         payload = {str(i): t for i, t in enumerate(batch, start=1)}
-        try:
-            raw = await openai_complete(
-                json.dumps(payload, ensure_ascii=False),
-                system_prompt=CAPTION_TRANSLATION_PROMPT,
-                agent="import.translate_caption",
-                llm_action="complete",
-            )
-            translated = extract_json_object(str(raw))
-        except Exception as exc:
-            # A failed batch keeps its English captions rather than losing them.
-            print(f"  lot {index}/{len(batches)} : échec ({exc}); légendes gardées en anglais")
-            continue
-        hits = 0
+        async with semaphore:
+            try:
+                raw = await openai_complete(
+                    json.dumps(payload, ensure_ascii=False),
+                    system_prompt=CAPTION_TRANSLATION_PROMPT,
+                    agent="import.translate_caption",
+                    llm_action="complete",
+                    max_tokens=4096,
+                )
+                translated = extract_json_object(str(raw))
+            except Exception as exc:
+                failed += 1
+                print(f"  lot en échec ({type(exc).__name__}); légendes gardées en anglais")
+                return {}
+        out: dict[str, str] = {}
         for i, source in enumerate(batch, start=1):
             value = translated.get(str(i))
             if isinstance(value, str) and value.strip():
-                cache[_caption_key(source)] = value.strip()
-                hits += 1
-        print(f"  lot {index}/{len(batches)} : {hits}/{len(batch)} traduites")
+                out[_caption_key(source)] = value.strip()
+        done += len(out)
+        if failed == 0 and done % 200 < len(batch):
+            print(f"  {done}/{len(pending)} traduites")
+        return out
+
+    for result in await asyncio.gather(*(_translate(b) for b in batches)):
+        cache.update(result)
+    print(f"traduites : {done}/{len(pending)} ({failed} lots en échec)")
     return cache
 
 
@@ -387,8 +409,6 @@ def main() -> int:
         print(f"cache de traduction : {len(translations)} légendes déjà traduites")
 
     if args.translate:
-        import asyncio
-
         from memgraphrag.api.config import load_env_file
 
         load_env_file(str(REPO / ".env"))

@@ -1,0 +1,88 @@
+{
+  "corpus": "rfe-igor",
+  "note": "Ground truth read directly from the imported sidecars. `expect` lists strings a correct answer must contain, matched after accent/case folding. `source` records where the answer lives, and `kind` says what the question proves.",
+  "questions": [
+    {
+      "id": "date-reception",
+      "kind": "fait-texte",
+      "q": "À partir de quelle date toutes les entreprises devront-elles être capables de recevoir des factures électroniques ?",
+      "expect": ["1er septembre 2026"],
+      "source": "CF-Guide-Facturation-Electronique-2025 / RFE & Association"
+    },
+    {
+      "id": "plateforme-reception",
+      "kind": "fait-texte",
+      "q": "Que faut-il choisir pour pouvoir réceptionner les factures électroniques ?",
+      "expect": ["plateforme agr"],
+      "source": "RFE & Association, RFE & SCI, RFE & Loueur en meublé"
+    },
+    {
+      "id": "cas9-qui-facture",
+      "kind": "tableau",
+      "q": "Dans le cas 9 (distributeur / dépositaire), qui vend, qui encaisse et qui facture ?",
+      "expect": ["vendeur", "distributeur"],
+      "source": "ExpertFactu 6 — tableau « Vue d'ensemble des 3 cas »",
+      "why": "La réponse n'existe que dans un tableau : sans conversion en Markdown, le modèle ne voit qu'une matrice JSON."
+    },
+    {
+      "id": "cas17b-marketplace",
+      "kind": "tableau",
+      "q": "Quelle est la différence entre le cas 17a et le cas 17b pour une marketplace ?",
+      "expect": ["mandat"],
+      "source": "ExpertFactu 6 — même tableau",
+      "why": "Distinction portée par une seule cellule : 17b = « Marketplace + mandat », et la marketplace facture pour le compte du vendeur."
+    },
+    {
+      "id": "cas33-marge",
+      "kind": "tableau",
+      "q": "Pour le cas 33 (régime de la marge), quel est le désalignement et quelle action le cabinet doit-il mener ?",
+      "expect": ["marge"],
+      "source": "ExpertFactu 9 — tableau des désalignements TVA",
+      "why": "Ligne de tableau à trois colonnes ; une lecture à plat mélangerait les colonnes."
+    },
+    {
+      "id": "cas29-assujetti-unique",
+      "kind": "tableau",
+      "q": "Que faut-il vérifier sur la facture dans le cas 29 de l'assujetti unique ?",
+      "expect": ["BT-29"],
+      "source": "ExpertFactu 9 — tableau des désalignements TVA",
+      "why": "Le code de champ n'apparaît que dans une cellule."
+    },
+    {
+      "id": "auto-facturation-emetteur",
+      "kind": "multi-hop",
+      "q": "En auto-facturation, qui produit le flux 1 et quelle plateforme agit comme plateforme d'émission ?",
+      "expect": ["acheteur"],
+      "source": "ExpertFactu 11 — « La Plateforme Agréée d'Émission = l'acheteur, qui produit le flux 1 »"
+    },
+    {
+      "id": "maillage-adressage",
+      "kind": "fait-texte",
+      "q": "Quelles sont les différentes mailles d'adressage possibles pour identifier un destinataire de facture ?",
+      "expect": ["siren"],
+      "source": "Maillage d'adressage — poster A2, grille 2×2"
+    },
+    {
+      "id": "cas-usages-liste",
+      "kind": "image-ocr",
+      "q": "Quels cas d'usage traitent des notes de débit et du mandat de facturation ?",
+      "expect": ["18", "19"],
+      "source": "La réponse de PL aux cas d'usages — document 100 % scanné",
+      "why": "Ce PDF n'a aucune couche texte (7 caractères extractibles). Sa contribution vient entièrement de l'OCR et des légendes VLM importées."
+    },
+    {
+      "id": "sci-tva-option",
+      "kind": "tableau",
+      "q": "Une SCI qui loue des locaux nus à usage professionnel sans option pour la TVA est-elle concernée par la réforme ?",
+      "expect": ["tva"],
+      "source": "RFE & SCI — tableau des situations SCI"
+    },
+    {
+      "id": "controle-negatif",
+      "kind": "controle-negatif",
+      "q": "Quel est le taux de TVA applicable aux exportations de véhicules électriques vers le Japon selon ce corpus ?",
+      "expect": [],
+      "why": "Hors sujet : une bonne réponse dit que le corpus ne le précise pas, au lieu d'inventer."
+    }
+  ]
+}
