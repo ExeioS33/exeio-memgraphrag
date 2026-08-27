@@ -125,7 +125,14 @@ def test_duplicate_triples_merge_passage_indices() -> None:
     assert 0 in memory.passage_layer[1].fact_indices
 
 
-def test_empty_extracted_triples_skipped() -> None:
+def test_passages_without_triples_are_still_indexed() -> None:
+    """A passage with no usable triple must still enter the passage layer.
+
+    These chunks used to be dropped entirely, which meant no PassageNode, no entry in
+    chunks_vdb, and therefore a chunk unreachable even by the dense fallback: a cover
+    page or a table of figures vanished from the corpus with no error. An orphan
+    passage carrying no fact still answers dense queries.
+    """
     data = {
         "docs": [
             {"idx": "empty-list", "passage": "No triples.", "extracted_triples": []},
@@ -140,8 +147,14 @@ def test_empty_extracted_triples_skipped() -> None:
     memory = ThreeLayerMemory()
     memory.build_from_raw_openie_results(data)
 
-    assert memory.passage_layer == []
+    assert [p.chunk_id for p in memory.passage_layer] == [
+        "empty-list",
+        "missing",
+        "invalid",
+    ]
+    # No triple was usable, so no fact — but the text remains retrievable.
     assert memory.fact_layer == []
+    assert all(not p.fact_indices for p in memory.passage_layer)
 
 
 def test_modality_field_default() -> None:

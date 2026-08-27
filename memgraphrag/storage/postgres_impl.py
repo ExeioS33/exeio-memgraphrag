@@ -2,19 +2,23 @@
 
 Simplified adaptation of LightRAG ``lightrag/kg/postgres_impl.py`` using
 asyncpg directly. Provides ``PGKVStorage``, ``PGVectorStorage`` (pgvector
-cosine), and ``PGDocStatusStorage``. Tables are created on ``initialize``.
+cosine), and ``PGDocStatusStorage``. Tables and indexes are created on
+``initialize``; all storages sharing a DSN share one reference-counted pool
+(``ClientManager``).
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, ClassVar
 
 from memgraphrag.base import BaseKVStorage, BaseVectorStorage, DocStatus, DocStatusStorage
 from memgraphrag.constants import EMBEDDING_DIM
+from memgraphrag.utils.env import get_env_value
 
 logger = logging.getLogger(__name__)
 
@@ -57,18 +61,156 @@ def _safe_ident(value: str) -> str:
     return cleaned.lower()[:50]
 
 
-async def _get_pool():
+def _pool_config() -> dict[str, Any]:
+    config = _pg_dsn()
+    # Two connections is the floor: one busy statement plus one for the next acquire.
+    config["max_connections"] = max(
+        2, get_env_value("POSTGRES_MAX_CONNECTIONS", 10, int)
+    )
+    return config
+
+
+async def _create_pool(config: dict[str, Any]) -> Any:
     import asyncpg
 
-    dsn = _pg_dsn()
     return await asyncpg.create_pool(
-        host=dsn["host"],
-        port=dsn["port"],
-        user=dsn["user"],
-        password=dsn["password"],
-        database=dsn["database"],
+        host=config["host"],
+        port=config["port"],
+        user=config["user"],
+        password=config["password"],
+        database=config["database"],
         min_size=1,
-        max_size=10,
+        max_size=config["max_connections"],
+    )
+
+
+class ClientManager:
+    """Reference-counted registry of asyncpg pools shared by the PG storages.
+
+    Every ``initialize()`` used to open a pool of its own. The engine builds nine
+    storages, eight of them on PostgreSQL, so a single worker opened ~80
+    connections against a server whose default ``max_connections`` is 100 — the
+    second worker could not even connect. Storages sharing a DSN now share one
+    pool, closed when the last of them calls ``release_client``.
+
+    Mirrors the ``ClientManager`` pattern of LightRAG ``lightrag/kg/postgres_impl.py``.
+    """
+
+    _pools: ClassVar[dict[tuple[Any, ...], dict[str, Any]]] = {}
+    _lock = asyncio.Lock()
+
+    @classmethod
+    async def get_client(cls) -> Any:
+        config = _pool_config()
+        async with cls._lock:
+            key = cls._pool_key(config)
+            entry = cls._pools.get(key)
+            if entry is None:
+                entry = {"pool": await _create_pool(config), "ref_count": 0}
+                cls._pools[key] = entry
+            entry["ref_count"] += 1
+            return entry["pool"]
+
+    @classmethod
+    async def release_client(cls, pool: Any) -> None:
+        """Drop one reference; close the pool once nobody holds it any more."""
+        if pool is None:
+            return
+        async with cls._lock:
+            for key, entry in list(cls._pools.items()):
+                if entry["pool"] is not pool:
+                    continue
+                entry["ref_count"] -= 1
+                if entry["ref_count"] <= 0:
+                    del cls._pools[key]
+                    await pool.close()
+                return
+        # Untracked pool (already released, or created before this manager existed):
+        # close it anyway rather than leaking its connections.
+        await pool.close()
+
+    @staticmethod
+    def _pool_key(config: dict[str, Any]) -> tuple[Any, ...]:
+        # An asyncpg pool belongs to the loop that created it, so the running loop is
+        # part of the pool identity: reusing one across loops awaits on a dead loop.
+        return (
+            id(asyncio.get_running_loop()),
+            config["host"],
+            config["port"],
+            config["user"],
+            config["database"],
+        )
+
+
+def _vector_index_ddl(table: str) -> str | None:
+    """Return the pgvector index DDL for ``table.embedding``, or ``None`` if disabled.
+
+    ``POSTGRES_VECTOR_INDEX_TYPE`` was documented in ``env.example`` but never read,
+    and no index was ever created, so every ``/query`` did a full sequential scan of
+    each vector collection. Accepted values: ``hnsw`` (default), ``ivfflat``, ``none``.
+
+    The operator class must be ``vector_cosine_ops``: queries order by ``<=>``, and
+    pgvector only uses an index whose operator matches the ordering operator.
+    """
+    index_type = str(
+        get_env_value("POSTGRES_VECTOR_INDEX_TYPE", "hnsw", str)
+    ).strip().lower()
+    if index_type in ("", "none", "off"):
+        return None
+    if index_type == "ivfflat":
+        lists = max(1, get_env_value("POSTGRES_IVFFLAT_LISTS", 100, int))
+        return (
+            f"CREATE INDEX IF NOT EXISTS {table}_embedding_idx ON {table} "
+            f"USING ivfflat (embedding vector_cosine_ops) WITH (lists = {lists})"
+        )
+    if index_type != "hnsw":
+        logger.warning(
+            "Unknown POSTGRES_VECTOR_INDEX_TYPE=%r, falling back to hnsw", index_type
+        )
+    m = max(2, get_env_value("POSTGRES_HNSW_M", 16, int))
+    ef_construction = max(4, get_env_value("POSTGRES_HNSW_EF", 64, int))
+    return (
+        f"CREATE INDEX IF NOT EXISTS {table}_embedding_idx ON {table} "
+        f"USING hnsw (embedding vector_cosine_ops) "
+        f"WITH (m = {m}, ef_construction = {ef_construction})"
+    )
+
+
+_EMBEDDING_COLUMN_SQL = """
+SELECT a.atttypmod AS typmod, format_type(a.atttypid, a.atttypmod) AS type_name
+FROM pg_attribute a
+JOIN pg_class c ON c.oid = a.attrelid
+JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE c.relname = $1
+  AND a.attname = 'embedding'
+  AND a.attnum > 0
+  AND NOT a.attisdropped
+  AND n.nspname = ANY(current_schemas(false))
+LIMIT 1
+"""
+
+
+async def _assert_embedding_dim(conn: Any, table: str, expected_dim: int) -> None:
+    """Fail fast when an existing table pins a different embedding dimension.
+
+    ``CREATE TABLE IF NOT EXISTS`` never alters an existing column, so raising
+    ``EMBEDDING_DIM`` on a populated database left ``VECTOR(<old dim>)`` in place and
+    every insert failed later with an opaque pgvector error. For pgvector the column
+    ``atttypmod`` holds the declared dimension.
+    """
+    row = await conn.fetchrow(_EMBEDDING_COLUMN_SQL, table)
+    if row is None:
+        return
+    actual_dim = int(row["typmod"] or 0)
+    if actual_dim <= 0 or actual_dim == expected_dim:
+        return
+    raise RuntimeError(
+        f"Embedding dimension mismatch on table {table}: the column is "
+        f"{row['type_name']} ({actual_dim} dimensions) while the configured "
+        f"embedding dimension is {expected_dim}. CREATE TABLE IF NOT EXISTS cannot "
+        f"change it. Either restore EMBEDDING_DIM={actual_dim}, or re-index into a "
+        f"fresh workspace, or run: ALTER TABLE {table} ALTER COLUMN embedding TYPE "
+        f"VECTOR({expected_dim}) after clearing the stale vectors."
     )
 
 
@@ -85,7 +227,7 @@ class PGKVStorage(BaseKVStorage):
         self._table = f"mgr_kv_{ws}_{ns}"
 
     async def initialize(self) -> None:
-        self._pool = await _get_pool()
+        self._pool = await ClientManager.get_client()
         async with self._pool.acquire() as conn:
             await conn.execute(
                 f"""
@@ -97,9 +239,8 @@ class PGKVStorage(BaseKVStorage):
             )
 
     async def finalize(self) -> None:
-        if self._pool is not None:
-            await self._pool.close()
-            self._pool = None
+        pool, self._pool = self._pool, None
+        await ClientManager.release_client(pool)
 
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         async with self._pool.acquire() as conn:
@@ -209,7 +350,7 @@ class PGVectorStorage(BaseVectorStorage):
         self._embedding_dim = int(emb_dim)
 
     async def initialize(self) -> None:
-        self._pool = await _get_pool()
+        self._pool = await ClientManager.get_client()
         async with self._pool.acquire() as conn:
             await conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
             await conn.execute(
@@ -222,11 +363,27 @@ class PGVectorStorage(BaseVectorStorage):
                 )
                 """
             )
+            await _assert_embedding_dim(conn, self._table, self._embedding_dim)
+            await self._ensure_vector_index(conn)
+
+    async def _ensure_vector_index(self, conn: Any) -> None:
+        """Create the ANN index; a backend that cannot build it must still serve."""
+        ddl = _vector_index_ddl(self._table)
+        if ddl is None:
+            return
+        try:
+            await conn.execute(ddl)
+        except Exception as exc:  # noqa: BLE001 - an index is an optimisation, not a requirement
+            logger.warning(
+                "Could not create the vector index on %s, queries fall back to a "
+                "sequential scan: %s",
+                self._table,
+                exc,
+            )
 
     async def finalize(self) -> None:
-        if self._pool is not None:
-            await self._pool.close()
-            self._pool = None
+        pool, self._pool = self._pool, None
+        await ClientManager.release_client(pool)
 
     async def query(
         self, query_embedding: list[float], top_k: int
@@ -324,7 +481,7 @@ class PGDocStatusStorage(DocStatusStorage):
         self._table = f"mgr_doc_{ws}_{ns}"
 
     async def initialize(self) -> None:
-        self._pool = await _get_pool()
+        self._pool = await ClientManager.get_client()
         async with self._pool.acquire() as conn:
             await conn.execute(
                 f"""
@@ -341,9 +498,8 @@ class PGDocStatusStorage(DocStatusStorage):
             )
 
     async def finalize(self) -> None:
-        if self._pool is not None:
-            await self._pool.close()
-            self._pool = None
+        pool, self._pool = self._pool, None
+        await ClientManager.release_client(pool)
 
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         async with self._pool.acquire() as conn:

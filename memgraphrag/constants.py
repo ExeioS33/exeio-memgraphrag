@@ -22,8 +22,17 @@ SCHEMA_NODE_WEIGHT = 0.1
 # Ontology / conflict construction
 ONTOLOGY_BATCH_SIZE = 20
 ONTOLOGY_MIN_FREQUENCY = 2
+# Safety valve for the ontology filter. A corpus small enough that almost every
+# schema is seen once carries no frequency signal, and applying an absolute
+# threshold there would deactivate nearly the whole fact layer. Above this fraction
+# the filter is skipped and logged instead of silently emptying the index.
+ONTOLOGY_MAX_DEACTIVATION_RATIO = 0.5
 CONFLICT_ENABLED = True
 CONFLICT_MAX_GROUPS = 50
+# Minimum LLM self-reported confidence before a detected conflict is acted on.
+# Resolution may DISCARD a fact, so an unguarded hallucinated conflict destroys
+# correct knowledge. Aligned with the research implementation.
+CONFLICT_MIN_CONFIDENCE = 0.85
 
 # Chunking
 CHUNK_SIZE = 1200

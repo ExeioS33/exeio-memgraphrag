@@ -11,6 +11,7 @@ import asyncio
 import logging
 import os
 import time
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -38,6 +39,8 @@ class NanoVectorDBStorage(BaseVectorStorage):
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False, repr=False)
     cosine_better_than_threshold: float = field(default=0.0, init=False, repr=False)
     _embedding_dim: int = field(default=EMBEDDING_DIM, init=False, repr=False)
+    _dirty: bool = field(default=False, init=False, repr=False)
+    _batch_depth: int = field(default=0, init=False, repr=False)
 
     def __post_init__(self) -> None:
         working_dir = self.global_config.get("working_dir", "./data/rag_storage")
@@ -71,8 +74,40 @@ class NanoVectorDBStorage(BaseVectorStorage):
         )
 
     async def finalize(self) -> None:
+        self._batch_depth = 0
+        await self._flush(force=True)
+
+    @asynccontextmanager
+    async def batch(self):
+        """Defer ``save()`` until the outermost batch exits.
+
+        ``save()`` serialises every vector of the namespace, so upserting N chunks one
+        call at a time rewrites the whole store N times — O(N^2) bytes, on the event
+        loop. Callers writing many vectors should wrap the loop::
+
+            async with storage.batch():
+                ...  # many upserts, one save at the end
+        """
+        self._batch_depth += 1
+        try:
+            yield self
+        finally:
+            self._batch_depth -= 1
+            if self._batch_depth <= 0:
+                self._batch_depth = 0
+                await self._flush()
+
+    async def _flush(self, *, force: bool = False) -> None:
+        # Inside a batch, only the dirty flag matters; the outermost exit saves once.
+        if self._batch_depth > 0 and not force:
+            return
         async with self._lock:
-            self._client.save()
+            if not self._dirty:
+                return
+            client = self._client
+            # save() is blocking CPU+IO (matrix serialisation); keep it off the loop.
+            await asyncio.to_thread(client.save)
+            self._dirty = False
 
     async def query(
         self, query_embedding: list[float], top_k: int
@@ -124,14 +159,16 @@ class NanoVectorDBStorage(BaseVectorStorage):
             )
         async with self._lock:
             self._client.upsert(datas=list_data)
-            self._client.save()
+            self._dirty = True
+        await self._flush()
 
     async def delete(self, ids: list[str]) -> None:
         if not ids:
             return
         async with self._lock:
             self._client.delete(ids)
-            self._client.save()
+            self._dirty = True
+        await self._flush()
 
     async def drop(self) -> None:
         async with self._lock:
@@ -146,3 +183,6 @@ class NanoVectorDBStorage(BaseVectorStorage):
                 self._embedding_dim,
                 storage_file=self._file_name,
             )
+            # The file is gone and the client is empty: nothing left to flush, and a
+            # pending save from before the drop must not resurrect it.
+            self._dirty = False

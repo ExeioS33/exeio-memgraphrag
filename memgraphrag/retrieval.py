@@ -1,10 +1,18 @@
 """Retrieval state manager for MemGraphRAG PPR warm-up and refresh.
 
 Provenance: replaces the research repo's one-shot ``prepare_retrieval_objects``
-warm-up (``MemGraphRAG/code/src/MemGraphRAG.py``) with an industrial lifecycle:
-eager hydration, incremental igraph updates after indexing batches, versioned
-full-reload fallback, and cross-worker refresh signals via
-``memgraphrag.storage.shared``.
+warm-up (``MemGraphRAG/code/src/MemGraphRAG.py``) with a fuller lifecycle: eager
+hydration, incremental igraph updates after indexing batches, and a versioned
+full-reload fallback.
+
+Status: **not wired into the running service.** The API server warms up through
+``MemGraphRAG.prepare_retrieval()`` in its lifespan, so nothing outside
+``tests/`` imports this module today. It is kept because the planned refresh
+path (re-hydrate after an ingest batch instead of re-preparing the whole engine)
+builds on it; treat it as unproven until then. The refresh signals it exchanges
+through ``memgraphrag.storage.shared`` are process-local, not cross-worker —
+which is one reason ``WORKERS > 1`` is refused for file-backed storage (see
+``memgraphrag.api.config.validate_worker_count``).
 """
 
 from __future__ import annotations
@@ -171,7 +179,11 @@ class RetrievalStateManager:
         )
 
     async def consume_cross_worker_signal(self) -> bool:
-        """If another worker signaled refresh, run ``full_reload``.
+        """If a refresh was signaled, run ``full_reload``.
+
+        Despite the name the flag never crosses a process boundary:
+        ``memgraphrag.storage.shared`` is an in-process dict, so only signals
+        raised by this interpreter are ever seen.
 
         Returns:
             ``True`` if a reload was performed.
@@ -180,7 +192,7 @@ class RetrievalStateManager:
         if not pending:
             return False
         logger.info(
-            "Cross-worker refresh signal consumed for workspace=%r", self.workspace
+            "Retrieval refresh signal consumed for workspace=%r", self.workspace
         )
         await self.full_reload()
         return True

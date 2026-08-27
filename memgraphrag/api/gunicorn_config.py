@@ -2,17 +2,33 @@
 
 Adapted from LightRAG ``lightrag/api/gunicorn_config.py`` (thin wrapper).
 Variables may be overridden by ``gunicorn_runner.py`` via ``cfg.set``.
+
+Gunicorn loads this file as the master's configuration, so it doubles as an entry
+point: ``gunicorn -c memgraphrag/api/gunicorn_config.py`` bypasses
+``gunicorn_runner`` entirely and must therefore load ``.env`` and re-run the
+worker-count check itself.
 """
 
 from __future__ import annotations
 
 import os
 
+from memgraphrag.api.config import load_env_file, validate_worker_count
+
+load_env_file()
+
 bind = os.getenv("MEMGRAPHRAG_GUNICORN_BIND", "0.0.0.0:9621")
 workers = int(os.getenv("MEMGRAPHRAG_GUNICORN_WORKERS", "1"))
 loglevel = os.getenv("MEMGRAPHRAG_GUNICORN_LOGLEVEL", "info")
 certfile = os.getenv("MEMGRAPHRAG_GUNICORN_CERTFILE") or None
 keyfile = os.getenv("MEMGRAPHRAG_GUNICORN_KEYFILE") or None
+
+# Abort the master before any worker forks: that is the last moment at which a
+# shared file-backed WORKING_DIR is still intact.
+try:
+    validate_worker_count(workers)
+except ValueError as exc:
+    raise SystemExit(str(exc)) from exc
 
 preload_app = True
 worker_class = "uvicorn.workers.UvicornWorker"

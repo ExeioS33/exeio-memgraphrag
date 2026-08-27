@@ -164,20 +164,21 @@ class ThreeLayerMemory:
             passage_text = doc.get("passage", "")
             triple_entries = doc.get("extracted_triples") or []
 
-            if not isinstance(triple_entries, list) or not triple_entries:
-                continue
-
-            # Normalize first so docs with only invalid entries are skipped
-            # (no orphan passages with empty fact_indices).
             valid_triples: List[Tuple[str, str, str]] = []
-            for item in triple_entries:
-                triple_tuple = self._triple_tuple_from_openie_item(item)
-                if triple_tuple is not None:
-                    valid_triples.append(triple_tuple)
+            if isinstance(triple_entries, list):
+                for item in triple_entries:
+                    triple_tuple = self._triple_tuple_from_openie_item(item)
+                    if triple_tuple is not None:
+                        valid_triples.append(triple_tuple)
+
+            # Create the passage even with no usable triple. Skipping it used to make
+            # the chunk absent from the passage layer, hence from chunks_vdb, hence
+            # unreachable even by the dense fallback: a table of figures or a cover
+            # page silently disappeared from the corpus. An orphan passage still
+            # answers dense queries; a missing one answers nothing.
+            passage_idx = self._get_or_create_passage(chunk_id, passage_text)
             if not valid_triples:
                 continue
-
-            passage_idx = self._get_or_create_passage(chunk_id, passage_text)
 
             for triple_tuple in valid_triples:
                 fact_idx = self._get_or_create_fact(triple_tuple, schema_idx=-1)

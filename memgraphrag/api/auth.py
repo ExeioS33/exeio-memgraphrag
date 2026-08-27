@@ -2,6 +2,8 @@
 
 Adapted from LightRAG ``lightrag/api/auth.py`` — slim AuthHandler using python-jose
 JWT and optional bcrypt with plaintext fallback for POC.
+
+Importing this module reads no ``.env``; see ``config.load_env_file``.
 """
 
 from __future__ import annotations
@@ -12,11 +14,7 @@ import os
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from dotenv import load_dotenv
-
 from memgraphrag.api.config import DEFAULT_TOKEN_SECRET, global_args
-
-load_dotenv(dotenv_path=".env", override=False)
 
 logger = logging.getLogger("memgraphrag.api.auth")
 

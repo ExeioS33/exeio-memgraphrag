@@ -28,12 +28,14 @@ from memgraphrag.base import (
 from memgraphrag.constants import (
     CONFLICT_ENABLED,
     CONFLICT_MAX_GROUPS,
+    CONFLICT_MIN_CONFIDENCE,
     DAMPING,
     EMBEDDING_DIM,
     FACT_SIMILARITY_THRESHOLD,
     LINKING_TOP_K,
     MAX_ASYNC_LLM,
     ONTOLOGY_BATCH_SIZE,
+    ONTOLOGY_MAX_DEACTIVATION_RATIO,
     ONTOLOGY_MIN_FREQUENCY,
     PASSAGE_NODE_WEIGHT,
     PPR_ENGINE,
@@ -118,6 +120,23 @@ def _hit_score(hit: Mapping[str, Any]) -> float:
         return float(raw)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _is_cached_openie(rec: Any) -> bool:
+    """Whether a stored OpenIE record counts as a cache hit.
+
+    A record that extracted successfully but found nothing is still a hit: treating
+    "empty" as "missing" re-ran two LLM calls for that chunk on every single insert,
+    forever. Records written before the ``failed`` flag existed are recognised by
+    their content.
+    """
+    if not isinstance(rec, dict):
+        return False
+    if rec.get("failed"):
+        return False
+    if "failed" in rec:
+        return True
+    return bool(rec.get("extracted_triples") or rec.get("extracted_entities"))
 
 
 def _corpus_entity_surfaces(memory: Any, openie_docs: Sequence[dict] | None) -> list[str]:
@@ -284,6 +303,9 @@ class MemGraphRAG:
         self._ppr: PPREngine | None = None
         self._passage_ids: list[str] = []
         self._entity_ids: list[str] = []
+        self._inactive_fact_idxs: set[int] = set()
+        # Guards the corpus rewrite (embed + graph install) against readers.
+        self._corpus_lock = asyncio.Lock()
         self._fact_ids: list[str] = []
         self._schema_ids: list[str] = []
         self._passage_id_to_content: dict[str, str] = {}
@@ -566,12 +588,62 @@ class MemGraphRAG:
         return memory
 
     async def filter_ontology(self, memory: ThreeLayerMemory) -> ThreeLayerMemory:
-        """Frequency-based ontology filter with schema reindexing."""
+        """Frequency-based ontology filter with schema reindexing.
+
+        Two defects are addressed here. First, the filter used to prune only the
+        schema layer: facts whose schema was dropped kept living in ``fact_layer``,
+        so they stayed in ``facts_vdb`` and in the graph and remained fully
+        retrievable. ``ONTOLOGY_MIN_FREQUENCY`` therefore moved schema seeds and
+        FACT_SCHEMA edges but never affected factual recall — the very thing the
+        paper's ablation measures. We now track which facts the filter deactivates
+        and exclude them from the vector store and from the graph.
+
+        Second, making the filter real exposes a trap: with an absolute threshold on
+        a small corpus, nearly every schema is seen once, so the filter would
+        deactivate almost every fact and silently empty the index. A corpus that
+        small simply carries no frequency signal, so we skip filtering rather than
+        destroy it, and say so in the log.
+        """
         min_freq = get_env_value(
             "ONTOLOGY_MIN_FREQUENCY", ONTOLOGY_MIN_FREQUENCY, int
         )
+        max_deactivation = get_env_value(
+            "ONTOLOGY_MAX_DEACTIVATION_RATIO", ONTOLOGY_MAX_DEACTIVATION_RATIO, float
+        )
         before = len(memory.schema_layer)
+        self._inactive_fact_idxs = set()
+
+        if min_freq <= 0:
+            stage(logger, "Ontology filtering", before=before, min_frequency=min_freq, noop=True)
+            return memory
+
+        # Dry run: how much of the fact layer would this threshold silence?
+        typed_before = {f.idx for f in memory.fact_layer if f.schema_idx >= 0}
+        doomed = {
+            idx
+            for schema in memory.schema_layer
+            if (schema.frequency or 0) < min_freq
+            for idx in (schema.fact_indices or [])
+        }
+        ratio = (len(doomed) / len(typed_before)) if typed_before else 0.0
+
+        if typed_before and ratio > max_deactivation:
+            stage(
+                logger,
+                "Ontology filtering",
+                before=before,
+                min_frequency=min_freq,
+                skipped="corpus too small for frequency signal",
+                would_deactivate_facts=len(doomed),
+                typed_facts=len(typed_before),
+                ratio=round(ratio, 3),
+                max_ratio=max_deactivation,
+            )
+            return memory
+
         stats = memory.filter_schemas_by_frequency(min_freq)
+        typed_after = {f.idx for f in memory.fact_layer if f.schema_idx >= 0}
+        self._inactive_fact_idxs = typed_before - typed_after
         stage(
             logger,
             "Ontology filtering",
@@ -579,9 +651,16 @@ class MemGraphRAG:
             kept=stats["kept"],
             dropped=stats["dropped"],
             min_frequency=min_freq,
-            noop=min_freq <= 0,
+            deactivated_facts=len(self._inactive_fact_idxs),
         )
         return memory
+
+    def _active_facts(self, memory: ThreeLayerMemory) -> list[Any]:
+        """Facts that survived ontology filtering (see ``filter_ontology``)."""
+        inactive = getattr(self, "_inactive_fact_idxs", None) or set()
+        if not inactive:
+            return list(memory.fact_layer)
+        return [f for f in memory.fact_layer if f.idx not in inactive]
 
     def _conflict_candidate_groups(
         self, memory: ThreeLayerMemory, max_groups: int
@@ -595,7 +674,7 @@ class MemGraphRAG:
             rt.setdefault((r, t), []).append(fact.idx)
 
         seen: set[frozenset[int]] = set()
-        groups: list[list[int]] = []
+        candidates: list[list[int]] = []
         for bucket in list(hr.values()) + list(rt.values()):
             uniq = sorted(set(bucket))
             if len(uniq) < 2:
@@ -604,10 +683,16 @@ class MemGraphRAG:
             if key in seen:
                 continue
             seen.add(key)
-            groups.append(uniq)
-            if len(groups) >= max_groups:
-                break
-        return groups
+            candidates.append(uniq)
+
+        # The cap used to `break` out of the loop, so the surviving groups were
+        # whichever came first in an order derived from the MD5 sort of chunk ids —
+        # arbitrary, and reshuffled on every ingest, meaning a newly added document's
+        # conflicts could simply never be examined. Rank instead: the biggest buckets
+        # are the most ambiguous, so they earn the budget, and the ordering is stable.
+        candidates.sort(key=lambda g: (-len(g), g))
+        self._conflict_groups_truncated = max(0, len(candidates) - max_groups)
+        return candidates[:max_groups]
 
     async def detect_conflicts(self, memory: ThreeLayerMemory) -> dict[str, Any]:
         """Detect hard conflicts among fact groups via LLM."""
@@ -633,17 +718,31 @@ class MemGraphRAG:
             1, get_env_value("CONFLICT_MAX_GROUPS", CONFLICT_MAX_GROUPS, int)
         )
         groups = self._conflict_candidate_groups(memory, max_groups)
+        truncated = getattr(self, "_conflict_groups_truncated", 0)
         stage(
             logger,
             "Detecting conflicts",
             groups=len(groups),
             max_groups=max_groups,
+            # Silent truncation reads as "no conflicts" to an operator. Surface it.
+            groups_skipped_over_budget=truncated,
             agent="conflict.detect",
         )
+        if truncated:
+            logger.warning(
+                "Conflict detection budget exhausted: %d candidate groups were not "
+                "examined (CONFLICT_MAX_GROUPS=%d). Raise the budget or expect "
+                "undetected conflicts.",
+                truncated,
+                max_groups,
+            )
         if not groups:
             return result
 
         sem = asyncio.Semaphore(max(1, self.max_async_llm))
+        min_confidence = get_env_value(
+            "CONFLICT_MIN_CONFIDENCE", CONFLICT_MIN_CONFIDENCE, float
+        )
         hard: list[dict[str, Any]] = []
 
         async def _check_group(idxs: list[int]) -> list[dict[str, Any]]:
@@ -674,6 +773,21 @@ class MemGraphRAG:
                 if not isinstance(item, dict):
                     continue
                 if not item.get("is_hard_conflict"):
+                    continue
+                # Guard rails the research code has and this port had lost. Without
+                # them a single hallucinated `is_hard_conflict: true` is enough to
+                # destroy a correct fact, since resolution may discard triples.
+                if str(item.get("conflict_type") or "").strip().lower() in (
+                    "duplicate",
+                    "none",
+                    "uncertain",
+                ):
+                    continue
+                try:
+                    confidence = float(item.get("confidence", 1.0))
+                except (TypeError, ValueError):
+                    confidence = 0.0
+                if confidence < min_confidence:
                     continue
                 # Attach fact indices when triples match
                 t1 = item.get("triple1")
@@ -735,8 +849,7 @@ class MemGraphRAG:
             return memory, resolution
 
         # Build evidence bundles keyed by conflict pairs / groups
-        bundles: list[str] = []
-        for item in hard:
+        def _bundle_for(item: Mapping[str, Any]) -> str:
             t1 = item.get("triple1")
             t2 = item.get("triple2")
             idx1 = item.get("fact_idx1")
@@ -754,43 +867,90 @@ class MemGraphRAG:
                     sources.append(
                         f"fact={list(fact.content)} fact_idx={fidx} passage={preview}"
                     )
-            bundles.append(
+            return (
                 f"conflict_type={item.get('conflict_type')}\n"
                 f"triple1={t1}\ntriple2={t2}\n"
                 f"reason={item.get('conflict_reason')}\n"
                 f"sources:\n" + "\n---\n".join(sources)
             )
 
-        user = CONFLICT_RESOLUTION_USER_TEMPLATE.substitute(
-            conflicting_triples_with_sources="\n\n====\n\n".join(bundles)
+        bundles = [_bundle_for(item) for item in hard]
+
+        # Batch by an explicit character budget. Every hard conflict, with up to 800
+        # characters of evidence per source passage, used to be concatenated into ONE
+        # unbounded prompt: past the context window the call raised, the except below
+        # returned an all-zero summary, and the document was still marked PROCESSED —
+        # "resolution failed" was indistinguishable from "no conflict found".
+        budget = max(
+            2000, get_env_value("CONFLICT_RESOLUTION_CHAR_BUDGET", 24000, int)
         )
+        batches: list[list[int]] = []
+        current: list[int] = []
+        current_chars = 0
+        for i, bundle in enumerate(bundles):
+            size = len(bundle)
+            if current and current_chars + size > budget:
+                batches.append(current)
+                current, current_chars = [], 0
+            current.append(i)
+            current_chars += size
+        if current:
+            batches.append(current)
+
         stage(
             logger,
             "Resolving conflicts",
             conflicts=len(hard),
+            batches=len(batches),
+            char_budget=budget,
             agent="conflict.resolve",
         )
-        try:
-            raw = await self.llm_model_func(
-                user,
-                system_prompt=CONFLICT_RESOLUTION_SYSTEM,
-                agent="conflict.resolve",
-                llm_action="complete",
-            )
-        except Exception as exc:
-            fail_step(logger, "conflict.resolve", exc=exc)
-            return memory, resolution
 
-        data = extract_json_object(str(raw))
-        resolved_items = data.get("resolved_triples") or []
-        if not isinstance(resolved_items, list):
-            fail_step(
-                logger,
-                "conflict.resolve",
-                reason="unparsed",
-                response_chars=len(str(raw)),
+        resolved_items: list[Any] = []
+        failed_batches = 0
+        for batch in batches:
+            user = CONFLICT_RESOLUTION_USER_TEMPLATE.substitute(
+                conflicting_triples_with_sources="\n\n====\n\n".join(
+                    bundles[i] for i in batch
+                )
             )
-            return memory, resolution
+            try:
+                raw = await self.llm_model_func(
+                    user,
+                    system_prompt=CONFLICT_RESOLUTION_SYSTEM,
+                    agent="conflict.resolve",
+                    llm_action="complete",
+                )
+            except Exception as exc:
+                # One failed batch no longer discards the others.
+                failed_batches += 1
+                fail_step(logger, "conflict.resolve", exc=exc, batch_size=len(batch))
+                continue
+            data = extract_json_object(str(raw))
+            items = data.get("resolved_triples") or []
+            if not isinstance(items, list):
+                failed_batches += 1
+                fail_step(
+                    logger,
+                    "conflict.resolve",
+                    reason="unparsed",
+                    response_chars=len(str(raw)),
+                )
+                continue
+            resolved_items.extend(items)
+
+        # Make partial failure visible: an operator must be able to tell a clean run
+        # from one where resolutions were lost.
+        resolution["summary"]["failed_batches"] = failed_batches
+        resolution["summary"]["batches"] = len(batches)
+        if failed_batches:
+            logger.warning(
+                "Conflict resolution: %d/%d batches failed; %d conflicts may remain "
+                "unresolved in the memory graph.",
+                failed_batches,
+                len(batches),
+                len(hard),
+            )
 
         def _find_fact(triple: Sequence[str]) -> int | None:
             key = self._triple_lookup_key(triple)
@@ -917,10 +1077,28 @@ class MemGraphRAG:
         extra_chunk_ids: Sequence[str] | None = None,
         exclude_doc_ids: set[str] | None = None,
     ) -> list[dict[str, Any]]:
-        """Load cached OpenIE docs for all PROCESSED corpus chunks (+ extras)."""
+        """Load cached OpenIE docs for the whole corpus (+ the chunks being inserted).
+
+        The corpus is the union of two sources, because the engine is used two ways:
+
+        * through the API pipeline, which records PROCESSED documents with their
+          ``chunk_ids`` in doc-status;
+        * embedded, calling ``ainsert`` directly (the path documented in
+          ``docs/ProgramingWithCore.md``), which never writes doc-status at all.
+
+        Deriving the corpus from doc-status alone made the embedded path destructive:
+        the second ``ainsert`` saw only its own batch as the corpus, so
+        ``_embed_and_store_memory`` computed every previously indexed passage as an
+        orphan and deleted it. Chunks known to the OpenIE cache but claimed by no
+        doc-status record are therefore kept.
+        """
         chunk_ids: set[str] = set(str(c) for c in (extra_chunk_ids or []) if c)
         all_docs = await self._doc_status_all()
+        claimed: set[str] = set()
         for doc_id, record in all_docs.items():
+            for cid in record.get("chunk_ids") or []:
+                if cid:
+                    claimed.add(str(cid))
             if exclude_doc_ids and doc_id in exclude_doc_ids:
                 continue
             if str(record.get("status") or "") != DocStatus.PROCESSED.value:
@@ -929,12 +1107,20 @@ class MemGraphRAG:
                 if cid:
                     chunk_ids.add(str(cid))
 
-        if not chunk_ids:
-            try:
-                cached = await self.openie_kv.get_all()
-            except Exception:
-                cached = {}
+        try:
+            cached = await self.openie_kv.get_all()
+        except Exception:
+            cached = {}
+
+        if not chunk_ids and not claimed:
+            # No document tracking at all (embedded use): the cache *is* the corpus.
             return [dict(v) for v in cached.values() if isinstance(v, dict)]
+
+        # Chunks nobody claims belong to embedded inserts; dropping them would delete
+        # their vectors on the next insert.
+        for cid in cached:
+            if str(cid) not in claimed:
+                chunk_ids.add(str(cid))
 
         id_list = sorted(chunk_ids)
         records = await self.openie_kv.get_by_ids(id_list)
@@ -1060,8 +1246,7 @@ class MemGraphRAG:
         missing_chunks = [
             prepared[i]
             for i, rec in enumerate(existing)
-            if not isinstance(rec, dict)
-            or not (rec.get("extracted_triples") or rec.get("extracted_entities"))
+            if not _is_cached_openie(rec)
         ]
         stage(
             logger,
@@ -1072,7 +1257,21 @@ class MemGraphRAG:
         )
         if missing_chunks:
             new_docs = await self.openie.batch_openie(missing_chunks)
-            await self.openie_kv.upsert({d["idx"]: d for d in new_docs})
+            # Never cache a failed extraction: it would freeze a provider outage into
+            # a permanent "this chunk has no facts". Only successful runs are stored,
+            # including successful-but-empty ones (flagged so they are not re-billed
+            # on every later insert).
+            ok_docs = [d for d in new_docs if not d.get("failed")]
+            failed_docs = [d for d in new_docs if d.get("failed")]
+            if ok_docs:
+                await self.openie_kv.upsert({d["idx"]: d for d in ok_docs})
+            if failed_docs:
+                sample = failed_docs[0].get("error", "")
+                raise PipelineError(
+                    f"OpenIE failed for {len(failed_docs)}/{len(new_docs)} chunks "
+                    f"({sample}). The document is left unindexed rather than stored "
+                    f"as fact-free and silently unreachable."
+                )
         stage(logger, "OpenIE cache ready", docs=len(batch_ids))
 
         openie_docs = await self._load_corpus_openie_docs(extra_chunk_ids=batch_ids)
@@ -1088,13 +1287,23 @@ class MemGraphRAG:
             schemas=len(memory.schema_layer),
             corpus_openie=len(openie_docs),
         )
-        await self._embed_and_store_memory(memory, openie_docs)
-        stage(logger, "Constructing Graph")
-        await self._install_memory_graph(memory)
-
-        await self.memory_kv.upsert({"memory": memory.to_dict()})
-        self.memory = memory
+        # Mark the retrieval state stale BEFORE touching the stores, and hold the
+        # corpus lock across the whole rewrite. Readiness used to be cleared only
+        # AFTER the rebuild, while _install_memory_graph starts with graph.clear():
+        # a query landing in that window still saw ready_to_retrieve=True, skipped
+        # prepare_retrieval, and answered HTTP 200 from a half-empty graph. Worse,
+        # _embed_and_store_memory rewrote the schema-id maps before `self.memory` was
+        # swapped, so a concurrent query resolved a NEW schema id against the OLD
+        # memory object and seeded PPR on unrelated entities.
         self.ready_to_retrieve = False
+        async with self._corpus_lock:
+            await self._embed_and_store_memory(memory, openie_docs)
+            stage(logger, "Constructing Graph")
+            await self._install_memory_graph(memory)
+
+            await self.memory_kv.upsert({"memory": memory.to_dict()})
+            self.memory = memory
+            self.ready_to_retrieve = False
         stats = {
             "num_passages": len(memory.passage_layer),
             "num_facts": len(memory.fact_layer),
@@ -1177,10 +1386,13 @@ class MemGraphRAG:
                 }
             )
 
-        # Facts
+        # Facts — only those the ontology filter left active. Deactivated facts used
+        # to stay indexed and fully retrievable, which is why ONTOLOGY_MIN_FREQUENCY
+        # never changed an answer.
+        active_facts = self._active_facts(memory)
         fact_ids = [
             compute_mdhash_id(_triple_str(f.content), prefix="fact-")
-            for f in memory.fact_layer
+            for f in active_facts
         ]
         new_facts = set(fact_ids)
         orphan_facts = sorted(old_ids["facts"] - new_facts)
@@ -1190,13 +1402,13 @@ class MemGraphRAG:
         if orphan_facts:
             await self.facts_vdb.delete(orphan_facts)
         if add_facts:
-            texts = ["\t".join(memory.fact_layer[i].content) for i in add_facts]
+            texts = ["\t".join(active_facts[i].content) for i in add_facts]
             emb = await self._embed_batch(texts)
             fact_payload = {
                 fact_ids[add_facts[j]]: {
-                    "content": _triple_str(memory.fact_layer[add_facts[j]].content),
+                    "content": _triple_str(active_facts[add_facts[j]].content),
                     "embedding": emb[j].tolist(),
-                    "triple": list(memory.fact_layer[add_facts[j]].content),
+                    "triple": list(active_facts[add_facts[j]].content),
                 }
                 for j in range(len(add_facts))
             }
@@ -1335,8 +1547,17 @@ class MemGraphRAG:
                 },
             )
 
-        for fact in memory.fact_layer:
-            h, _r, t = fact.content
+        # Accumulate before writing. Two reasons: the entity<->entity weight is the
+        # number of facts joining the pair (so it is only known after the whole
+        # sweep), and the entity->passage edge used to be re-upserted once per
+        # (fact x endpoint x passage), rewriting the same edge many times over.
+        entity_relations: dict[tuple[str, str], dict[str, Any]] = {}
+        entity_passage_edges: set[tuple[str, str]] = set()
+        entity_types: dict[str, set[str]] = {}
+        type_members: dict[str, set[str]] = {}
+
+        for fact in self._active_facts(memory):
+            h, rel, t = fact.content
             fid = compute_mdhash_id(_triple_str(fact.content), prefix="fact-")
             await self.graph.upsert_node(
                 fid,
@@ -1349,8 +1570,10 @@ class MemGraphRAG:
                 },
             )
 
+            endpoint_ids: list[str] = []
             for ent in (h, t):
                 eid = compute_mdhash_id(str(ent).strip().lower(), prefix="entity-")
+                endpoint_ids.append(eid)
                 if not await self.graph.has_node(eid):
                     await self.graph.upsert_node(
                         eid,
@@ -1366,12 +1589,24 @@ class MemGraphRAG:
                     if passage is None:
                         continue
                     pid = passage.chunk_id
-                    await self.graph.upsert_edge(
-                        eid,
-                        pid,
-                        {"type": "PASSAGE_ENTITY", "weight": 1.0},
-                    )
+                    entity_passage_edges.add((eid, pid))
                     entity_to_passages.setdefault(eid, set()).add(pid)
+
+            # G_fac: the instantiated fact edge between the two entities. This is the
+            # paper's "primary reasoning substrate" and it was simply missing — the
+            # graph was bipartite {entity, fact} <-> {chunk}, so a multi-hop chain
+            # like Einstein -born_in-> Germany -capital-> Berlin had no path unless
+            # the three entities happened to share a chunk, and PPR degenerated into
+            # two-hop passage co-occurrence.
+            head_id, tail_id = endpoint_ids[0], endpoint_ids[1]
+            if head_id != tail_id:
+                key = (head_id, tail_id) if head_id < tail_id else (tail_id, head_id)
+                entry = entity_relations.setdefault(
+                    key, {"weight": 0.0, "relations": []}
+                )
+                entry["weight"] += 1.0
+                if len(entry["relations"]) < 8:
+                    entry["relations"].append(str(rel))
 
             for pidx in fact.passage_indices:
                 passage = memory.get_passage_by_idx(pidx)
@@ -1392,6 +1627,52 @@ class MemGraphRAG:
                         sid,
                         {"type": "FACT_SCHEMA", "weight": 1.0},
                     )
+                    # A fact's schema types its endpoints: (h, r, t) instantiates
+                    # (h_type, r, t_type), so h is an h_type and t is a t_type.
+                    h_type, _srel, t_type = schema.content
+                    for ent_id, type_name in (
+                        (head_id, h_type),
+                        (tail_id, t_type),
+                    ):
+                        tid = compute_mdhash_id(
+                            str(type_name).strip().lower(), prefix="type-"
+                        )
+                        entity_types.setdefault(ent_id, set()).add(tid)
+                        type_members.setdefault(tid, set()).add(ent_id)
+
+        for (src, tgt), entry in entity_relations.items():
+            await self.graph.upsert_edge(
+                src,
+                tgt,
+                {
+                    "type": "ENTITY_RELATION",
+                    "weight": float(entry["weight"]),
+                    "relations": entry["relations"],
+                },
+            )
+
+        for eid, pid in entity_passage_edges:
+            await self.graph.upsert_edge(
+                eid,
+                pid,
+                {"type": "PASSAGE_ENTITY", "weight": 1.0},
+            )
+
+        # Wire the ontology layer into the graph. Type nodes existed but the only
+        # edges touching them joined two type nodes, leaving the whole layer as an
+        # isolated component that could neither receive nor pass PPR mass. The type
+        # is meant to be a transit hub between co-typed entities, weighted
+        # 1/|entities of the type| so a generic type does not flood the walk.
+        for tid, members in type_members.items():
+            if not members:
+                continue
+            weight = 1.0 / float(len(members))
+            for eid in members:
+                await self.graph.upsert_edge(
+                    eid,
+                    tid,
+                    {"type": "ENTITY_TO_TYPE", "weight": weight},
+                )
 
         self._entity_to_passages = entity_to_passages
 
@@ -1402,11 +1683,20 @@ class MemGraphRAG:
     async def _chunk_refcount(
         self, exclude_doc_ids: set[str] | None = None
     ) -> dict[str, int]:
-        """Count how many docs reference each chunk id."""
+        """Count how many *live* docs reference each chunk id.
+
+        Only PROCESSED documents count. Counting every status kept a FAILED or stale
+        PENDING record propping up chunks it never successfully contributed, so
+        deleting the document that really owned them left the chunks behind as
+        permanent orphans — and, symmetrically, made a refcount of 1 look like 2 and
+        skipped a legitimate cleanup.
+        """
         exclude = exclude_doc_ids or set()
         counts: dict[str, int] = {}
         for doc_id, record in (await self._doc_status_all()).items():
             if doc_id in exclude:
+                continue
+            if str(record.get("status") or "") != DocStatus.PROCESSED.value:
                 continue
             for cid in record.get("chunk_ids") or []:
                 key = str(cid)
@@ -1843,10 +2133,13 @@ class MemGraphRAG:
                 reason="empty_content_map",
             )
         if need_prepare:
-            # Drop stale empty in-memory handle so prepare reloads from KV.
-            if self.memory is not None and not self.memory.passage_layer:
-                self.memory = None
-            await self.prepare_retrieval()
+            # Same lock as ainsert: wait for an in-flight rewrite to finish rather
+            # than reading a torn corpus.
+            async with self._corpus_lock:
+                # Drop stale empty in-memory handle so prepare reloads from KV.
+                if self.memory is not None and not self.memory.passage_layer:
+                    self.memory = None
+                await self.prepare_retrieval()
         if self.embedding_func is None:
             raise PipelineError("aretrieve requires embedding_func")
 
@@ -1923,12 +2216,13 @@ class MemGraphRAG:
                         kept=len(kept),
                     )
                 else:
-                    kept = self.fact_filter.llm_filter(
+                    kept = await self.fact_filter.allm_filter(
                         query,
-                        [h.get("content") for h in fact_hits],
+                        [h.get("triple") or h.get("content") for h in fact_hits],
                         list(range(len(fact_hits))),
                         scores=sim_scores,
                         threshold=param.fact_similarity_threshold,
+                        llm_model_func=self.llm_model_func,
                     )
                     stage(
                         logger,
@@ -2053,6 +2347,7 @@ class MemGraphRAG:
                 return sol
 
             # Seed PPR from entities in filtered facts
+            entity_score_acc: dict[str, list[float]] = {}
             for hit, score in zip(
                 kept_hits, [sim_scores[i] for i in kept if i < len(sim_scores)]
             ):
@@ -2074,12 +2369,23 @@ class MemGraphRAG:
                     continue
                 for ent in (triple[0], triple[2]):
                     eid = compute_mdhash_id(str(ent).strip().lower(), prefix="entity-")
-                    seed_weights[eid] = seed_weights.get(eid, 0.0) + float(score)
-                    for pid in self._entity_to_passages.get(eid, set()):
-                        seed_weights[pid] = (
-                            seed_weights.get(pid, 0.0)
-                            + float(score) * param.passage_node_weight
-                        )
+                    # Eq.17 is a MEAN over the retrieved facts that mention the
+                    # entity, not a sum. Summing rewarded entities merely for
+                    # appearing in many retrieved facts, amplifying hubs — the exact
+                    # opposite of what the paper's hub suppression is for. Accumulate
+                    # here, divide by the count below.
+                    acc = entity_score_acc.setdefault(eid, [0.0, 0])
+                    acc[0] += float(score)
+                    acc[1] += 1
+
+            for eid, (total, count) in entity_score_acc.items():
+                mean_score = total / float(count or 1)
+                seed_weights[eid] = seed_weights.get(eid, 0.0) + mean_score
+                for pid in self._entity_to_passages.get(eid, set()):
+                    seed_weights[pid] = (
+                        seed_weights.get(pid, 0.0)
+                        + mean_score * param.passage_node_weight
+                    )
 
             # Blend dense passage seeds
             with observation(
@@ -2419,7 +2725,7 @@ class MemGraphRAG:
                     )
                     return sol
 
-                system, user = render_rag_qa(query, sol.docs)
+                system, user = render_rag_qa(query, sol.docs, sol.sources)
                 if param.user_prompt:
                     user = f"{user}\n\n{param.user_prompt}"
                 history = param.conversation_history or None

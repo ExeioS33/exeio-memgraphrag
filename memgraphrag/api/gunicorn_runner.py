@@ -1,12 +1,18 @@
 """Thin Gunicorn launcher for MemGraphRAG API.
 
 Adapted from LightRAG ``lightrag/api/run_with_gunicorn.py``.
+
+This is an entry point, so it loads ``.env`` explicitly (importing the API
+package no longer does it as a side effect) and refuses worker counts the
+storage layer cannot survive.
 """
 
 from __future__ import annotations
 
+import logging
 import os
-import sys
+
+logger = logging.getLogger("memgraphrag.api.gunicorn_runner")
 
 
 def main() -> None:
@@ -18,15 +24,30 @@ def main() -> None:
             "gunicorn is required; install memgraphrag[api]"
         ) from exc
 
-    from memgraphrag.api.config import parse_args
     import memgraphrag.api.config as config_mod
+    from memgraphrag.api.config import load_env_file, parse_args, validate_worker_count
 
+    load_env_file()
     args = parse_args()
     config_mod.global_args = args
 
     bind = f"{args.host}:{args.port}"
     workers = max(1, int(args.workers or 1))
     loglevel = str(args.log_level or "info").lower()
+
+    try:
+        validate_worker_count(workers, args)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    if workers > 1:
+        # Even on shared databases nothing coordinates the workers: the ingest
+        # `pipeline_lock` is per-process, so "409 while busy" only holds within
+        # the worker that owns the running ingest.
+        logger.warning(
+            "WORKERS=%d: the ingest pipeline lock is per-process, so concurrent "
+            "ingests in different workers are not serialized.",
+            workers,
+        )
 
     # Export for gunicorn_config.py
     os.environ.setdefault("MEMGRAPHRAG_GUNICORN_BIND", bind)
