@@ -184,7 +184,9 @@ async def main() -> int:
     elapsed = time.perf_counter() - started
 
     print(f"\ningestion terminée en {elapsed / 60:.1f} min")
-    print(json.dumps(stats, indent=2, ensure_ascii=False, default=str))
+    # `ainsert` also returns the memory object and every OpenIE record; only the
+    # counters are worth printing.
+    print(json.dumps(stats.get("stats", stats), indent=2, ensure_ascii=False, default=str))
 
     await rag.prepare_retrieval()
     edges = await rag.graph.get_all_edges()
