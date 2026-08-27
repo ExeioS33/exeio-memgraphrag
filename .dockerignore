@@ -39,5 +39,7 @@ scripts
 docs
 *.md
 !README.md
+# MIT requires the upstream notices to travel with every copy, image included.
+!THIRD_PARTY_LICENSES.md
 agent-transcripts
 *.log
