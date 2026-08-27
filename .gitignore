@@ -52,3 +52,6 @@ certs/*.crt
 certs/*.pem
 certs/*.cer
 !certs/.gitkeep
+
+# RFE ingestion working artefacts (imported sidecars, DB snapshots)
+data/rfe/
