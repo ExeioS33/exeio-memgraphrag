@@ -61,8 +61,28 @@ asyncio.run(main())
   text — it does not name the chunk. To choose ids yourself, pass
   `{"idx": "chunk-…", "content": …}` dicts; any `idx` not starting with `chunk-`
   is replaced by the hash. Those ids are what delete/rebuild refcount on.
-- Storage backends are selected by constructor args or env
-  (`MEMGRAPHRAG_*_STORAGE`). The file-backed defaults are single-process only.
+- Storage backends are selected by constructor args. The constructor does
+  **not** read `MEMGRAPHRAG_*_STORAGE` — only the API server does — so a script
+  that wants the configured backends must spread them in:
+  `MemGraphRAG(..., **resolve_storage_backends())` from `memgraphrag.api.config`.
+  Otherwise the run silently writes JSON / GraphML files under `working_dir`.
+  The file-backed defaults are single-process only.
+- Insert a corpus in **one** `ainsert` call. Every call reloads the whole corpus
+  from the OpenIE cache, replays conflict detection (up to `CONFLICT_MAX_GROUPS`
+  LLM calls) and reinstalls the graph from `clear()`, so feeding documents one at
+  a time costs one full rebuild per document.
+- Extraction is checkpointed every `OPENIE_CHECKPOINT_SIZE` chunks. Relaunching
+  the same `ainsert` after a crash re-bills only the chunks missing from the
+  cache (`extract=0` in the OpenIE stage line when nothing is missing); chunks
+  known to the cache but claimed by no doc-status record stay part of the corpus.
+- Set `MEMGRAPHRAG_LANGUAGE` to the corpus language. Entity, relation and type
+  labels are matched on a canonical key (`memgraphrag.utils.canonical`), so
+  `Réforme` / `REFORME` / `reforme` are one node, but the model must still be
+  told which language to write them in.
+- Nothing in the engine configures Python logging. Call
+  `logging.basicConfig(level=logging.INFO)` in a script to see the
+  `[STAGE]` lines; on file backends they used to appear only because a third-party
+  import did it as a side effect.
 - Sync wrappers `insert` / `query` exist; prefer async `ainsert` / `aquery` /
   `aindex_with_memory` / `arag_qa`.
 - Indexing raises `PipelineError` when OpenIE fails for every chunk, rather than

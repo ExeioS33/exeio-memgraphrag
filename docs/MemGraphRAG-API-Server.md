@@ -10,6 +10,9 @@ Production FastAPI server for the MemGraphRAG memory-based GraphRAG engine.
 - OpenAI-compatible LLM and embedding bindings
 - Document upload/scan/delete/clear with legacy + Docling parsers and F/R/P chunkers
 - Corpus-accumulating memory: each ingest merges OpenIE from all PROCESSED docs; delete rebuilds from cached OpenIE (no LLM re-run)
+- Checkpointed extraction (`OPENIE_CHECKPOINT_SIZE`), per-chunk and per-batch retries, JSON repair, bounded embedding requests — see [IngestionResilience.md](IngestionResilience.md)
+- Corpus language pin (`MEMGRAPHRAG_LANGUAGE`) and accent/case-folded entity keys, so one concept is one node
+- Neo4j workspace ownership guard (`mgr_owned`) and UNWIND-batched graph writes
 - JWT and/or API-key authentication
 - Ollama-compatible `/api` emulation
 
@@ -182,6 +185,31 @@ MEMGRAPHRAG_DOC_STATUS_STORAGE=JsonDocStatusStorage|PGDocStatusStorage
 ```
 
 Always call `await rag.initialize_storages()` after constructing `MemGraphRAG` in Python.
+
+These variables are read by the API server (`memgraphrag/api/config.py`). The
+`MemGraphRAG` constructor itself defaults to the file backends whatever the
+environment says — an embedded script must pass the backends explicitly, e.g.
+`MemGraphRAG(..., **resolve_storage_backends())`.
+
+### Sharing a Neo4j server
+
+`Neo4JStorage` labels every node with the workspace name — the same convention
+LightRAG uses — so two engines pointed at one workspace would mix their graphs in
+every traversal, and a naive `clear()` would delete the other engine's nodes.
+Three rules apply:
+
+- every node MemGraphRAG writes carries `mgr_owned = true`; `clear()` matches only
+  those, so it can never destroy a foreign graph;
+- startup refuses a workspace that already holds unmarked nodes, with their count
+  in the error; set `MEMGRAPHRAG_ALLOW_SHARED_NEO4J_WORKSPACE=true` only to share
+  one knowingly;
+- an empty `WORKSPACE` falls back to `base` — name the workspace explicitly on a
+  shared server.
+
+Graph installs run inside `graph.batch()`: `Neo4JStorage` buffers the writes and
+flushes them as `UNWIND` statements of 1 000 rows grouped by label and
+relationship type, so an install costs a handful of statements instead of two
+round trips per node and three per edge. Reads issued inside a batch flush first.
 
 ## Clients (CLI + Streamlit)
 

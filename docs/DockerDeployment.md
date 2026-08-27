@@ -102,5 +102,10 @@ The compose service pins `WORKERS=1`. The image runs a single process on purpose
 - Postgres and Neo4j publish on `127.0.0.1` only. Override
   `POSTGRES_PUBLISH_ADDR` / `NEO4J_PUBLISH_ADDR` deliberately — the Neo4j instance
   runs `gds.*` unrestricted.
+- On a Neo4j server shared with another engine (LightRAG uses the same
+  workspace-as-label convention), name `WORKSPACE` explicitly: startup refuses a
+  workspace holding nodes MemGraphRAG did not create, and `clear()` only ever
+  deletes nodes carrying the `mgr_owned` marker. See
+  [MemGraphRAG-API-Server.md](MemGraphRAG-API-Server.md#sharing-a-neo4j-server).
 - Do not commit `.env`. Prefer secrets managers in production.
 - Entrypoint drops to UID 1000 after fixing bind-mount ownership.

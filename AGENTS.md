@@ -23,6 +23,7 @@ This repository packages that engine as a production FastAPI service inspired by
 | Orchestration | Docker Compose: `memgraphrag` + `postgres` + `neo4j` (+ optional `docling` profile) |
 | Observability | Optional Langfuse (`LANGFUSE_*`) on the retrieval / query path |
 | Tests | pytest + pytest-asyncio, `./scripts/test.sh` |
+| CI | GitHub Actions (`.github/workflows/`: lint, tests 3.12/3.13, coverage); TeamCity Kotlin DSL skeleton in `.teamcity/` — see `docs/TeamCityCI.md` |
 
 ## Confirmed Architecture Decisions
 
@@ -68,7 +69,10 @@ This repository packages that engine as a production FastAPI service inspired by
 - Document admin: `DELETE /documents/{id}`, `POST /documents/delete`, `DELETE /documents/?confirm=true`, `POST /documents/{id}/requeue`. Delete drops exclusive chunks (shared-chunk refcount), then rebuilds memory/graph from remaining OpenIE without conflict LLM. Concurrent ingest/delete share `pipeline_lock`; the busy check is read-then-acquire, so a request that loses that race blocks on the lock instead of returning 409. 409 is the usual answer, not a guarantee — and `pipeline_lock` is per-process, so it means nothing across workers.
 - Single worker only: startup refuses `WORKERS > 1` while a file-backed backend (`JsonKVStorage` / `NanoVectorDBStorage` / `IgraphStorage` / `JsonDocStatusStorage`) is selected, because their locks are `asyncio` locks inside one process and two workers on one `WORKING_DIR` corrupt the JSON/GraphML files. Shared-database backends lift the refusal but not the per-process ingest lock.
 - Query params are MemGraphRAG-native (`LINKING_TOP_K`, `PASSAGE_NODE_WEIGHT`, `DAMPING`, `FACT_SIMILARITY_THRESHOLD`, `SKIP_FACT_RERANK`, `SCHEMA_TOP_K`, `SCHEMA_NODE_WEIGHT`, `PPR_ENGINE`).
-- Index-time ontology/conflict knobs: `ONTOLOGY_BATCH_SIZE`, `ONTOLOGY_MIN_FREQUENCY`, `CONFLICT_ENABLED`, `CONFLICT_MAX_GROUPS`.
+- Index-time ontology/conflict knobs: `ONTOLOGY_BATCH_SIZE`, `ONTOLOGY_MIN_FREQUENCY`, `ONTOLOGY_MAX_DEACTIVATION_RATIO`, `CONFLICT_ENABLED`, `CONFLICT_MAX_GROUPS`.
+- Extraction is checkpointed (`OPENIE_CHECKPOINT_SIZE`): each sub-batch is upserted into `openie_kv` before the next starts, failed chunks are retried once at the end, and only a repeated failure raises `PipelineError`. A relaunch re-bills only what the cache lacks.
+- `Neo4JStorage.batch()` buffers writes and flushes them with UNWIND (1 000 rows, grouped by label / relationship type); `has_node` answers from the buffer, reads flush first. Every graph install runs inside it.
+- Labels are matched on `memgraphrag.utils.canonical.canonical_key` (NFKC + accent/case fold) everywhere an id is derived; `MEMGRAPHRAG_LANGUAGE` pins the language of extracted labels and answers.
 - Ollama prefixes: `/naive` dense passages; default PPR+QA; `/context` passages only; `/bypass` direct LLM.
 
 ## Development Workflow
