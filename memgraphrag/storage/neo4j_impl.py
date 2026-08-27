@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
+from contextlib import asynccontextmanager
 import re
 from dataclasses import dataclass, field
 from typing import Any
@@ -86,6 +87,11 @@ def _normalize_edge_type(edge_data: dict[str, Any]) -> str:
     return "ENTITY_RELATION"
 
 
+def _chunks(rows: list, size: int):
+    for i in range(0, len(rows), size):
+        yield rows[i : i + size]
+
+
 def _sanitize_props(data: dict[str, Any], *, exclude: set[str]) -> dict[str, Any]:
     """Flatten node/edge props to Neo4j-safe scalars / lists of scalars."""
     out: dict[str, Any] = {}
@@ -107,6 +113,15 @@ class Neo4JStorage(BaseGraphStorage):
 
     _driver: Any = field(default=None, init=False, repr=False)
     _DATABASE: str | None = field(default=None, init=False, repr=False)
+    # Deferred writes while inside `batch()`. node_id -> (typed label, props);
+    # edges as (source, target, rel_type, props) in call order.
+    _batch_depth: int = field(default=0, init=False, repr=False)
+    _pending_nodes: dict[str, tuple[str, dict[str, Any]]] = field(
+        default_factory=dict, init=False, repr=False
+    )
+    _pending_edges: list[tuple[str, str, str, dict[str, Any]]] = field(
+        default_factory=list, init=False, repr=False
+    )
 
     def __post_init__(self) -> None:
         # Defer ImportError until initialize() so the class can still be imported.
@@ -262,6 +277,8 @@ class Neo4JStorage(BaseGraphStorage):
         }
 
     async def has_node(self, node_id: str) -> bool:
+        if node_id in self._pending_nodes:
+            return True
         ws = self._workspace_label()
         query = f"MATCH (n:`{ws}` {{entity_id: $entity_id}}) RETURN count(n) > 0 AS exists"
         async with self._session(default_access_mode="READ") as session:
@@ -271,6 +288,7 @@ class Neo4JStorage(BaseGraphStorage):
             return bool(record and record["exists"])
 
     async def has_edge(self, source_node_id: str, target_node_id: str) -> bool:
+        await self._flush_pending()
         ws = self._workspace_label()
         query = (
             f"MATCH (a:`{ws}` {{entity_id: $src}})-[r]-(b:`{ws}` {{entity_id: $tgt}}) "
@@ -282,8 +300,8 @@ class Neo4JStorage(BaseGraphStorage):
             await result.consume()
             return bool(record and record["exists"])
 
-    async def upsert_node(self, node_id: str, node_data: dict[str, Any]) -> None:
-        ws = self._workspace_label()
+    def _node_row(self, node_id: str, node_data: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+        """Typed label and sanitised properties for one node write."""
         node_label = _normalize_node_label(node_data)
         props = _sanitize_props(
             node_data,
@@ -302,7 +320,19 @@ class Neo4JStorage(BaseGraphStorage):
         # workspace label and a single ainsert against LightRAG's `default` workspace
         # would have destroyed 14 556 nodes and 26 938 relationships.
         props[MGR_OWNED_PROPERTY] = True
+        return node_label, props
 
+    async def upsert_node(self, node_id: str, node_data: dict[str, Any]) -> None:
+        node_label, props = self._node_row(node_id, node_data)
+        if self._batch_depth > 0:
+            prev = self._pending_nodes.get(node_id)
+            if prev is not None:
+                prev[1].update(props)
+                self._pending_nodes[node_id] = (node_label, prev[1])
+            else:
+                self._pending_nodes[node_id] = (node_label, props)
+            return
+        ws = self._workspace_label()
         # MERGE on workspace + entity_id, then attach typed label (no APOC).
         merge_q = f"""
         MERGE (n:`{ws}` {{entity_id: $entity_id}})
@@ -319,13 +349,8 @@ class Neo4JStorage(BaseGraphStorage):
                 result = await session.run(label_q, entity_id=node_id)
                 await result.consume()
 
-    async def upsert_edge(
-        self,
-        source_node_id: str,
-        target_node_id: str,
-        edge_data: dict[str, Any],
-    ) -> None:
-        ws = self._workspace_label()
+    def _edge_row(self, edge_data: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+        """Relationship type and sanitised properties for one edge write."""
         rel_type = _normalize_edge_type(edge_data)
         props = _sanitize_props(
             edge_data,
@@ -342,6 +367,19 @@ class Neo4JStorage(BaseGraphStorage):
         props["weight"] = float(props.get("weight", 1.0) or 1.0)
         props["type"] = rel_type
         props["workspace"] = self._raw_workspace()
+        return rel_type, props
+
+    async def upsert_edge(
+        self,
+        source_node_id: str,
+        target_node_id: str,
+        edge_data: dict[str, Any],
+    ) -> None:
+        rel_type, props = self._edge_row(edge_data)
+        if self._batch_depth > 0:
+            self._pending_edges.append((source_node_id, target_node_id, rel_type, props))
+            return
+        ws = self._workspace_label()
 
         # Ensure endpoints exist (mirror IgraphStorage behaviour)
         for nid in (source_node_id, target_node_id):
@@ -363,7 +401,93 @@ class Neo4JStorage(BaseGraphStorage):
             )
             await result.consume()
 
+    # ------------------------------------------------------------------ batching
+    #: Rows per UNWIND statement. Large enough to amortise the round trip, small
+    #: enough to keep a transaction's memory bounded on a shared server.
+    BATCH_ROWS = 1000
+
+    @asynccontextmanager
+    async def batch(self):
+        """Buffer node and edge writes and flush them with UNWIND on exit.
+
+        The one-statement-per-write path costs two round trips per node and three
+        per edge (two existence checks and a MERGE). Measured on the RFE corpus
+        against a server on the LAN that is 4.9 nodes/s: ~54 000 nodes and more
+        edges again, i.e. eight to ten hours for a graph whose vectors took minutes.
+        Inside a batch the same writes are grouped by label / relationship type and
+        sent 1 000 rows at a time; `has_node` answers from the buffer so the install
+        loop's existence checks cost nothing. Reads flush first, so a caller that
+        inspects the graph mid-batch still sees its own writes.
+        """
+        self._batch_depth += 1
+        try:
+            yield self
+        finally:
+            self._batch_depth -= 1
+            if self._batch_depth == 0:
+                await self._flush_pending()
+
+    async def _flush_pending(self) -> None:
+        if not self._pending_nodes and not self._pending_edges:
+            return
+        ws = self._workspace_label()
+        nodes = self._pending_nodes
+        edges = self._pending_edges
+        self._pending_nodes = {}
+        self._pending_edges = []
+
+        # Endpoints an edge references without an explicit upsert get the same
+        # Entity stub the single-write path creates — after checking the server
+        # once for the whole set rather than once per edge.
+        referenced = {nid for src, tgt, _, _ in edges for nid in (src, tgt)} - set(nodes)
+        if referenced:
+            existing: set[str] = set()
+            async with self._session(default_access_mode="READ") as session:
+                for chunk in _chunks(sorted(referenced), self.BATCH_ROWS):
+                    result = await session.run(
+                        f"UNWIND $ids AS id MATCH (n:`{ws}` {{entity_id: id}}) "
+                        "RETURN n.entity_id AS id",
+                        ids=chunk,
+                    )
+                    async for record in result:
+                        existing.add(record["id"])
+                    await result.consume()
+            for nid in referenced - existing:
+                nodes[nid] = self._node_row(nid, {"id": nid, "label": "Entity", "content": ""})
+
+        by_label: dict[str, list[dict[str, Any]]] = {}
+        for nid, (label, props) in nodes.items():
+            by_label.setdefault(label, []).append({"entity_id": nid, "props": props})
+        by_type: dict[str, list[dict[str, Any]]] = {}
+        for src, tgt, rel_type, props in edges:
+            by_type.setdefault(rel_type, []).append({"src": src, "tgt": tgt, "props": props})
+
+        async with self._session() as session:
+            for label, rows in by_label.items():
+                set_label = f"SET n:`{label}`" if _SAFE_IDENT.match(label) else ""
+                query = f"""
+                UNWIND $rows AS row
+                MERGE (n:`{ws}` {{entity_id: row.entity_id}})
+                SET n += row.props
+                {set_label}
+                """
+                for chunk in _chunks(rows, self.BATCH_ROWS):
+                    result = await session.run(query, rows=chunk)
+                    await result.consume()
+            for rel_type, rows in by_type.items():
+                query = f"""
+                UNWIND $rows AS row
+                MATCH (source:`{ws}` {{entity_id: row.src}})
+                MATCH (target:`{ws}` {{entity_id: row.tgt}})
+                MERGE (source)-[r:`{rel_type}`]->(target)
+                SET r += row.props
+                """
+                for chunk in _chunks(rows, self.BATCH_ROWS):
+                    result = await session.run(query, rows=chunk)
+                    await result.consume()
+
     async def get_node(self, node_id: str) -> dict[str, Any] | None:
+        await self._flush_pending()
         ws = self._workspace_label()
         query = f"""
         MATCH (n:`{ws}` {{entity_id: $entity_id}})
@@ -379,6 +503,7 @@ class Neo4JStorage(BaseGraphStorage):
             return self._node_dict(dict(record["n"]), list(record["labels"] or []))
 
     async def get_edge(self, source_node_id: str, target_node_id: str) -> dict[str, Any] | None:
+        await self._flush_pending()
         ws = self._workspace_label()
         query = f"""
         MATCH (a:`{ws}` {{entity_id: $src}})-[r]-(b:`{ws}` {{entity_id: $tgt}})
@@ -399,6 +524,7 @@ class Neo4JStorage(BaseGraphStorage):
             )
 
     async def get_all_nodes(self) -> list[dict[str, Any]]:
+        await self._flush_pending()
         ws = self._workspace_label()
         query = f"""
         MATCH (n:`{ws}`)
@@ -413,6 +539,7 @@ class Neo4JStorage(BaseGraphStorage):
         return nodes
 
     async def get_all_edges(self) -> list[dict[str, Any]]:
+        await self._flush_pending()
         ws = self._workspace_label()
         # Directed return; DISTINCT avoids undirected double-count
         query = f"""
@@ -442,6 +569,8 @@ class Neo4JStorage(BaseGraphStorage):
         is just the workspace name, and other engines (LightRAG in particular) use the
         same convention, so an unscoped delete silently destroys their graph.
         """
+        self._pending_nodes = {}
+        self._pending_edges = []
         ws = self._workspace_label()
         query = f"MATCH (n:`{ws}`) WHERE n.`{MGR_OWNED_PROPERTY}` = true DETACH DELETE n"
         async with self._session() as session:
@@ -459,6 +588,7 @@ class Neo4JStorage(BaseGraphStorage):
             return int((record or {}).get("c") or 0)
 
     async def node_degree(self, node_id: str) -> int:
+        await self._flush_pending()
         ws = self._workspace_label()
         query = f"""
         MATCH (n:`{ws}` {{entity_id: $entity_id}})
