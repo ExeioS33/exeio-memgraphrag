@@ -49,9 +49,7 @@ def _http_client():
     import httpx
 
     verify = ssl_verify()
-    _httpx_client = httpx.AsyncClient(
-        verify=verify, timeout=httpx.Timeout(150.0, connect=30.0)
-    )
+    _httpx_client = httpx.AsyncClient(verify=verify, timeout=httpx.Timeout(150.0, connect=30.0))
     return _httpx_client
 
 
@@ -61,9 +59,7 @@ def _llm_client() -> AsyncOpenAI:
         return _llm_openai
     api_key = os.getenv("LLM_BINDING_API_KEY") or os.getenv("OPENAI_API_KEY") or "no-key"
     base_url = os.getenv("LLM_BINDING_HOST") or None
-    _llm_openai = AsyncOpenAI(
-        api_key=api_key, base_url=base_url, http_client=_http_client()
-    )
+    _llm_openai = AsyncOpenAI(api_key=api_key, base_url=base_url, http_client=_http_client())
     return _llm_openai
 
 
@@ -78,9 +74,7 @@ def _embed_client() -> AsyncOpenAI:
         or "no-key"
     )
     base_url = os.getenv("EMBEDDING_BINDING_HOST") or os.getenv("LLM_BINDING_HOST") or None
-    _embed_openai = AsyncOpenAI(
-        api_key=api_key, base_url=base_url, http_client=_http_client()
-    )
+    _embed_openai = AsyncOpenAI(api_key=api_key, base_url=base_url, http_client=_http_client())
     return _embed_openai
 
 

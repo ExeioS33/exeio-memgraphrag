@@ -160,9 +160,7 @@ class MetricsRegistry:
         self._duration_count: dict[tuple[str, str], int] = {}
         self._in_flight = 0
 
-    def observe(
-        self, method: str, route: str, status_code: int, duration: float
-    ) -> None:
+    def observe(self, method: str, route: str, status_code: int, duration: float) -> None:
         key = (method, route)
         with self._lock:
             counter_key = (method, route, str(int(status_code)))
@@ -250,12 +248,7 @@ def route_label(scope: Mapping[str, Any]) -> str:
 
 
 def _escape_label_value(value: str) -> str:
-    return (
-        str(value)
-        .replace("\\", "\\\\")
-        .replace('"', '\\"')
-        .replace("\n", "\\n")
-    )
+    return str(value).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
 
 
 def _labels(pairs: Iterable[tuple[str, Any]]) -> str:
@@ -290,8 +283,7 @@ def render_prometheus(
         lines.append(f"memgraphrag_http_requests_total{labels} {count}")
 
     lines.append(
-        "# HELP memgraphrag_http_request_duration_seconds "
-        "HTTP request latency in seconds."
+        "# HELP memgraphrag_http_request_duration_seconds HTTP request latency in seconds."
     )
     lines.append("# TYPE memgraphrag_http_request_duration_seconds histogram")
     for key in sorted(snap["duration_count"]):
@@ -299,30 +291,18 @@ def render_prometheus(
         counts = snap["bucket_counts"].get(key) or [0] * len(buckets)
         total = snap["duration_count"][key]
         for bound, count in zip(buckets, counts):
-            labels = _labels(
-                (("method", method), ("route", route), ("le", _format_float(bound)))
-            )
-            lines.append(
-                f"memgraphrag_http_request_duration_seconds_bucket{labels} {count}"
-            )
-        inf_labels = _labels(
-            (("method", method), ("route", route), ("le", "+Inf"))
-        )
-        lines.append(
-            f"memgraphrag_http_request_duration_seconds_bucket{inf_labels} {total}"
-        )
+            labels = _labels((("method", method), ("route", route), ("le", _format_float(bound))))
+            lines.append(f"memgraphrag_http_request_duration_seconds_bucket{labels} {count}")
+        inf_labels = _labels((("method", method), ("route", route), ("le", "+Inf")))
+        lines.append(f"memgraphrag_http_request_duration_seconds_bucket{inf_labels} {total}")
         pair = _labels((("method", method), ("route", route)))
         lines.append(
             "memgraphrag_http_request_duration_seconds_sum"
             f"{pair} {snap['duration_sum'].get(key, 0.0)!r}"
         )
-        lines.append(
-            f"memgraphrag_http_request_duration_seconds_count{pair} {total}"
-        )
+        lines.append(f"memgraphrag_http_request_duration_seconds_count{pair} {total}")
 
-    lines.append(
-        "# HELP memgraphrag_http_requests_in_flight HTTP requests being served now."
-    )
+    lines.append("# HELP memgraphrag_http_requests_in_flight HTTP requests being served now.")
     lines.append("# TYPE memgraphrag_http_requests_in_flight gauge")
     lines.append(f"memgraphrag_http_requests_in_flight {snap['in_flight']}")
 
@@ -349,4 +329,3 @@ __all__ = [
     "sanitize_request_id",
     "set_request_id",
 ]
-

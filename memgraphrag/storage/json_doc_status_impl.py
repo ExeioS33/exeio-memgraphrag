@@ -17,9 +17,7 @@ from memgraphrag.storage.json_kv_impl import JsonKVStorage
 class JsonDocStatusStorage(JsonKVStorage, DocStatusStorage):
     """Document-status KV store with status filtering."""
 
-    async def get_docs_by_statuses(
-        self, statuses: list[DocStatus]
-    ) -> dict[str, dict[str, Any]]:
+    async def get_docs_by_statuses(self, statuses: list[DocStatus]) -> dict[str, dict[str, Any]]:
         """Return documents whose ``status`` field is in ``statuses``."""
         wanted = {s.value if isinstance(s, DocStatus) else str(s) for s in statuses}
         async with self._lock:

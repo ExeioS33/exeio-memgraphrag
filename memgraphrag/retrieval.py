@@ -65,15 +65,9 @@ class RetrievalStateManager:
         self.rag = rag
         self.graph = graph if graph is not None else getattr(rag, "graph", None)
         self.workspace = (
-            workspace
-            if workspace is not None
-            else str(getattr(rag, "workspace", "") or "")
+            workspace if workspace is not None else str(getattr(rag, "workspace", "") or "")
         )
-        self.ppr_engine_name = (
-            ppr_engine_name
-            or getattr(rag, "ppr_engine_name", None)
-            or "igraph"
-        )
+        self.ppr_engine_name = ppr_engine_name or getattr(rag, "ppr_engine_name", None) or "igraph"
         self._ppr: PPREngine | None = ppr_engine
         if self._ppr is None and rag is not None:
             self._ppr = getattr(rag, "_ppr", None)
@@ -191,9 +185,7 @@ class RetrievalStateManager:
         pending = await shared_storage.consume_refresh_flag(self.workspace)
         if not pending:
             return False
-        logger.info(
-            "Retrieval refresh signal consumed for workspace=%r", self.workspace
-        )
+        logger.info("Retrieval refresh signal consumed for workspace=%r", self.workspace)
         await self.full_reload()
         return True
 
@@ -249,9 +241,7 @@ class RetrievalStateManager:
                 directed=self._directed,
             )
         except Exception as exc:
-            logger.warning(
-                "PPR engine init failed (%s); falling back to IgraphPPREngine", exc
-            )
+            logger.warning("PPR engine init failed (%s); falling back to IgraphPPREngine", exc)
             self._ppr = IgraphPPREngine(
                 edges=edges,
                 edge_weights=weights,

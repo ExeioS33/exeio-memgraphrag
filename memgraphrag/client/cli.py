@@ -23,7 +23,7 @@ from memgraphrag.client.params import (
     clean_params,
     default_sweep_grid,
 )
-from memgraphrag.utils.http_ssl import describe_ssl_verify, reset_ssl_verify_cache
+from memgraphrag.utils.http_ssl import reset_ssl_verify_cache
 
 load_client_env()
 reset_ssl_verify_cache()
@@ -173,13 +173,9 @@ def query_cmd(
     ),
     skip_fact_rerank: Optional[bool] = typer.Option(None, help="Skip fact rerank"),
     schema_top_k: Optional[int] = typer.Option(None, help="Ontology schema linking top-k"),
-    schema_node_weight: Optional[float] = typer.Option(
-        None, help="Schema-expanded seed weight"
-    ),
+    schema_node_weight: Optional[float] = typer.Option(None, help="Schema-expanded seed weight"),
     user_prompt: Optional[str] = typer.Option(None, help="Extra system prompt"),
-    preset: Optional[str] = typer.Option(
-        None, "--preset", help="Preset name (e.g. '⚖️ Balanced')"
-    ),
+    preset: Optional[str] = typer.Option(None, "--preset", help="Preset name (e.g. '⚖️ Balanced')"),
     data_only: bool = typer.Option(False, "--data-only", help="Use /query/data"),
     stream: bool = typer.Option(False, "--stream", help="Use /query/stream SSE"),
     raw: bool = typer.Option(False, "--raw", help="Print raw JSON"),
@@ -471,14 +467,10 @@ def docs_clear(
     server: Optional[str] = ServerOpt,
     api_key: Optional[str] = ApiKeyOpt,
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
-    delete_files: bool = typer.Option(
-        False, "--delete-files", help="Also wipe input/parsed files"
-    ),
+    delete_files: bool = typer.Option(False, "--delete-files", help="Also wipe input/parsed files"),
 ) -> None:
     """💣 Clear all documents and storages (requires --yes)."""
-    if not yes and not typer.confirm(
-        "Really CLEAR ALL documents, memory, vectors, and graph?"
-    ):
+    if not yes and not typer.confirm("Really CLEAR ALL documents, memory, vectors, and graph?"):
         raise typer.Abort()
     try:
         with _client(server, api_key) as c:
@@ -555,20 +547,14 @@ def optimize_cmd(
     ),
     top_k: Optional[str] = typer.Option(None, help="Comma-separated ints"),
     linking_top_k: Optional[str] = typer.Option(None, help="Comma-separated ints"),
-    passage_node_weight: Optional[str] = typer.Option(
-        None, help="Comma-separated floats"
-    ),
+    passage_node_weight: Optional[str] = typer.Option(None, help="Comma-separated floats"),
     damping: Optional[str] = typer.Option(None, help="Comma-separated floats"),
-    fact_similarity_threshold: Optional[str] = typer.Option(
-        None, help="Comma-separated floats"
-    ),
+    fact_similarity_threshold: Optional[str] = typer.Option(None, help="Comma-separated floats"),
     skip_fact_rerank: Optional[str] = typer.Option(
         None, help="Comma-separated bools, e.g. false,true"
     ),
     schema_top_k: Optional[str] = typer.Option(None, help="Comma-separated ints"),
-    schema_node_weight: Optional[str] = typer.Option(
-        None, help="Comma-separated floats"
-    ),
+    schema_node_weight: Optional[str] = typer.Option(None, help="Comma-separated floats"),
     top_n: int = typer.Option(3, "--top-n", help="How many winners to LLM-judge"),
     judge: bool = typer.Option(True, "--judge/--no-judge"),
     output: Optional[Path] = typer.Option(None, "--output", "-o", help="Write JSON report"),

@@ -56,9 +56,7 @@ class AuthHandler:
     def __init__(self, args: Any | None = None) -> None:
         cfg = args or global_args
         auth_accounts = getattr(cfg, "auth_accounts", "") or ""
-        api_key = (
-            os.getenv("MEMGRAPHRAG_API_KEY") or getattr(cfg, "key", None) or ""
-        )
+        api_key = os.getenv("MEMGRAPHRAG_API_KEY") or getattr(cfg, "key", None) or ""
         require_auth = bool(getattr(cfg, "require_auth", False))
         self.secret = getattr(cfg, "token_secret", None) or ""
         if not self.secret:
@@ -88,9 +86,7 @@ class AuthHandler:
             raise ValueError("JWT_ALGORITHM 'none' is not permitted.")
         self.algorithm = algorithm
         self.expire_hours = float(getattr(cfg, "token_expire_hours", 48) or 48)
-        self.guest_expire_hours = float(
-            getattr(cfg, "guest_token_expire_hours", 24) or 24
-        )
+        self.guest_expire_hours = float(getattr(cfg, "guest_token_expire_hours", 24) or 24)
         self.accounts: dict[str, str] = {}
         if auth_accounts:
             for account in auth_accounts.split(","):
@@ -104,9 +100,7 @@ class AuthHandler:
                         "AUTH_ACCOUNTS must use comma-separated user:password pairs."
                     ) from exc
                 if not username or not password:
-                    raise ValueError(
-                        "AUTH_ACCOUNTS must use comma-separated user:password pairs."
-                    )
+                    raise ValueError("AUTH_ACCOUNTS must use comma-separated user:password pairs.")
                 if len(username) > MAX_TOKEN_SUBJECT_LENGTH:
                     raise ValueError(
                         f"AUTH_ACCOUNTS usernames must be at most "
@@ -128,13 +122,9 @@ class AuthHandler:
         metadata: dict[str, Any] | None = None,
     ) -> str:
         if jwt is None:
-            raise RuntimeError(
-                "python-jose is required for JWT auth; install memgraphrag[api]"
-            )
+            raise RuntimeError("python-jose is required for JWT auth; install memgraphrag[api]")
         if custom_expire_hours is None:
-            expire_hours = (
-                self.guest_expire_hours if role == "guest" else self.expire_hours
-            )
+            expire_hours = self.guest_expire_hours if role == "guest" else self.expire_hours
         else:
             expire_hours = custom_expire_hours
         expire = datetime.now(timezone.utc) + timedelta(hours=expire_hours)
@@ -156,9 +146,7 @@ class AuthHandler:
 
         def _unauthorized(detail: str) -> None:
             if HTTPException is not None and status is not None:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED, detail=detail
-                )
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=detail)
             raise ValueError(detail)
 
         if jwt is None:

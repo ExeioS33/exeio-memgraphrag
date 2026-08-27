@@ -25,7 +25,7 @@ class FakeConn:
     async def execute(self, sql: str, *args: Any) -> None:
         self.executed.append(sql)
         if self.fail_on is not None and self.fail_on in sql:
-            raise RuntimeError("access method \"hnsw\" does not exist")
+            raise RuntimeError('access method "hnsw" does not exist')
 
     async def fetchrow(self, sql: str, *args: Any) -> dict[str, Any] | None:
         return self.embedding_row
@@ -114,9 +114,7 @@ async def test_pool_closes_only_after_the_last_finalize(
 
 
 @pytest.mark.asyncio
-async def test_pool_reopened_after_full_release(
-    monkeypatch: pytest.MonkeyPatch, pg
-) -> None:
+async def test_pool_reopened_after_full_release(monkeypatch: pytest.MonkeyPatch, pg) -> None:
     created = _install_pool_factory(monkeypatch, pg)
 
     kv = _storage(pg.PGKVStorage, "kv")
@@ -129,9 +127,7 @@ async def test_pool_reopened_after_full_release(
 
 
 @pytest.mark.asyncio
-async def test_double_finalize_is_harmless(
-    monkeypatch: pytest.MonkeyPatch, pg
-) -> None:
+async def test_double_finalize_is_harmless(monkeypatch: pytest.MonkeyPatch, pg) -> None:
     created = _install_pool_factory(monkeypatch, pg)
 
     kv = _storage(pg.PGKVStorage, "kv")
@@ -142,9 +138,7 @@ async def test_double_finalize_is_harmless(
     assert len(created) == 1
 
 
-def test_vector_index_ddl_defaults_to_hnsw_cosine(
-    monkeypatch: pytest.MonkeyPatch, pg
-) -> None:
+def test_vector_index_ddl_defaults_to_hnsw_cosine(monkeypatch: pytest.MonkeyPatch, pg) -> None:
     monkeypatch.delenv("POSTGRES_VECTOR_INDEX_TYPE", raising=False)
     ddl = pg._vector_index_ddl("mgr_vec_ws_chunks")
     assert ddl is not None
@@ -153,9 +147,7 @@ def test_vector_index_ddl_defaults_to_hnsw_cosine(
     assert "vector_cosine_ops" in ddl
 
 
-def test_vector_index_ddl_honours_ivfflat(
-    monkeypatch: pytest.MonkeyPatch, pg
-) -> None:
+def test_vector_index_ddl_honours_ivfflat(monkeypatch: pytest.MonkeyPatch, pg) -> None:
     monkeypatch.setenv("POSTGRES_VECTOR_INDEX_TYPE", "IVFFlat")
     monkeypatch.setenv("POSTGRES_IVFFLAT_LISTS", "42")
     ddl = pg._vector_index_ddl("mgr_vec_ws_chunks")
@@ -165,25 +157,19 @@ def test_vector_index_ddl_honours_ivfflat(
     assert "vector_cosine_ops" in ddl
 
 
-def test_vector_index_ddl_can_be_disabled(
-    monkeypatch: pytest.MonkeyPatch, pg
-) -> None:
+def test_vector_index_ddl_can_be_disabled(monkeypatch: pytest.MonkeyPatch, pg) -> None:
     monkeypatch.setenv("POSTGRES_VECTOR_INDEX_TYPE", "none")
     assert pg._vector_index_ddl("mgr_vec_ws_chunks") is None
 
 
-def test_unknown_vector_index_type_falls_back_to_hnsw(
-    monkeypatch: pytest.MonkeyPatch, pg
-) -> None:
+def test_unknown_vector_index_type_falls_back_to_hnsw(monkeypatch: pytest.MonkeyPatch, pg) -> None:
     monkeypatch.setenv("POSTGRES_VECTOR_INDEX_TYPE", "diskann")
     ddl = pg._vector_index_ddl("mgr_vec_ws_chunks")
     assert ddl is not None and "USING hnsw" in ddl
 
 
 @pytest.mark.asyncio
-async def test_initialize_creates_the_vector_index(
-    monkeypatch: pytest.MonkeyPatch, pg
-) -> None:
+async def test_initialize_creates_the_vector_index(monkeypatch: pytest.MonkeyPatch, pg) -> None:
     monkeypatch.delenv("POSTGRES_VECTOR_INDEX_TYPE", raising=False)
     conn = FakeConn(embedding_row=None)
     _install_pool_factory(monkeypatch, pg, conn)
@@ -212,9 +198,7 @@ async def test_index_creation_failure_is_not_fatal(
 
 
 @pytest.mark.asyncio
-async def test_embedding_dim_mismatch_fails_fast(
-    monkeypatch: pytest.MonkeyPatch, pg
-) -> None:
+async def test_embedding_dim_mismatch_fails_fast(monkeypatch: pytest.MonkeyPatch, pg) -> None:
     conn = FakeConn(embedding_row={"typmod": 1024, "type_name": "vector(1024)"})
     _install_pool_factory(monkeypatch, pg, conn)
 
@@ -228,9 +212,7 @@ async def test_embedding_dim_mismatch_fails_fast(
 
 
 @pytest.mark.asyncio
-async def test_matching_embedding_dim_initializes(
-    monkeypatch: pytest.MonkeyPatch, pg
-) -> None:
+async def test_matching_embedding_dim_initializes(monkeypatch: pytest.MonkeyPatch, pg) -> None:
     conn = FakeConn(embedding_row={"typmod": 768, "type_name": "vector(768)"})
     _install_pool_factory(monkeypatch, pg, conn)
 

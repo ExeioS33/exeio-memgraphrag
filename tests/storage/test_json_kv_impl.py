@@ -100,9 +100,7 @@ async def test_batch_defers_the_flush_to_the_outermost_exit(
 
 
 @pytest.mark.asyncio
-async def test_nested_batch_flushes_once(
-    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_nested_batch_flushes_once(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     from memgraphrag.storage import json_kv_impl
 
     writes: list[int] = []

@@ -14,7 +14,7 @@ import logging
 import os
 import sys
 from contextlib import contextmanager
-from typing import Any, Iterator, Optional
+from typing import Any, Iterator
 
 from memgraphrag.utils.env import get_env_value
 
@@ -56,10 +56,9 @@ def get_langfuse_client() -> Any | None:
         "public_key": os.environ["LANGFUSE_PUBLIC_KEY"].strip(),
         "secret_key": os.environ["LANGFUSE_SECRET_KEY"].strip(),
     }
-    base_url = (
-        (os.getenv("LANGFUSE_BASE_URL") or "").strip()
-        or (os.getenv("LANGFUSE_HOST") or "").strip()
-    )
+    base_url = (os.getenv("LANGFUSE_BASE_URL") or "").strip() or (
+        os.getenv("LANGFUSE_HOST") or ""
+    ).strip()
     if base_url:
         kwargs["base_url"] = base_url.rstrip("/")
 
@@ -118,9 +117,7 @@ def observation(
                 name=name, input=input, metadata=metadata, model=model
             )
         elif hasattr(client, "start_as_current_span"):
-            cm = client.start_as_current_span(
-                name=name, input=input, metadata=metadata
-            )
+            cm = client.start_as_current_span(name=name, input=input, metadata=metadata)
         else:
             logger.debug("Langfuse client missing observation APIs; skipping %s", name)
             yield None

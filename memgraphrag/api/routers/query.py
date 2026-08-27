@@ -28,7 +28,8 @@ except ImportError:  # pragma: no cover
     Request = None  # type: ignore[misc, assignment]
     StreamingResponse = None  # type: ignore[misc, assignment]
     BaseModel = object  # type: ignore[misc, assignment]
-    Field = lambda *a, **k: None  # type: ignore[misc, assignment]
+    # Stub so the module still imports without the [api] extra; never called.
+    Field = lambda *a, **k: None  # type: ignore[misc, assignment]  # noqa: E731
 
 
 class QueryRequest(BaseModel):

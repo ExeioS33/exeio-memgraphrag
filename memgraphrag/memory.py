@@ -88,9 +88,7 @@ class ThreeLayerMemory:
         self._schema_to_idx[ontology] = idx
         return idx
 
-    def _get_or_create_fact(
-        self, triple: Tuple[str, str, str], schema_idx: int
-    ) -> int:
+    def _get_or_create_fact(self, triple: Tuple[str, str, str], schema_idx: int) -> int:
         """Get or create fact node, return index."""
         if triple in self._fact_to_idx:
             return self._fact_to_idx[triple]
@@ -310,9 +308,7 @@ class ThreeLayerMemory:
             return None
         return self.get_schema_by_idx(fact.schema_idx)
 
-    def link_fact_to_schema(
-        self, fact_idx: int, ontology: Tuple[str, str, str]
-    ) -> int:
+    def link_fact_to_schema(self, fact_idx: int, ontology: Tuple[str, str, str]) -> int:
         """Link a fact to a schema ontology triple; return schema index."""
         if not (0 <= fact_idx < len(self.fact_layer)):
             raise IndexError(f"fact_idx out of range: {fact_idx}")
@@ -328,9 +324,7 @@ class ThreeLayerMemory:
         fact.schema_idx = schema_idx
         if fact_idx not in self.schema_layer[schema_idx].fact_indices:
             self.schema_layer[schema_idx].fact_indices.append(fact_idx)
-        self.schema_layer[schema_idx].frequency = len(
-            self.schema_layer[schema_idx].fact_indices
-        )
+        self.schema_layer[schema_idx].frequency = len(self.schema_layer[schema_idx].fact_indices)
         return schema_idx
 
     def recompute_schema_frequencies(self) -> None:
@@ -399,15 +393,11 @@ class ThreeLayerMemory:
         self._fact_to_idx = {f.content: f.idx for f in self.fact_layer}
 
         for schema in self.schema_layer:
-            schema.fact_indices = [
-                old_to_new[i] for i in schema.fact_indices if i in old_to_new
-            ]
+            schema.fact_indices = [old_to_new[i] for i in schema.fact_indices if i in old_to_new]
             schema.frequency = len(schema.fact_indices)
 
         for passage in self.passage_layer:
-            passage.fact_indices = [
-                old_to_new[i] for i in passage.fact_indices if i in old_to_new
-            ]
+            passage.fact_indices = [old_to_new[i] for i in passage.fact_indices if i in old_to_new]
 
         for fact in self.fact_layer:
             fact.frequency = len(fact.passage_indices)
@@ -432,9 +422,7 @@ class ThreeLayerMemory:
         self._rebuild_fact_indices()
         return True
 
-    def replace_fact(
-        self, fact_idx: int, new_triple: Tuple[str, str, str]
-    ) -> int:
+    def replace_fact(self, fact_idx: int, new_triple: Tuple[str, str, str]) -> int:
         """Replace fact content or merge into an existing identical triple.
 
         Returns the surviving fact index. Passage links are preserved/merged.
@@ -567,9 +555,7 @@ class ThreeLayerMemory:
             node = FactNode(
                 idx=item["idx"],
                 content=tuple(item["content"]),
-                frequency=item["frequency"]
-                if "frequency" in item
-                else len(passage_indices),
+                frequency=item["frequency"] if "frequency" in item else len(passage_indices),
                 embedding=item.get("embedding"),
                 schema_idx=item.get("schema_idx", -1),
                 passage_indices=passage_indices,
@@ -678,9 +664,7 @@ class ThreeLayerMemory:
         logger.info("--- Passage Layer ---")
         for passage in self.passage_layer[:n]:
             content_preview = (
-                passage.content[:80] + "..."
-                if len(passage.content) > 80
-                else passage.content
+                passage.content[:80] + "..." if len(passage.content) > 80 else passage.content
             )
             logger.debug(
                 "  [%d] %s modality=%s content=%s facts=%s%s",

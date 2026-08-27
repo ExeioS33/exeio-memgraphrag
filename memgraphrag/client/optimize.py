@@ -220,23 +220,11 @@ def run_optimize(
                 progress("phase2", j, len(winners))
             try:
                 ans_payload = client.query(question, **row.params)
-                answer = (
-                    ans_payload.get("answer")
-                    or ans_payload.get("response")
-                    or ""
-                )
+                answer = ans_payload.get("answer") or ans_payload.get("response") or ""
                 row.answer = str(answer)
-                judge_query = JUDGE_PROMPT.format(
-                    question=question, answer=row.answer or "(empty)"
-                )
-                judge_payload = client.query(
-                    judge_query, mode="bypass", only_need_context=False
-                )
-                judge_text = str(
-                    judge_payload.get("answer")
-                    or judge_payload.get("response")
-                    or ""
-                )
+                judge_query = JUDGE_PROMPT.format(question=question, answer=row.answer or "(empty)")
+                judge_payload = client.query(judge_query, mode="bypass", only_need_context=False)
+                judge_text = str(judge_payload.get("answer") or judge_payload.get("response") or "")
                 score, rationale = _parse_judge_score(judge_text)
                 row.judge_score = score
                 row.judge_rationale = rationale

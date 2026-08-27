@@ -66,9 +66,7 @@ class IgraphStorage(BaseGraphStorage):
         working_dir = self.global_config.get("working_dir", "./data/rag_storage")
         workspace_dir = _workspace_dir(working_dir, self.workspace or "")
         os.makedirs(workspace_dir, exist_ok=True)
-        self._file_name = os.path.join(
-            workspace_dir, f"graph_{self.namespace}.graphml"
-        )
+        self._file_name = os.path.join(workspace_dir, f"graph_{self.namespace}.graphml")
         directed = bool(self.global_config.get("is_directed_graph", False))
         self._graph = ig.Graph(directed=directed)
         self._name_to_idx = {}
@@ -192,11 +190,7 @@ class IgraphStorage(BaseGraphStorage):
 
     async def upsert_node(self, node_id: str, node_data: dict[str, Any]) -> None:
         label = str(node_data.get("label", node_data.get("layer", "")))
-        props = {
-            k: v
-            for k, v in node_data.items()
-            if k not in ("id", "label", "props")
-        }
+        props = {k: v for k, v in node_data.items() if k not in ("id", "label", "props")}
         if isinstance(node_data.get("props"), dict):
             props.update(node_data["props"])
         async with self._lock:
@@ -232,13 +226,9 @@ class IgraphStorage(BaseGraphStorage):
 
         async with self._lock:
             if self._find_vertex(source_node_id) is None:
-                self._graph.add_vertex(
-                    name=source_node_id, label="", props="{}"
-                )
+                self._graph.add_vertex(name=source_node_id, label="", props="{}")
             if self._find_vertex(target_node_id) is None:
-                self._graph.add_vertex(
-                    name=target_node_id, label="", props="{}"
-                )
+                self._graph.add_vertex(name=target_node_id, label="", props="{}")
             src = self._find_vertex(source_node_id)
             tgt = self._find_vertex(target_node_id)
             assert src is not None and tgt is not None
@@ -271,9 +261,7 @@ class IgraphStorage(BaseGraphStorage):
                 return None
             return self._node_dict(vertex)
 
-    async def get_edge(
-        self, source_node_id: str, target_node_id: str
-    ) -> dict[str, Any] | None:
+    async def get_edge(self, source_node_id: str, target_node_id: str) -> dict[str, Any] | None:
         async with self._lock:
             src = self._find_vertex(source_node_id)
             tgt = self._find_vertex(target_node_id)

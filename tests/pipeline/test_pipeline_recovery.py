@@ -71,9 +71,7 @@ async def test_reset_interrupted_documents_requeues_stuck_docs(tmp_path: Path) -
     # A torn write may have recorded chunks that were never installed.
     assert "chunk_ids" not in resumed
     # Terminal states are left alone.
-    assert (await storage.get_by_id("doc-processed"))["status"] == (
-        DocStatus.PROCESSED.value
-    )
+    assert (await storage.get_by_id("doc-processed"))["status"] == (DocStatus.PROCESSED.value)
     assert (await storage.get_by_id("doc-failed"))["status"] == DocStatus.FAILED.value
 
     await storage.finalize()
@@ -84,9 +82,7 @@ async def test_reset_interrupted_documents_is_a_noop_without_stuck_docs(
     tmp_path: Path,
 ) -> None:
     storage = await _storage(tmp_path)
-    await storage.upsert(
-        {"doc-ok": {"status": DocStatus.PROCESSED.value, "file_path": "/x.txt"}}
-    )
+    await storage.upsert({"doc-ok": {"status": DocStatus.PROCESSED.value, "file_path": "/x.txt"}})
 
     assert await reset_interrupted_documents(storage) == []
 

@@ -10,6 +10,15 @@ from typing import Any, Optional
 
 logger = logging.getLogger("memgraphrag.api.graphs")
 
+try:
+    from fastapi import APIRouter, Depends, Query, Request
+except ImportError:  # pragma: no cover
+    APIRouter = None  # type: ignore[misc, assignment]
+    Depends = None  # type: ignore[misc, assignment]
+    Query = None  # type: ignore[misc, assignment]
+    Request = None  # type: ignore[misc, assignment]
+
+
 # Passage nodes carry the chunk text in ``content``. Returning it turned
 # ``GET /graphs?limit=5000`` into a plaintext dump of the corpus, so the body is
 # replaced by its length — visualisation clients need the topology, not the text.
@@ -48,14 +57,6 @@ def redact_node(node: dict[str, Any]) -> dict[str, Any]:
     if cleaned_props is not None:
         cleaned["props"] = cleaned_props
     return cleaned
-
-try:
-    from fastapi import APIRouter, Depends, Query, Request
-except ImportError:  # pragma: no cover
-    APIRouter = None  # type: ignore[misc, assignment]
-    Depends = None  # type: ignore[misc, assignment]
-    Query = None  # type: ignore[misc, assignment]
-    Request = None  # type: ignore[misc, assignment]
 
 
 def create_graphs_router(api_key: Optional[str] = None) -> Any:

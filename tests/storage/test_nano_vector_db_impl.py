@@ -47,9 +47,7 @@ async def test_batch_saves_once_instead_of_per_upsert(tmp_path: Any) -> None:
 
     async with storage.batch():
         for i in range(5):
-            await storage.upsert(
-                {f"chunk-{i}": {"content": str(i), "embedding": _vector(i)}}
-            )
+            await storage.upsert({f"chunk-{i}": {"content": str(i), "embedding": _vector(i)}})
         assert saves == [], "a batch must not serialise the store per upsert"
 
     assert len(saves) == 1

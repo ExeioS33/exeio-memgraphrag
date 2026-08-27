@@ -93,9 +93,7 @@ def get_combined_auth_dependency(
     When neither AUTH_ACCOUNTS nor an API key is configured, all requests pass.
     """
     if Request is None or OAuth2PasswordBearer is None:
-        raise RuntimeError(
-            "fastapi is required for auth dependencies; install memgraphrag[api]"
-        )
+        raise RuntimeError("fastapi is required for auth dependencies; install memgraphrag[api]")
 
     api_key_configured = bool(api_key)
     oauth2_scheme = OAuth2PasswordBearer(

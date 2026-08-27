@@ -50,14 +50,8 @@ def fence_passages(docs: list[str], sources: list[str] | None = None) -> str:
     for i, doc in enumerate(docs, start=1):
         header = PASSAGE_FENCE_OPEN.format(index=i)
         if sources and i <= len(sources) and sources[i - 1]:
-            header = (
-                f"{header} source={_neutralize_fences(str(sources[i - 1]))}"
-            )
-        blocks.append(
-            f"{header}\n"
-            f"{_neutralize_fences(doc)}\n"
-            f"{PASSAGE_FENCE_CLOSE.format(index=i)}"
-        )
+            header = f"{header} source={_neutralize_fences(str(sources[i - 1]))}"
+        blocks.append(f"{header}\n{_neutralize_fences(doc)}\n{PASSAGE_FENCE_CLOSE.format(index=i)}")
     return "\n\n".join(blocks)
 
 
@@ -65,12 +59,8 @@ def fence_passages(docs: list[str], sources: list[str] | None = None) -> str:
 # Linking instructions (asymmetric embedding prefixes)
 # ---------------------------------------------------------------------------
 
-QUERY_TO_FACT = (
-    "Given a question, retrieve relevant triplet facts that matches this question."
-)
-QUERY_TO_PASSAGE = (
-    "Given a question, retrieve relevant documents that best answer the question."
-)
+QUERY_TO_FACT = "Given a question, retrieve relevant triplet facts that matches this question."
+QUERY_TO_PASSAGE = "Given a question, retrieve relevant documents that best answer the question."
 
 LINKING_INSTRUCTIONS = {
     "query_to_fact": QUERY_TO_FACT,
@@ -273,9 +263,9 @@ Output JSON:
 # ---------------------------------------------------------------------------
 
 RAG_QA_SYSTEM = (
-    'As an advanced reading comprehension assistant, your task is to analyze text passages '
+    "As an advanced reading comprehension assistant, your task is to analyze text passages "
     'and corresponding questions meticulously. Your response starts after "Thought: ", where '
-    "you methodically break down the reasoning process. Conclude with \"Answer: \" to present "
+    'you methodically break down the reasoning process. Conclude with "Answer: " to present '
     "a concise, definitive response.\n\n"
     "Ground every claim in the passages. Cite the passages you used with their "
     "numbers in square brackets, e.g. [1] or [2][5], placed inline right after the "

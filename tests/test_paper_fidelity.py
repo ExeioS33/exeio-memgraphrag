@@ -54,9 +54,7 @@ def test_memory_chain_shares_an_entity_across_passages() -> None:
     per_passage = [set() for _ in memory.passage_layer]
     for fact in memory.fact_layer:
         for pidx in fact.passage_indices:
-            per_passage[pidx].update(
-                {str(fact.content[0]).lower(), str(fact.content[2]).lower()}
-            )
+            per_passage[pidx].update({str(fact.content[0]).lower(), str(fact.content[2]).lower()})
     # No single passage holds both ends of the chain.
     assert not any({"einstein", "berlin"} <= entities for entities in per_passage)
 
@@ -106,9 +104,7 @@ async def test_graph_install_creates_entity_relation_and_type_edges(tmp_path) ->
 
     eid = {n: compute_mdhash_id(n, prefix="entity-") for n in ("einstein", "germany", "berlin")}
     entity_edges = {
-        frozenset((e["source"], e["target"]))
-        for e in edges
-        if e.get("type") == "ENTITY_RELATION"
+        frozenset((e["source"], e["target"])) for e in edges if e.get("type") == "ENTITY_RELATION"
     }
     assert frozenset((eid["einstein"], eid["germany"])) in entity_edges
     assert frozenset((eid["germany"], eid["berlin"])) in entity_edges

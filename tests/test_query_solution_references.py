@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import pytest
+
 from memgraphrag.api.routers.query import _solution_payload
 from memgraphrag.utils.misc import QuerySolution
+
+pytestmark = pytest.mark.offline
 
 
 def test_ensure_references_unique_by_file_path() -> None:

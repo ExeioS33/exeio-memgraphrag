@@ -87,9 +87,7 @@ STORAGE_ENV_VARS: dict[str, tuple[str, str, str]] = {
 }
 
 
-def load_env_file(
-    dotenv_path: str = DEFAULT_DOTENV_PATH, *, override: bool = False
-) -> bool:
+def load_env_file(dotenv_path: str = DEFAULT_DOTENV_PATH, *, override: bool = False) -> bool:
     """Load ``dotenv_path`` into ``os.environ`` and rebuild :data:`global_args`.
 
     Importing this module used to call ``load_dotenv`` as a side effect, so merely
@@ -251,9 +249,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     # Query / PPR knobs
     args.top_k = get_env_value("TOP_K", TOP_K, int)
     args.linking_top_k = get_env_value("LINKING_TOP_K", LINKING_TOP_K, int)
-    args.passage_node_weight = get_env_value(
-        "PASSAGE_NODE_WEIGHT", PASSAGE_NODE_WEIGHT, float
-    )
+    args.passage_node_weight = get_env_value("PASSAGE_NODE_WEIGHT", PASSAGE_NODE_WEIGHT, float)
     args.damping = get_env_value("DAMPING", DAMPING, float)
     args.fact_similarity_threshold = get_env_value(
         "FACT_SIMILARITY_THRESHOLD", FACT_SIMILARITY_THRESHOLD, float
@@ -272,9 +268,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     # because the process was started from another working directory).
     args.require_auth = get_env_value("REQUIRE_AUTH", False, bool)
     args.login_max_attempts = get_env_value("LOGIN_MAX_ATTEMPTS", LOGIN_MAX_ATTEMPTS, int)
-    args.login_window_seconds = get_env_value(
-        "LOGIN_WINDOW_SECONDS", LOGIN_WINDOW_SECONDS, float
-    )
+    args.login_window_seconds = get_env_value("LOGIN_WINDOW_SECONDS", LOGIN_WINDOW_SECONDS, float)
 
     # Upload limits
     args.max_upload_size = get_env_value("MAX_UPLOAD_SIZE", MAX_UPLOAD_SIZE, int)
@@ -284,15 +278,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     # NOTE: "/api/*" is deliberately NOT whitelisted by default. The Ollama emulation
     # router is mounted on /api and its /api/chat and /api/generate routes invoke the
     # billed LLM (including the /bypass mode, which skips retrieval entirely).
-    args.whitelist_paths = get_env_value(
-        "WHITELIST_PATHS", "/health,/docs,/openapi.json"
-    )
-    args.ollama_model_name = get_env_value(
-        "OLLAMA_EMULATING_MODEL_NAME", DEFAULT_OLLAMA_MODEL_NAME
-    )
-    args.ollama_model_tag = get_env_value(
-        "OLLAMA_EMULATING_MODEL_TAG", DEFAULT_OLLAMA_MODEL_TAG
-    )
+    args.whitelist_paths = get_env_value("WHITELIST_PATHS", "/health,/docs,/openapi.json")
+    args.ollama_model_name = get_env_value("OLLAMA_EMULATING_MODEL_NAME", DEFAULT_OLLAMA_MODEL_NAME)
+    args.ollama_model_tag = get_env_value("OLLAMA_EMULATING_MODEL_TAG", DEFAULT_OLLAMA_MODEL_TAG)
 
     # Prefer explicit CLI --key over env when both set (argparse already applied env default)
     if not args.key:

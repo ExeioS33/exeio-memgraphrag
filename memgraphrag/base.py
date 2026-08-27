@@ -48,15 +48,11 @@ class QueryParam:
     """Number of linked nodes at each retrieval step."""
 
     passage_node_weight: float = field(
-        default_factory=lambda: get_env_value(
-            "PASSAGE_NODE_WEIGHT", PASSAGE_NODE_WEIGHT, float
-        )
+        default_factory=lambda: get_env_value("PASSAGE_NODE_WEIGHT", PASSAGE_NODE_WEIGHT, float)
     )
     """Multiplicative weight for passage nodes in PPR."""
 
-    damping: float = field(
-        default_factory=lambda: get_env_value("DAMPING", DAMPING, float)
-    )
+    damping: float = field(default_factory=lambda: get_env_value("DAMPING", DAMPING, float))
     """Damping factor for Personalized PageRank."""
 
     fact_similarity_threshold: float = field(
@@ -67,9 +63,7 @@ class QueryParam:
     """Minimum fact similarity when skip_fact_rerank is enabled."""
 
     skip_fact_rerank: bool = field(
-        default_factory=lambda: get_env_value(
-            "SKIP_FACT_RERANK", SKIP_FACT_RERANK, bool
-        )
+        default_factory=lambda: get_env_value("SKIP_FACT_RERANK", SKIP_FACT_RERANK, bool)
     )
     """If True, skip fact reranking and filter by similarity threshold."""
 
@@ -79,9 +73,7 @@ class QueryParam:
     """Number of ontology schemas to link from the query embedding."""
 
     schema_node_weight: float = field(
-        default_factory=lambda: get_env_value(
-            "SCHEMA_NODE_WEIGHT", SCHEMA_NODE_WEIGHT, float
-        )
+        default_factory=lambda: get_env_value("SCHEMA_NODE_WEIGHT", SCHEMA_NODE_WEIGHT, float)
     )
     """Multiplicative weight for schema-expanded seeds in PPR."""
 
@@ -136,15 +128,11 @@ class BaseKVStorage(StorageNameSpace, ABC):
 
     async def get_all(self) -> dict[str, dict[str, Any]]:
         """Optional: return all records. Backends may leave this unimplemented."""
-        raise NotImplementedError(
-            f"{type(self).__name__} does not implement get_all()"
-        )
+        raise NotImplementedError(f"{type(self).__name__} does not implement get_all()")
 
     async def drop(self) -> None:
         """Optional: wipe all records in this namespace."""
-        raise NotImplementedError(
-            f"{type(self).__name__} does not implement drop()"
-        )
+        raise NotImplementedError(f"{type(self).__name__} does not implement drop()")
 
 
 @dataclass
@@ -152,9 +140,7 @@ class BaseVectorStorage(StorageNameSpace, ABC):
     """Vector similarity storage ABC."""
 
     @abstractmethod
-    async def query(
-        self, query_embedding: list[float], top_k: int
-    ) -> list[dict[str, Any]]:
+    async def query(self, query_embedding: list[float], top_k: int) -> list[dict[str, Any]]:
         """Return the ``top_k`` nearest neighbours for ``query_embedding``.
 
         Score contract (binding on every backend):
@@ -186,9 +172,7 @@ class BaseVectorStorage(StorageNameSpace, ABC):
 
     async def drop(self) -> None:
         """Optional: wipe all vectors in this namespace."""
-        raise NotImplementedError(
-            f"{type(self).__name__} does not implement drop()"
-        )
+        raise NotImplementedError(f"{type(self).__name__} does not implement drop()")
 
 
 @dataclass
@@ -233,9 +217,7 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         """Return node properties, or ``None`` if missing."""
 
     @abstractmethod
-    async def get_edge(
-        self, source_node_id: str, target_node_id: str
-    ) -> dict[str, Any] | None:
+    async def get_edge(self, source_node_id: str, target_node_id: str) -> dict[str, Any] | None:
         """Return edge properties, or ``None`` if missing."""
 
     @abstractmethod
@@ -256,9 +238,7 @@ class BaseGraphStorage(StorageNameSpace, ABC):
 
     async def node_degree(self, node_id: str) -> int:
         """Optional: return the degree of ``node_id``."""
-        raise NotImplementedError(
-            f"{type(self).__name__} does not implement node_degree()"
-        )
+        raise NotImplementedError(f"{type(self).__name__} does not implement node_degree()")
 
 
 class DocStatus(str, Enum):
@@ -279,7 +259,5 @@ class DocStatusStorage(BaseKVStorage, ABC):
     """Document-status KV storage with status filtering."""
 
     @abstractmethod
-    async def get_docs_by_statuses(
-        self, statuses: list[DocStatus]
-    ) -> dict[str, dict[str, Any]]:
+    async def get_docs_by_statuses(self, statuses: list[DocStatus]) -> dict[str, dict[str, Any]]:
         """Return documents whose status is in ``statuses``, keyed by doc id."""

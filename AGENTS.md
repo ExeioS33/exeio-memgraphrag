@@ -18,7 +18,7 @@ This repository packages that engine as a production FastAPI service inspired by
 | LLM / embeddings | OpenAI-compatible bindings only (`LLM_*`, `EMBEDDING_*`) |
 | Vector / KV / doc-status | PostgreSQL + pgvector (`PG*Storage`) or JSON / nano-vectordb defaults |
 | Graph | Neo4j 5 + GDS plugin (`Neo4JStorage`) or igraph GraphML default |
-| PPR | `PPR_ENGINE=igraph` (default, paper-exact) or `neo4j_gds` |
+| PPR | `PPR_ENGINE=igraph` (default) or `neo4j_gds` — see "Divergences from the paper" |
 | File processing | Parser registry (`legacy`, `docling`) + chunkers F / R / P |
 | Orchestration | Docker Compose: `memgraphrag` + `postgres` + `neo4j` (+ optional `docling` profile) |
 | Observability | Optional Langfuse (`LANGFUSE_*`) on the retrieval / query path |
@@ -30,7 +30,8 @@ This repository packages that engine as a production FastAPI service inspired by
 - OpenAI-compatible bindings only for POC (no local torch/HF embedders in the service image).
 - Storage selected by `MEMGRAPHRAG_{KV,VECTOR,GRAPH,DOC_STATUS}_STORAGE`.
 - PPR hybrid: igraph default + Neo4j GDS alternative.
-- Full API parity with LightRAG (documents / query / graph / Ollama `/api`); optional Streamlit/CLI clients talk to the API (not embedded in the service image).
+- LightRAG-*shaped* API, not a drop-in replacement: the same four surfaces (documents / query / graph / Ollama `/api`) with 21 routes against LightRAG's ~47, and differing response shapes on several of them. A LightRAG client can be pointed at this server for the common query/ingest calls, but expect to adapt; treat parity as partial and unverified per route.
+- Optional Streamlit/CLI clients talk to the API (not embedded in the service image).
 - Docling via optional compose profile; VLM ANALYZING stage reserved, not implemented.
 - One local commit per advancement; single-line messages; details live in `docs/`.
 
@@ -38,7 +39,7 @@ This repository packages that engine as a production FastAPI service inspired by
 
 - **`core.py`**: Engine class `MemGraphRAG` — index_with_memory, retrieve, rag_qa. Always `await rag.initialize_storages()` after construction.
 - **`memory.py`**: `ThreeLayerMemory` (schema / fact / passage).
-- **`pipeline.py`**: Async ingestion (PENDING → PARSING → PROCESSING → PROCESSED) with memory sub-stage tracking.
+- **`pipeline.py`**: Async ingestion (PENDING → PARSING → PROCESSING → PROCESSED). It also writes seven memory sub-stage labels, but they are emitted in one tight loop *before* the corresponding work runs, so a status poll shows the last label (`graph_install`) for essentially the whole run. Do not treat the sub-stage field as progress.
 - **`base.py`**: Storage ABCs (`BaseKVStorage`, `BaseVectorStorage`, `BaseGraphStorage`, `DocStatusStorage`).
 - **`storage/`**: Registry + factory + backends (`*_impl.py`). Renamed from LightRAG's `kg/` because it holds all storage types.
 - **`parser/`**, **`chunker/`**, **`sidecar/`**: File processing (LightRAG-inspired, MemGraphRAG-adapted).
@@ -63,7 +64,8 @@ This repository packages that engine as a production FastAPI service inspired by
 - Chunks become `PassageNode`s at the engine boundary; graph is the typed memory graph, not a flat entity/relation KG.
 - PROCESSING = `openie → memory_build → schema_extraction → ontology_filter → conflict_detection → conflict_resolution → graph_install` (ontology + conflict stages are implemented; disable conflicts with `CONFLICT_ENABLED=false`).
 - Ingest accumulates corpus memory: OpenIE is keyed by content-hash `chunk-…` ids stored on doc_status; each `ainsert` rebuilds memory from all PROCESSED docs' cached OpenIE (new chunks only hit the LLM).
-- Document admin: `DELETE /documents/{id}`, `POST /documents/delete`, `DELETE /documents/?confirm=true`, `POST /documents/{id}/requeue`. Delete drops exclusive chunks (shared-chunk refcount), then rebuilds memory/graph from remaining OpenIE without conflict LLM. Concurrent ingest/delete share `pipeline_lock` (409 when busy).
+- Document admin: `DELETE /documents/{id}`, `POST /documents/delete`, `DELETE /documents/?confirm=true`, `POST /documents/{id}/requeue`. Delete drops exclusive chunks (shared-chunk refcount), then rebuilds memory/graph from remaining OpenIE without conflict LLM. Concurrent ingest/delete share `pipeline_lock`; the busy check is read-then-acquire, so a request that loses that race blocks on the lock instead of returning 409. 409 is the usual answer, not a guarantee — and `pipeline_lock` is per-process, so it means nothing across workers.
+- Single worker only: startup refuses `WORKERS > 1` while a file-backed backend (`JsonKVStorage` / `NanoVectorDBStorage` / `IgraphStorage` / `JsonDocStatusStorage`) is selected, because their locks are `asyncio` locks inside one process and two workers on one `WORKING_DIR` corrupt the JSON/GraphML files. Shared-database backends lift the refusal but not the per-process ingest lock.
 - Query params are MemGraphRAG-native (`LINKING_TOP_K`, `PASSAGE_NODE_WEIGHT`, `DAMPING`, `FACT_SIMILARITY_THRESHOLD`, `SKIP_FACT_RERANK`, `SCHEMA_TOP_K`, `SCHEMA_NODE_WEIGHT`, `PPR_ENGINE`).
 - Index-time ontology/conflict knobs: `ONTOLOGY_BATCH_SIZE`, `ONTOLOGY_MIN_FREQUENCY`, `CONFLICT_ENABLED`, `CONFLICT_MAX_GROUPS`.
 - Ollama prefixes: `/naive` dense passages; default PPR+QA; `/context` passages only; `/bypass` direct LLM.
@@ -72,7 +74,7 @@ This repository packages that engine as a production FastAPI service inspired by
 
 ```bash
 uv sync --extra api --extra pytest --extra client
-cp env.example .env
+cp env.example .env          # env.example is the only template in the repo
 ./scripts/test.sh tests
 uv run memgraphrag-server
 uv run memgraphrag-cli health
@@ -80,6 +82,46 @@ uv run streamlit run memgraphrag/client/app.py
 docker compose up -d
 docker compose --profile docling up -d   # optional Docling
 ```
+
+`env.example` documents only variables the code actually reads; a setting that is
+not implemented is labelled as such rather than listed as a knob. Before adding a
+row to it, prove the read: `grep -rn "NAME" memgraphrag --include='*.py'`.
+
+Environment loading is explicit: `api/config.py` and `api/auth.py` no longer call
+`load_dotenv` at import, entry points call
+`memgraphrag.api.config.load_env_file()` instead. Importing the API package used to
+inject the developer's `.env` — real provider keys included — into every process,
+which turned `pytest --run-integration` into a false green (79 passed / 0 skipped
+instead of skipping for want of credentials). **`api/server.py` still calls
+`load_dotenv` at module level and must get the same treatment** before the test
+suite is truly hermetic.
+
+## Divergences from the paper
+
+Say what is implemented, not what the paper describes:
+
+- The igraph PPR engine is **not** paper-exact, and no document may call it that.
+  Seeding and scoring are simplified adaptations, several equations of the paper
+  have no counterpart in `core.py`, and no result has ever been reproduced against
+  the published numbers. Describe the behaviour a test pins, not the equation a
+  paper prescribes.
+- The VLM ANALYZING stage is reserved, not implemented.
+- `memgraphrag/retrieval.py` (`RetrievalStateManager`) and
+  `memgraphrag/storage/shared.py` are not on any request path; they are scaffolding
+  for a future incremental-refresh mode and are imported only by tests.
+
+## Security posture (enforced today)
+
+- Whitelist defaults to `/health,/docs,/openapi.json`; `/api/*` must never be added
+  — it fronts the billed LLM and the whitelist short-circuits every auth check.
+- `CORS_ORIGINS=*` disables credentialed cross-origin requests.
+- `REQUIRE_AUTH=true` fails closed when no credential resolved.
+- `TOKEN_SECRET` is mandatory with `AUTH_ACCOUNTS`; `JWT_ALGORITHM=none` is rejected.
+- `POST /login` is rate-limited per IP (`LOGIN_MAX_ATTEMPTS` / `LOGIN_WINDOW_SECONDS`).
+- Uploads are capped by `MAX_UPLOAD_SIZE` (413 beyond it).
+- Compose has no default `POSTGRES_PASSWORD` / `NEO4J_PASSWORD` and passes the auth
+  variables through to the container.
+- API keys and passwords are compared with `hmac.compare_digest`.
 
 ## Testing
 

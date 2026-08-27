@@ -61,9 +61,7 @@ def _init_state() -> None:
         st.session_state.api_key = os.environ.get("MEMGRAPHRAG_API_KEY", "")
     if "ssl_cert_file" not in st.session_state:
         st.session_state.ssl_cert_file = (
-            os.environ.get("MEMGRAPHRAG_SSL_CERT_FILE")
-            or os.environ.get("SSL_CERT_FILE")
-            or ""
+            os.environ.get("MEMGRAPHRAG_SSL_CERT_FILE") or os.environ.get("SSL_CERT_FILE") or ""
         )
     if "ssl_verify" not in st.session_state:
         raw = (os.environ.get("SSL_VERIFY") or "true").strip().lower()
@@ -256,7 +254,11 @@ def tab_query() -> None:
                             break
                         try:
                             obj = json.loads(payload)
-                            if isinstance(obj, dict) and "references" in obj and "response" not in obj:
+                            if (
+                                isinstance(obj, dict)
+                                and "references" in obj
+                                and "response" not in obj
+                            ):
                                 refs = list(obj.get("references") or [])
                                 continue
                             text = obj.get("response") or obj.get("error") or payload
@@ -451,18 +453,11 @@ def tab_ingest() -> None:
                 try:
                     with get_client() as c, st.spinner("Deleting…"):
                         if len(selected_ids) == 1:
-                            result = c.delete_document(
-                                selected_ids[0], delete_file=del_file
-                            )
+                            result = c.delete_document(selected_ids[0], delete_file=del_file)
                         else:
-                            result = c.delete_documents(
-                                selected_ids, delete_file=del_file
-                            )
+                            result = c.delete_documents(selected_ids, delete_file=del_file)
                     dropped = len(result.get("chunks_dropped") or [])
-                    st.success(
-                        f"Deleted {len(selected_ids)} doc(s) "
-                        f"(chunks_dropped={dropped})"
-                    )
+                    st.success(f"Deleted {len(selected_ids)} doc(s) (chunks_dropped={dropped})")
                     st.session_state.pop("doc_statuses", None)
                     st.rerun()
                 except Exception as exc:  # noqa: BLE001
@@ -489,9 +484,7 @@ def tab_ingest() -> None:
         st.markdown("#### Danger zone")
         confirm_clear = st.checkbox("I understand this wipes the whole corpus")
         wipe_files = st.checkbox("Also wipe input files", value=False)
-        if st.button(
-            "💣 Clear all documents", disabled=not confirm_clear, type="primary"
-        ):
+        if st.button("💣 Clear all documents", disabled=not confirm_clear, type="primary"):
             try:
                 with get_client() as c, st.spinner("Clearing…"):
                     result = c.clear_documents(confirm=True, delete_files=wipe_files)
@@ -645,9 +638,7 @@ def tab_graph() -> None:
     if st.button("🔍 Explore"):
         try:
             with get_client() as c, st.spinner("🕸️ Fetching graph…"):
-                data = c.explore_graph(
-                    label=None if label == "(all)" else label, limit=limit
-                )
+                data = c.explore_graph(label=None if label == "(all)" else label, limit=limit)
             nodes = data.get("nodes") or []
             edges = data.get("edges") or []
             st.metric("Nodes", len(nodes))

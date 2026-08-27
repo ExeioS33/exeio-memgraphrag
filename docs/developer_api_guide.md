@@ -116,12 +116,17 @@ curl -sS -X POST http://localhost:9621/query/data \
 
 ---
 
-## 5. Streaming (`POST /query/stream`)
+## 5. SSE delivery (`POST /query/stream`)
+
+**Not token streaming.** The server awaits the complete answer, then emits three
+frames at once, so the first byte arrives after the full query latency. The
+endpoint exists for LightRAG client compatibility; `--stream` buys you nothing in
+time-to-first-token.
 
 SSE events (LightRAG-compatible order):
 
 1. `{"references":[…]}`
-2. `{"response":"…"}` (full answer; token streaming not yet implemented)
+2. `{"response":"…"}` (the entire answer, in one frame)
 3. `[DONE]`
 
 ```bash

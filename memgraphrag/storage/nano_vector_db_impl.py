@@ -49,9 +49,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
         self._file_name = os.path.join(workspace_dir, f"vdb_{self.namespace}.json")
 
         kwargs = self.global_config.get("vector_db_storage_cls_kwargs", {}) or {}
-        self.cosine_better_than_threshold = float(
-            kwargs.get("cosine_better_than_threshold", 0.0)
-        )
+        self.cosine_better_than_threshold = float(kwargs.get("cosine_better_than_threshold", 0.0))
 
         emb_dim = None
         if self.embedding_func is not None:
@@ -109,9 +107,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
             await asyncio.to_thread(client.save)
             self._dirty = False
 
-    async def query(
-        self, query_embedding: list[float], top_k: int
-    ) -> list[dict[str, Any]]:
+    async def query(self, query_embedding: list[float], top_k: int) -> list[dict[str, Any]]:
         embedding = np.asarray(query_embedding, dtype=np.float32)
         async with self._lock:
             results = self._client.query(
@@ -140,14 +136,10 @@ class NanoVectorDBStorage(BaseVectorStorage):
         list_data = []
         for doc_id, record in data.items():
             if "embedding" not in record:
-                raise ValueError(
-                    f"NanoVectorDBStorage.upsert requires 'embedding' for id={doc_id}"
-                )
+                raise ValueError(f"NanoVectorDBStorage.upsert requires 'embedding' for id={doc_id}")
             vector = np.asarray(record["embedding"], dtype=np.float32)
             meta = {
-                k: v
-                for k, v in record.items()
-                if k not in ("embedding", "__vector__", "vector")
+                k: v for k, v in record.items() if k not in ("embedding", "__vector__", "vector")
             }
             list_data.append(
                 {
@@ -176,9 +168,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
                 try:
                     os.remove(self._file_name)
                 except OSError as exc:
-                    logger.warning(
-                        "Failed to remove vector file %s: %s", self._file_name, exc
-                    )
+                    logger.warning("Failed to remove vector file %s: %s", self._file_name, exc)
             self._client = NanoVectorDB(
                 self._embedding_dim,
                 storage_file=self._file_name,

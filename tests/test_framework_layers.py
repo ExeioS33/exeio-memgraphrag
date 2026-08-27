@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
 import pytest
 
 from memgraphrag.memory import ThreeLayerMemory
 from memgraphrag.utils.json_llm import extract_json_object
+
+pytestmark = pytest.mark.offline
 
 
 def _raw_docs() -> dict[str, Any]:
@@ -101,8 +102,11 @@ def test_remove_and_replace_fact_index_consistency():
     if other_idx != 0:
         passages_before = set(memory.fact_layer[0].passage_indices)
         surviving = memory.replace_fact(other_idx, target)
-        assert surviving == 0 or surviving >= 0
+        # replace_fact returns the index of the surviving fact, and the replaced
+        # fact's passages must have been merged into it rather than dropped.
+        assert surviving == 0
         assert target in {f.content for f in memory.fact_layer}
+        assert passages_before <= set(memory.fact_layer[surviving].passage_indices)
 
 
 def test_conflict_candidate_groups():
@@ -256,9 +260,7 @@ async def test_install_graph_has_schema_nodes(tmp_path):
     await rag._install_memory_graph(memory)
     nodes = await rag.graph.get_all_nodes()
     labels = {n.get("label") or n.get("node_type") for n in nodes}
-    assert "Schema" in labels or any(
-        (n.get("layer") == "schema") for n in nodes
-    )
+    assert "Schema" in labels or any((n.get("layer") == "schema") for n in nodes)
     edges = await rag.graph.get_all_edges()
     types = {(e.get("type") or e.get("edge_type") or "").upper() for e in edges}
     assert "FACT_SCHEMA" in types or "TYPE_RELATION" in types

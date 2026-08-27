@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import pytest
+
 from memgraphrag.chunker.paragraph_semantic import chunking_by_paragraph_semantic
 from memgraphrag.chunker.recursive_character import chunking_by_recursive_character
 from memgraphrag.utils.tokenizer import TiktokenTokenizer
+
+pytestmark = pytest.mark.offline
 
 
 def test_paragraph_semantic_falls_back_to_r_without_sidecar() -> None:

@@ -28,10 +28,7 @@ def _strip_nul(obj: Any) -> Any:
     if isinstance(obj, str):
         return obj.replace("\x00", "") if "\x00" in obj else obj
     if isinstance(obj, dict):
-        return {
-            (_strip_nul(k) if isinstance(k, str) else k): _strip_nul(v)
-            for k, v in obj.items()
-        }
+        return {(_strip_nul(k) if isinstance(k, str) else k): _strip_nul(v) for k, v in obj.items()}
     if isinstance(obj, list):
         return [_strip_nul(v) for v in obj]
     if isinstance(obj, tuple):
@@ -41,7 +38,6 @@ def _strip_nul(obj: Any) -> Any:
 
 def _json_dumps_safe(obj: Any) -> str:
     return json.dumps(_strip_nul(obj), ensure_ascii=False)
-
 
 
 def _pg_dsn() -> dict[str, Any]:
@@ -64,9 +60,7 @@ def _safe_ident(value: str) -> str:
 def _pool_config() -> dict[str, Any]:
     config = _pg_dsn()
     # Two connections is the floor: one busy statement plus one for the next acquire.
-    config["max_connections"] = max(
-        2, get_env_value("POSTGRES_MAX_CONNECTIONS", 10, int)
-    )
+    config["max_connections"] = max(2, get_env_value("POSTGRES_MAX_CONNECTIONS", 10, int))
     return config
 
 
@@ -152,9 +146,7 @@ def _vector_index_ddl(table: str) -> str | None:
     The operator class must be ``vector_cosine_ops``: queries order by ``<=>``, and
     pgvector only uses an index whose operator matches the ordering operator.
     """
-    index_type = str(
-        get_env_value("POSTGRES_VECTOR_INDEX_TYPE", "hnsw", str)
-    ).strip().lower()
+    index_type = str(get_env_value("POSTGRES_VECTOR_INDEX_TYPE", "hnsw", str)).strip().lower()
     if index_type in ("", "none", "off"):
         return None
     if index_type == "ivfflat":
@@ -164,9 +156,7 @@ def _vector_index_ddl(table: str) -> str | None:
             f"USING ivfflat (embedding vector_cosine_ops) WITH (lists = {lists})"
         )
     if index_type != "hnsw":
-        logger.warning(
-            "Unknown POSTGRES_VECTOR_INDEX_TYPE=%r, falling back to hnsw", index_type
-        )
+        logger.warning("Unknown POSTGRES_VECTOR_INDEX_TYPE=%r, falling back to hnsw", index_type)
     m = max(2, get_env_value("POSTGRES_HNSW_M", 16, int))
     ef_construction = max(4, get_env_value("POSTGRES_HNSW_EF", 64, int))
     return (
@@ -244,9 +234,7 @@ class PGKVStorage(BaseKVStorage):
 
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         async with self._pool.acquire() as conn:
-            row = await conn.fetchrow(
-                f"SELECT data FROM {self._table} WHERE id = $1", id
-            )
+            row = await conn.fetchrow(f"SELECT data FROM {self._table} WHERE id = $1", id)
         if row is None:
             return None
         data = row["data"]
@@ -385,9 +373,7 @@ class PGVectorStorage(BaseVectorStorage):
         pool, self._pool = self._pool, None
         await ClientManager.release_client(pool)
 
-    async def query(
-        self, query_embedding: list[float], top_k: int
-    ) -> list[dict[str, Any]]:
+    async def query(self, query_embedding: list[float], top_k: int) -> list[dict[str, Any]]:
         vector_literal = "[" + ",".join(str(float(x)) for x in query_embedding) + "]"
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
@@ -431,14 +417,8 @@ class PGVectorStorage(BaseVectorStorage):
                             f"PGVectorStorage.upsert requires 'embedding' for id={doc_id}"
                         )
                     content = record.get("content", "")
-                    meta = {
-                        k: v
-                        for k, v in record.items()
-                        if k not in ("embedding", "content")
-                    }
-                    vector_literal = (
-                        "[" + ",".join(str(float(x)) for x in embedding) + "]"
-                    )
+                    meta = {k: v for k, v in record.items() if k not in ("embedding", "content")}
+                    vector_literal = "[" + ",".join(str(float(x)) for x in embedding) + "]"
                     await conn.execute(
                         f"""
                         INSERT INTO {self._table} (id, content, embedding, metadata)
@@ -493,8 +473,7 @@ class PGDocStatusStorage(DocStatusStorage):
                 """
             )
             await conn.execute(
-                f"CREATE INDEX IF NOT EXISTS {self._table}_status_idx "
-                f"ON {self._table} (status)"
+                f"CREATE INDEX IF NOT EXISTS {self._table}_status_idx ON {self._table} (status)"
             )
 
     async def finalize(self) -> None:
@@ -503,9 +482,7 @@ class PGDocStatusStorage(DocStatusStorage):
 
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         async with self._pool.acquire() as conn:
-            row = await conn.fetchrow(
-                f"SELECT status, data FROM {self._table} WHERE id = $1", id
-            )
+            row = await conn.fetchrow(f"SELECT status, data FROM {self._table} WHERE id = $1", id)
         if row is None:
             return None
         data = row["data"]
@@ -579,9 +556,7 @@ class PGDocStatusStorage(DocStatusStorage):
                 ids,
             )
 
-    async def get_docs_by_statuses(
-        self, statuses: list[DocStatus]
-    ) -> dict[str, dict[str, Any]]:
+    async def get_docs_by_statuses(self, statuses: list[DocStatus]) -> dict[str, dict[str, Any]]:
         wanted = [s.value if isinstance(s, DocStatus) else str(s) for s in statuses]
         if not wanted:
             return {}

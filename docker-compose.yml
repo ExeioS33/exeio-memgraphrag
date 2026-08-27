@@ -32,10 +32,17 @@ services:
       PORT: "9621"
       WORKING_DIR: "/app/data/rag_storage"
       INPUT_DIR: "/app/data/inputs"
+      # Shared-database backends: this is what makes the compose stack safe to
+      # restart against an existing volume. Switching any of them back to a
+      # file-backed default (Json*/Nano*/Igraph*) also caps the process at
+      # WORKERS=1 — startup refuses more (see memgraphrag/api/config.py).
       MEMGRAPHRAG_KV_STORAGE: "PGKVStorage"
       MEMGRAPHRAG_VECTOR_STORAGE: "PGVectorStorage"
       MEMGRAPHRAG_GRAPH_STORAGE: "Neo4JStorage"
       MEMGRAPHRAG_DOC_STATUS_STORAGE: "PGDocStatusStorage"
+      # The ingest pipeline lock is per-process, so extra workers would break the
+      # "409 while busy" guarantee even on Postgres/Neo4j.
+      WORKERS: "${WORKERS:-1}"
       # --- Authentication -------------------------------------------------
       # These were previously not passed through at all, so a compose deployment
       # published :9621 with no credential regardless of what the host .env set.
@@ -68,12 +75,14 @@ services:
       CHUNK_OVERLAP_SIZE: "${CHUNK_OVERLAP_SIZE:-40}"
       EMBEDDING_MAX_TOKENS: "${EMBEDDING_MAX_TOKENS:-480}"
       EMBEDDING_SEND_DIMENSIONS: "${EMBEDDING_SEND_DIMENSIONS:-false}"
-      # LLM / embedding bindings from host .env (VLLM_* alone is not enough)
+      # LLM / embedding bindings from host .env. These are the only names the
+      # app reads; a self-hosted vLLM/Ollama is reached through LLM_BINDING_HOST.
       LLM_BINDING: "${LLM_BINDING:-openai}"
       LLM_BINDING_HOST: "${LLM_BINDING_HOST:-}"
       LLM_BINDING_API_KEY: "${LLM_BINDING_API_KEY:-}"
       LLM_MODEL: "${LLM_MODEL:-}"
-      LLM_TIMEOUT: "${LLM_TIMEOUT:-150}"
+      # LLM_TIMEOUT was injected here but read nowhere: the HTTP timeout is
+      # hard-coded in llm/openai_compatible.py as httpx.Timeout(150.0, connect=30.0).
       MAX_ASYNC_LLM: "${MAX_ASYNC_LLM:-4}"
       EMBEDDING_BINDING: "${EMBEDDING_BINDING:-openai}"
       EMBEDDING_BINDING_HOST: "${EMBEDDING_BINDING_HOST:-}"

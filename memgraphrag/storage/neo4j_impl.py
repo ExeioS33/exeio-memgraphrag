@@ -57,12 +57,7 @@ def _escape_label(label: str) -> str:
 
 
 def _normalize_node_label(node_data: dict[str, Any]) -> str:
-    raw = (
-        node_data.get("node_type")
-        or node_data.get("label")
-        or node_data.get("layer")
-        or "Entity"
-    )
+    raw = node_data.get("node_type") or node_data.get("label") or node_data.get("layer") or "Entity"
     label = str(raw).strip()
     if not label:
         return "Entity"
@@ -96,9 +91,7 @@ def _sanitize_props(data: dict[str, Any], *, exclude: set[str]) -> dict[str, Any
             continue
         if isinstance(value, (str, int, float, bool)):
             out[key] = value
-        elif isinstance(value, list) and all(
-            isinstance(x, (str, int, float, bool)) for x in value
-        ):
+        elif isinstance(value, list) and all(isinstance(x, (str, int, float, bool)) for x in value):
             out[key] = value
         else:
             out[key] = str(value)
@@ -242,10 +235,7 @@ class Neo4JStorage(BaseGraphStorage):
 
     async def has_node(self, node_id: str) -> bool:
         ws = self._workspace_label()
-        query = (
-            f"MATCH (n:`{ws}` {{entity_id: $entity_id}}) "
-            "RETURN count(n) > 0 AS exists"
-        )
+        query = f"MATCH (n:`{ws}` {{entity_id: $entity_id}}) RETURN count(n) > 0 AS exists"
         async with self._session(default_access_mode="READ") as session:
             result = await session.run(query, entity_id=node_id)
             record = await result.single()
@@ -272,9 +262,7 @@ class Neo4JStorage(BaseGraphStorage):
             exclude={"id", "label", "props", "labels"},
         )
         if isinstance(node_data.get("props"), dict):
-            props.update(
-                _sanitize_props(node_data["props"], exclude={"id", "label", "props"})
-            )
+            props.update(_sanitize_props(node_data["props"], exclude={"id", "label", "props"}))
         props["entity_id"] = node_id
         props["node_id"] = node_id
         props["node_type"] = node_label
@@ -287,9 +275,7 @@ class Neo4JStorage(BaseGraphStorage):
         SET n += $properties
         """
         async with self._session() as session:
-            result = await session.run(
-                merge_q, entity_id=node_id, properties=props
-            )
+            result = await session.run(merge_q, entity_id=node_id, properties=props)
             await result.consume()
             if _SAFE_IDENT.match(node_label):
                 label_q = f"""
@@ -326,9 +312,7 @@ class Neo4JStorage(BaseGraphStorage):
         # Ensure endpoints exist (mirror IgraphStorage behaviour)
         for nid in (source_node_id, target_node_id):
             if not await self.has_node(nid):
-                await self.upsert_node(
-                    nid, {"id": nid, "label": "Entity", "content": ""}
-                )
+                await self.upsert_node(nid, {"id": nid, "label": "Entity", "content": ""})
 
         query = f"""
         MATCH (source:`{ws}` {{entity_id: $src}})
@@ -360,9 +344,7 @@ class Neo4JStorage(BaseGraphStorage):
                 return None
             return self._node_dict(dict(record["n"]), list(record["labels"] or []))
 
-    async def get_edge(
-        self, source_node_id: str, target_node_id: str
-    ) -> dict[str, Any] | None:
+    async def get_edge(self, source_node_id: str, target_node_id: str) -> dict[str, Any] | None:
         ws = self._workspace_label()
         query = f"""
         MATCH (a:`{ws}` {{entity_id: $src}})-[r]-(b:`{ws}` {{entity_id: $tgt}})
@@ -370,9 +352,7 @@ class Neo4JStorage(BaseGraphStorage):
         LIMIT 1
         """
         async with self._session(default_access_mode="READ") as session:
-            result = await session.run(
-                query, src=source_node_id, tgt=target_node_id
-            )
+            result = await session.run(query, src=source_node_id, tgt=target_node_id)
             record = await result.single()
             await result.consume()
             if record is None:
@@ -394,9 +374,7 @@ class Neo4JStorage(BaseGraphStorage):
         async with self._session(default_access_mode="READ") as session:
             result = await session.run(query)
             async for record in result:
-                nodes.append(
-                    self._node_dict(dict(record["n"]), list(record["labels"] or []))
-                )
+                nodes.append(self._node_dict(dict(record["n"]), list(record["labels"] or [])))
             await result.consume()
         return nodes
 

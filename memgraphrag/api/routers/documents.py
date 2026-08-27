@@ -16,7 +16,11 @@ from typing import Any, Optional
 from memgraphrag.base import DocStatus
 from memgraphrag.constants import MAX_UPLOAD_SIZE
 from memgraphrag.parser.registry import available_engine_suffixes
-from memgraphrag.pipeline import enqueue_document, process_pending
+from memgraphrag.pipeline import (
+    CONTENT_SUMMARY_LIMIT,
+    enqueue_document,
+    process_pending,
+)
 from memgraphrag.utils.hashing import compute_mdhash_id
 from memgraphrag.utils.step_log import done_step, fail_step, main_step, sub_step, truncate
 
@@ -65,7 +69,8 @@ except ImportError:  # pragma: no cover
     Request = None  # type: ignore[misc, assignment]
     UploadFile = None  # type: ignore[misc, assignment]
     BaseModel = object  # type: ignore[misc, assignment]
-    Field = lambda *a, **k: None  # type: ignore[misc, assignment]
+    # Stub so the module still imports without the [api] extra; never called.
+    Field = lambda *a, **k: None  # type: ignore[misc, assignment]  # noqa: E731
 
 
 class TextInsertRequest(BaseModel):
@@ -127,9 +132,7 @@ async def _run_pipeline(rag: Any, input_dir: Path | None) -> dict[str, Any]:
     return await process_pending(rag, rag.doc_status, input_dir=input_dir)
 
 
-async def _drain_until_idle(
-    request: Request, input_dir: Path | None
-) -> dict[str, Any]:
+async def _drain_until_idle(request: Request, input_dir: Path | None) -> dict[str, Any]:
     """Serialize process_pending until no PENDING remain (or defer if busy)."""
     request.app.state.drain_requested = True
     last: dict[str, Any] = {"processed": 0, "failed": 0, "doc_ids": []}
@@ -141,9 +144,7 @@ async def _drain_until_idle(
             rag = request.app.state.rag
             while True:
                 last = await _run_pipeline(rag, input_dir)
-                pending = await rag.doc_status.get_docs_by_statuses(
-                    [DocStatus.PENDING]
-                )
+                pending = await rag.doc_status.get_docs_by_statuses([DocStatus.PENDING])
                 if not pending:
                     break
                 # New docs were enqueued while we indexed — keep draining.
@@ -227,9 +228,7 @@ def _reject_unsupported_suffix(filename: str) -> None:
         )
 
 
-async def _spool_upload(
-    file: Any, dest: Path, max_bytes: int, hasher: Any | None = None
-) -> int:
+async def _spool_upload(file: Any, dest: Path, max_bytes: int, hasher: Any | None = None) -> int:
     """Stream an upload to ``dest`` in chunks, aborting past ``max_bytes``.
 
     Returns the number of bytes written. On overflow the partial file is removed and
@@ -303,7 +302,7 @@ def _strip_document_body(record: dict[str, Any]) -> dict[str, Any]:
         return record
     trimmed = dict(record)
     body = trimmed.pop("content", None) or ""
-    trimmed.setdefault("content_summary", truncate(body, 200) if body else "")
+    trimmed.setdefault("content_summary", truncate(body, CONTENT_SUMMARY_LIMIT) if body else "")
     trimmed.setdefault("content_length", len(body))
     return trimmed
 
@@ -378,9 +377,7 @@ def create_documents_router(api_key: Optional[str] = None) -> Any:
                 same_bytes = False
             if not same_bytes:
                 suffixed = Path(safe_name)
-                dest = input_dir / (
-                    f"{suffixed.stem}.{hasher.hexdigest()[:12]}{suffixed.suffix}"
-                )
+                dest = input_dir / (f"{suffixed.stem}.{hasher.hexdigest()[:12]}{suffixed.suffix}")
         spool.replace(dest)
         busy = _pipeline_is_busy(request)
         main_step(
@@ -477,9 +474,7 @@ def create_documents_router(api_key: Optional[str] = None) -> Any:
             result = await _run_pipeline(rag, None)
             # Drain any docs enqueued while we ran.
             while True:
-                pending = await rag.doc_status.get_docs_by_statuses(
-                    [DocStatus.PENDING]
-                )
+                pending = await rag.doc_status.get_docs_by_statuses([DocStatus.PENDING])
                 if not pending:
                     break
                 result = await _run_pipeline(rag, None)
@@ -517,9 +512,7 @@ def create_documents_router(api_key: Optional[str] = None) -> Any:
     @router.get("/", dependencies=[Depends(combined_auth)])
     async def list_documents(
         request: Request,
-        status: str | None = Query(
-            default=None, description="Only list documents in this status"
-        ),
+        status: str | None = Query(default=None, description="Only list documents in this status"),
         limit: int = Query(default=DEFAULT_LIST_LIMIT, ge=1, le=MAX_LIST_LIMIT),
         offset: int = Query(default=0, ge=0),
     ):
@@ -557,9 +550,7 @@ def create_documents_router(api_key: Optional[str] = None) -> Any:
         total = len(ordered)
         page = ordered[offset : offset + limit]
         return {
-            "statuses": {
-                doc_id: _strip_document_body(record or {}) for doc_id, record in page
-            },
+            "statuses": {doc_id: _strip_document_body(record or {}) for doc_id, record in page},
             "total": total,
             "limit": limit,
             "offset": offset,
@@ -631,9 +622,10 @@ def create_documents_router(api_key: Optional[str] = None) -> Any:
                 # it reached the input directory.
                 doc_id = await content_doc_id(path)
                 existing = await rag.doc_status.get_by_id(doc_id)
-                if existing is not None and str(
-                    existing.get("status") or ""
-                ) != DocStatus.FAILED.value:
+                if (
+                    existing is not None
+                    and str(existing.get("status") or "") != DocStatus.FAILED.value
+                ):
                     # Re-enqueuing rewrites the record from scratch, dropping the
                     # chunk_ids of an already-indexed document and orphaning its
                     # chunks. Only a FAILED document is worth another run.

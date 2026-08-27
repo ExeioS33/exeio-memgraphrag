@@ -127,9 +127,7 @@ def chunking_by_paragraph_semantic(
             fallback_reason = f"cannot read blocks.jsonl at {blocks_path}: {exc}"
         else:
             if not rows:
-                fallback_reason = (
-                    f"blocks.jsonl at {blocks_path} contains no content rows"
-                )
+                fallback_reason = f"blocks.jsonl at {blocks_path} contains no content rows"
 
     if fallback_reason is not None:
         logger.warning(

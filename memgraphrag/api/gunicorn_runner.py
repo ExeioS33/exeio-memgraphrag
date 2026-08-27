@@ -20,9 +20,7 @@ def main() -> None:
     try:
         from gunicorn.app.base import BaseApplication
     except ImportError as exc:
-        raise SystemExit(
-            "gunicorn is required; install memgraphrag[api]"
-        ) from exc
+        raise SystemExit("gunicorn is required; install memgraphrag[api]") from exc
 
     import memgraphrag.api.config as config_mod
     from memgraphrag.api.config import load_env_file, parse_args, validate_worker_count
@@ -64,9 +62,7 @@ def main() -> None:
             super().__init__()
 
         def load_config(self) -> None:
-            config_path = os.path.join(
-                os.path.dirname(__file__), "gunicorn_config.py"
-            )
+            config_path = os.path.join(os.path.dirname(__file__), "gunicorn_config.py")
             self.cfg.set("config", config_path)
             for key, value in self.options.items():
                 if key in self.cfg.settings and value is not None:

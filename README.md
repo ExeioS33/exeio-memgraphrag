@@ -98,11 +98,23 @@ FastAPI app with routers aligned to LightRAG-style surfaces:
 - **`ollama`** — Ollama-compatible `/api` endpoints (prefixes such as `/naive`, `/context`, `/bypass`)
 
 Auth supports JWT (`AUTH_ACCOUNTS`) and/or API key (`MEMGRAPHRAG_API_KEY`).
+Enforced today: `/api/*` is never whitelisted (it fronts the billed LLM),
+`CORS_ORIGINS=*` disables credentialed cross-origin requests, `REQUIRE_AUTH=true`
+fails closed, `POST /login` is rate-limited per IP, and uploads are capped by
+`MAX_UPLOAD_SIZE`. Details in
+[`docs/MemGraphRAG-API-Server.md`](docs/MemGraphRAG-API-Server.md).
+
+`POST /query/stream` is SSE-framed but **not** token streaming: the answer is
+awaited in full, then emitted in one frame.
+
+Run a single worker. Startup refuses `WORKERS > 1` while a file-backed backend is
+selected, because two processes on one `WORKING_DIR` corrupt the JSON / GraphML
+files.
 
 ### 📄 File processing
 
 - **Parsers**: `legacy` (local PDF/Office/text) and optional **Docling** (compose profile / external service)
-- **Chunkers**: **F** (fixed), **R** (recursive), **P** (paragraph / semantic) — selected via env (`CHUNK_*`)
+- **Chunkers**: **F** (fixed), **R** (recursive), **P** (paragraph / semantic) — selected per file type via `MEMGRAPHRAG_PARSER`; sized by `CHUNK_SIZE` / `CHUNK_OVERLAP_SIZE`, which apply to all three
 
 ### 💾 Pluggable storage
 
@@ -117,8 +129,14 @@ Selected by `MEMGRAPHRAG_{KV,VECTOR,GRAPH,DOC_STATUS}_STORAGE`:
 
 Personalized PageRank over the memory graph:
 
-- **`PPR_ENGINE=igraph`** (default) — paper-exact local engine
+- **`PPR_ENGINE=igraph`** (default) — local in-process engine
 - **`PPR_ENGINE=neo4j_gds`** — Neo4j Graph Data Science alternative
+
+This is an adaptation of the paper's retrieval, not a faithful reimplementation:
+the seeding and scoring rules are simplified, several equations of the paper have
+no counterpart here, and nothing in the repository has been benchmarked against
+the published results. Do not describe it as paper-exact — see
+[`docs/Reproduce.md`](docs/Reproduce.md) for what measuring it would actually take.
 
 ### 📡 Langfuse observability
 
@@ -150,7 +168,7 @@ memgraphrag/                 # repository root
 │   ├── core.py              # MemGraphRAG engine (index / retrieve / rag_qa)
 │   ├── memory.py            # Three-layer memory (schema / fact / passage)
 │   ├── pipeline.py          # Async ingestion pipeline
-│   ├── retrieval.py         # Retrieval orchestration
+│   ├── retrieval.py         # Retrieval-state scaffolding (not yet wired in)
 │   ├── base.py              # Storage ABCs
 │   └── rerank.py            # Fact / passage reranking
 ├── docs/                    # Deployment & API guides
@@ -160,7 +178,7 @@ memgraphrag/                 # repository root
 ├── docker-compose.yml       # Postgres + Neo4j + app (+ docling profile)
 ├── docker-entrypoint.sh     # Container entrypoint
 ├── pyproject.toml           # Packaging & extras
-├── env.example              # Environment template
+├── env.example              # Environment template (the only one)
 ├── AGENTS.md                # Agent / contributor conventions
 └── README.md
 ```

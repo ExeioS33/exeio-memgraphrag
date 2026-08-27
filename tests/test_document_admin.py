@@ -11,6 +11,8 @@ from memgraphrag.base import DocStatus
 from memgraphrag.pipeline import _assign_chunk_ids
 from memgraphrag.utils.hashing import compute_mdhash_id
 
+pytestmark = pytest.mark.offline
+
 
 def test_assign_chunk_ids_are_content_hashes():
     chunks = [

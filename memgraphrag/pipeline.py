@@ -276,7 +276,10 @@ async def process_pending(
         )
         try:
             record = await _set_status(
-                doc_status_storage, doc_id, record, DocStatus.PARSING,
+                doc_status_storage,
+                doc_id,
+                record,
+                DocStatus.PARSING,
                 memory_sub_stage=None,
             )
             sub_step(logger, "ingest.doc.status", doc_id=doc_id, status="parsing")
@@ -327,8 +330,7 @@ async def process_pending(
             strategy = parse_chunking_strategy(process_options)
             chunk_opts = dict(record.get("chunk_options") or {})
             chunk_token_size = int(
-                chunk_opts.get("chunk_token_size")
-                or os.getenv("CHUNK_SIZE", CHUNK_SIZE)
+                chunk_opts.get("chunk_token_size") or os.getenv("CHUNK_SIZE", CHUNK_SIZE)
             )
             chunk_overlap = int(
                 chunk_opts.get("chunk_overlap_token_size")
@@ -346,9 +348,7 @@ async def process_pending(
                 if "split_by_character" in chunk_opts:
                     chunk_kwargs["split_by_character"] = chunk_opts["split_by_character"]
                 if "split_by_character_only" in chunk_opts:
-                    chunk_kwargs["split_by_character_only"] = chunk_opts[
-                        "split_by_character_only"
-                    ]
+                    chunk_kwargs["split_by_character_only"] = chunk_opts["split_by_character_only"]
             elif strategy == "R" and "separators" in chunk_opts:
                 chunk_kwargs["separators"] = chunk_opts["separators"]
 

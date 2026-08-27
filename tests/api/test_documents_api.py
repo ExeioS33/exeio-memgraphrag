@@ -259,8 +259,12 @@ async def test_graph_export_keeps_edges_connected_and_hides_passage_text(
     rag.graph = MagicMock()
     rag.graph.get_all_nodes = AsyncMock(
         return_value=[
-            {"id": f"n{i}", "label": "Passage", "props": {"content": "secret " * 50},
-             "content": "secret " * 50}
+            {
+                "id": f"n{i}",
+                "label": "Passage",
+                "props": {"content": "secret " * 50},
+                "content": "secret " * 50,
+            }
             for i in range(10)
         ]
     )
@@ -272,9 +276,7 @@ async def test_graph_export_keeps_edges_connected_and_hides_passage_text(
             {"source": "n1", "target": "n9", "type": "rel"},
         ]
     )
-    app = create_app(
-        _test_args(input_dir=str(tmp_path / "inputs")), testing=True, rag=rag
-    )
+    app = create_app(_test_args(input_dir=str(tmp_path / "inputs")), testing=True, rag=rag)
 
     with TestClient(app) as client:
         data = client.get("/graphs", params={"limit": 3}).json()

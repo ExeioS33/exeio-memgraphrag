@@ -1,0 +1,20 @@
+# Ruff configuration for MemGraphRAG.
+#
+# This file supersedes `[tool.ruff]` in pyproject.toml: ruff reads ruff.toml
+# first and ignores the pyproject section entirely, so line-length and
+# target-version are restated here rather than inherited. Drop the pyproject
+# section once this file is committed, so there is one source of truth.
+#
+# Adapted from the LightRAG lint setup (ruff-format + ruff --fix in pre-commit),
+# with the rule set pinned rather than left implicit.
+
+line-length = 100
+target-version = "py310"
+
+[lint]
+# Pinned explicitly instead of relying on ruff's implicit default. That default
+# widened between ruff releases: on 0.16 an unpinned run reports ~360 findings
+# where the historical default reports ~16, so a routine `uv lock --upgrade`
+# would turn CI red on code nobody touched. Widen this list deliberately, in a
+# commit that also fixes what it surfaces.
+select = ["E4", "E7", "E9", "F"]

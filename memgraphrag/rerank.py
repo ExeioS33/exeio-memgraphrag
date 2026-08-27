@@ -111,9 +111,7 @@ class FactFilter:
         data = extract_json_object(str(raw))
         picked = data.get("relevant_facts")
         if not isinstance(picked, list):
-            logger.warning(
-                "Fact rerank returned no usable selection; falling back to threshold"
-            )
+            logger.warning("Fact rerank returned no usable selection; falling back to threshold")
             return fallback
 
         kept: list[int] = []

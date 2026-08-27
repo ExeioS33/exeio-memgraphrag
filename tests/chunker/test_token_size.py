@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import pytest
+
 from memgraphrag.chunker.token_size import chunking_by_token_size
 from memgraphrag.utils.tokenizer import TiktokenTokenizer
+
+pytestmark = pytest.mark.offline
 
 
 def test_token_size_overlapping_chunks() -> None:

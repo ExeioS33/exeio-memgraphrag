@@ -1,0 +1,69 @@
+name: Lint
+
+# Adapted from LightRAG's .github/workflows/linting.yaml. The checks run through
+# the locked ruff (extra `pytest` pins it) rather than a floating pre-commit
+# install, so CI and `make lint` cannot disagree about which ruff version — and
+# therefore which rules — decided the verdict.
+
+on:
+  push:
+    branches: [ main, dev ]
+  pull_request:
+    branches: [ main, dev ]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+jobs:
+  lint:
+    name: Ruff check and format
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v9.0.0
+        with:
+          enable-cache: true
+
+      - name: Install dependencies (locked)
+        run: uv sync --frozen --python 3.12 --extra api --extra pytest --extra client
+
+      - name: ruff check
+        id: ruff-check
+        run: uv run --no-sync ruff check --output-format=github .
+
+      - name: ruff format --check
+        id: ruff-format
+        # Runs even when the lint step failed: one push should surface both
+        # classes of problem instead of trickling them out over two CI rounds.
+        if: always()
+        run: uv run --no-sync ruff format --check --diff .
+
+      - name: Post fix instructions on failure
+        if: failure()
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" << 'SUMMARY'
+          ## Lint or formatting checks failed
+
+          Reproduce and fix locally:
+
+          ```bash
+          make fmt     # ruff format . && ruff check --fix .
+          make lint    # same checks this job runs
+          ```
+
+          Or install the hooks once and let them fix each commit:
+
+          ```bash
+          make hooks
+          ```
+
+          The rule set is pinned in `ruff.toml`; widen it in a commit that also
+          fixes what it surfaces.
+          SUMMARY

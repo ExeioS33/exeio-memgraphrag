@@ -75,11 +75,7 @@ def test_query_data_and_stream() -> None:
                 {"data": {"docs": ["a", "b"], "doc_scores": [0.9, 0.4]}},
             )
         if request.url.path == "/query/stream":
-            sse = (
-                'data: {"response": "Hel"}\n\n'
-                'data: {"response": "lo"}\n\n'
-                "data: [DONE]\n\n"
-            )
+            sse = 'data: {"response": "Hel"}\n\ndata: {"response": "lo"}\n\ndata: [DONE]\n\n'
             return httpx.Response(
                 200,
                 headers={"content-type": "text/event-stream"},

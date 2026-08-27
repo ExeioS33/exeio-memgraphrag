@@ -7,6 +7,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+pytestmark = pytest.mark.offline
+
 REQUIRED_METHODS = (
     "initialize",
     "finalize",
@@ -62,8 +64,9 @@ async def test_neo4j_missing_package_raises_on_initialize() -> None:
         namespace="graph",
         global_config={},
     )
-    with patch.object(neo4j_impl, "_NEO4J_AVAILABLE", False), patch.object(
-        neo4j_impl, "AsyncGraphDatabase", None
+    with (
+        patch.object(neo4j_impl, "_NEO4J_AVAILABLE", False),
+        patch.object(neo4j_impl, "AsyncGraphDatabase", None),
     ):
         with pytest.raises(ImportError, match="neo4j package"):
             await storage.initialize()
@@ -131,9 +134,7 @@ async def test_neo4j_methods_with_mocked_driver() -> None:
             if "AS DEGREE" in q:
                 return FakeResult(single_rec=record_degree)
             if "RETURN N, LABELS" in q and "LIMIT 1" in q:
-                return FakeResult(
-                    single_rec={"n": node_props, "labels": ["ws1", "Entity"]}
-                )
+                return FakeResult(single_rec={"n": node_props, "labels": ["ws1", "Entity"]})
             if "RETURN TYPE(R)" in q and "LIMIT 1" in q:
                 return FakeResult(
                     single_rec={
@@ -142,9 +143,7 @@ async def test_neo4j_methods_with_mocked_driver() -> None:
                     }
                 )
             if "RETURN N, LABELS" in q:
-                return FakeResult(
-                    records=[{"n": node_props, "labels": ["ws1", "Entity"]}]
-                )
+                return FakeResult(records=[{"n": node_props, "labels": ["ws1", "Entity"]}])
             if "RETURN A.ENTITY_ID AS SOURCE" in q:
                 return FakeResult(
                     records=[
@@ -166,17 +165,19 @@ async def test_neo4j_methods_with_mocked_driver() -> None:
     mock_adb = MagicMock()
     mock_adb.driver = MagicMock(return_value=fake_driver)
 
-    with patch("memgraphrag.storage.neo4j_impl.AsyncGraphDatabase", mock_adb), patch(
-        "memgraphrag.storage.neo4j_impl._NEO4J_AVAILABLE", True
-    ), patch.dict(
-        "os.environ",
-        {
-            "NEO4J_URI": "bolt://localhost:7687",
-            "NEO4J_USERNAME": "neo4j",
-            "NEO4J_PASSWORD": "test",
-            "NEO4J_DATABASE": "neo4j",
-        },
-        clear=False,
+    with (
+        patch("memgraphrag.storage.neo4j_impl.AsyncGraphDatabase", mock_adb),
+        patch("memgraphrag.storage.neo4j_impl._NEO4J_AVAILABLE", True),
+        patch.dict(
+            "os.environ",
+            {
+                "NEO4J_URI": "bolt://localhost:7687",
+                "NEO4J_USERNAME": "neo4j",
+                "NEO4J_PASSWORD": "test",
+                "NEO4J_DATABASE": "neo4j",
+            },
+            clear=False,
+        ),
     ):
         await storage.initialize()
         assert storage._driver is fake_driver

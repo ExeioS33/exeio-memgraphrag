@@ -9,7 +9,6 @@ import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
-from types import SimpleNamespace
 from typing import Any, Optional
 
 from dotenv import load_dotenv
@@ -218,9 +217,7 @@ async def drain_background_tasks(app: Any, timeout: float) -> int:
     tasks = {t for t in (getattr(app.state, "background_tasks", None) or ()) if not t.done()}
     if not tasks:
         return 0
-    logger.info(
-        "Waiting up to %.1fs for %d background indexing task(s)", timeout, len(tasks)
-    )
+    logger.info("Waiting up to %.1fs for %d background indexing task(s)", timeout, len(tasks))
     _done, unfinished = await asyncio.wait(tasks, timeout=timeout)
     for task in unfinished:
         task.cancel()
@@ -263,20 +260,14 @@ def create_app(
     from memgraphrag.api.routers.query import create_query_router
 
     cfg = args or global_args
-    api_key = (
-        os.getenv("MEMGRAPHRAG_API_KEY")
-        or getattr(cfg, "key", None)
-        or None
-    )
+    api_key = os.getenv("MEMGRAPHRAG_API_KEY") or getattr(cfg, "key", None) or None
     # Built from `cfg`, not from the import-time `global_args` singleton: otherwise a
     # programmatic create_app(args) silently runs with no accounts and no whitelist.
     auth_handler = AuthHandler(cfg)
     whitelist_patterns = compile_whitelist(
         getattr(cfg, "whitelist_paths", "/health,/docs,/openapi.json")
     )
-    combined_auth = get_combined_auth_dependency(
-        api_key, api_key_header_name="X-API-Key"
-    )
+    combined_auth = get_combined_auth_dependency(api_key, api_key_header_name="X-API-Key")
 
     engine = rag if rag is not None else _build_rag(cfg)
 
@@ -320,9 +311,7 @@ def create_app(
     cors_origins = getattr(cfg, "cors_origins", "*") or "*"
     allow_any_origin = cors_origins.strip() == "*"
     origins = (
-        ["*"]
-        if allow_any_origin
-        else [o.strip() for o in cors_origins.split(",") if o.strip()]
+        ["*"] if allow_any_origin else [o.strip() for o in cors_origins.split(",") if o.strip()]
     )
     # Starlette reflects the caller's Origin when allow_origins=["*"], so pairing it
     # with allow_credentials=True lets any third-party page drive this API from an
@@ -354,9 +343,7 @@ def create_app(
     app.state.whitelist_patterns = whitelist_patterns
     app.state.login_limiter = FixedWindowRateLimiter(
         max_attempts=int(getattr(cfg, "login_max_attempts", LOGIN_MAX_ATTEMPTS)),
-        window_seconds=float(
-            getattr(cfg, "login_window_seconds", LOGIN_WINDOW_SECONDS)
-        ),
+        window_seconds=float(getattr(cfg, "login_window_seconds", LOGIN_WINDOW_SECONDS)),
     )
     app.state.input_dir = getattr(cfg, "input_dir", "./data/inputs")
     app.state.testing = testing
@@ -452,14 +439,10 @@ def create_app(
                 ),
             },
         )
-        return PlainTextResponse(
-            body, media_type="text/plain; version=0.0.4; charset=utf-8"
-        )
+        return PlainTextResponse(body, media_type="text/plain; version=0.0.4; charset=utf-8")
 
     @app.post("/login")
-    async def login(
-        request: Request, form_data: OAuth2PasswordRequestForm = Depends()
-    ):
+    async def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends()):
         # /login is unauthenticated by nature, so it is the one endpoint an attacker
         # can hammer for free. Throttle per client before touching the password.
         limiter = app.state.login_limiter

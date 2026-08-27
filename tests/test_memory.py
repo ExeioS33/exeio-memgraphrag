@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from memgraphrag.memory import PassageNode, ThreeLayerMemory
+
+pytestmark = pytest.mark.offline
 
 
 def test_empty_memory() -> None:

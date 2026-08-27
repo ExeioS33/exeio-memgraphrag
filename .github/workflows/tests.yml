@@ -1,0 +1,117 @@
+name: Tests
+
+# Adapted from LightRAG's .github/workflows/tests.yml. Two deliberate changes:
+#
+#  * dependencies come from uv.lock (`uv sync --frozen`), not pip, so CI installs
+#    exactly what `uv sync` gives a developer;
+#  * the job runs the WHOLE suite, not `pytest -m offline`. A `-m offline` gate
+#    reports green while silently deselecting every test whose marker someone
+#    forgot — that is how 45 of this repo's 86 tests stopped being checked. The
+#    integration tests still skip themselves without `--run-integration`, and
+#    tests/test_suite_hygiene.py fails if a marker goes missing again.
+
+on:
+  push:
+    branches: [ main, dev ]
+  pull_request:
+    branches: [ main, dev ]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+jobs:
+  tests:
+    name: Tests (Python ${{ matrix.python-version }})
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.12', '3.13']
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v9.0.0
+        with:
+          enable-cache: true
+
+      - name: Install dependencies (locked)
+        # --frozen installs the exact versions pinned in uv.lock and fails if the
+        # lock has drifted from pyproject.toml, so a dependency edit that was
+        # never re-locked breaks here instead of in production.
+        run: >-
+          uv sync --frozen --python ${{ matrix.python-version }}
+          --extra api --extra pytest --extra client
+
+      - name: Run the test suite
+        # ./scripts/test.sh is the entry point AGENTS.md documents; under `uv run`
+        # it picks up VIRTUAL_ENV and reuses the environment synced above instead
+        # of resolving a second one.
+        run: uv run --no-sync ./scripts/test.sh tests -q --tb=short
+
+  coverage:
+    name: Coverage
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v9.0.0
+        with:
+          enable-cache: true
+
+      - name: Install dependencies (locked)
+        run: >-
+          uv sync --frozen --python 3.12
+          --extra api --extra pytest --extra client
+
+      - name: Measure coverage
+        # pytest-cov is injected with `uv run --with` rather than pinned in
+        # pyproject.toml: it is a CI-only tool and must not enter the runtime
+        # dependency set that ships in the image.
+        #
+        # --cov-fail-under is a FLOOR, not a target: 50 sits just under the 55%
+        # measured when this job was written, so the number can only be raised.
+        # Weakest spots today: storage/postgres_impl.py and the retrieval path.
+        run: >-
+          uv run --no-sync --with pytest-cov python -m pytest tests
+          --cov=memgraphrag
+          --cov-report=term-missing
+          --cov-report=xml:coverage.xml
+          --cov-report=html:htmlcov
+          --cov-fail-under=50
+
+      - name: Publish coverage summary
+        if: always()
+        run: |
+          {
+            echo '## Coverage'
+            echo
+            echo 'Floor: 50% (`--cov-fail-under`). Raise it whenever the measured'
+            echo 'number moves up for good; never lower it to make a build pass.'
+            echo
+            echo 'The full line-by-line report is in the `coverage-report` artifact.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-report
+          path: |
+            coverage.xml
+            htmlcov/
+          retention-days: 14
