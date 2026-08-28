@@ -63,9 +63,10 @@ def write_sidecar(
         if not content:
             continue
         heading = str(block.get("heading") or "")
-        blockid = block.get("blockid") or hashlib.md5(
-            f"{doc_id}:{index}:{heading}:{content}".encode("utf-8")
-        ).hexdigest()
+        blockid = (
+            block.get("blockid")
+            or hashlib.md5(f"{doc_id}:{index}:{heading}:{content}".encode("utf-8")).hexdigest()
+        )
         row = {
             "type": "content",
             "blockid": blockid,
@@ -104,8 +105,7 @@ def write_sidecar(
 
     if tables:
         tables_path.write_text(
-            json.dumps({"version": "1.0", "tables": tables}, ensure_ascii=False, indent=2)
-            + "\n",
+            json.dumps({"version": "1.0", "tables": tables}, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
 

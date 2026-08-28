@@ -7,7 +7,6 @@ MemGraphRAG's Docling parser is a remote HTTP adapter (same pattern as LightRAG)
 ```bash
 # .env
 DOCLING_ENDPOINT=http://docling:5001
-DOCLING_DO_OCR=true
 
 docker compose --profile docling up -d
 ```
@@ -27,6 +26,13 @@ The Docling engine is only selectable when `DOCLING_ENDPOINT` is set; otherwise 
 
 ## Operational notes
 
-- OCR-heavy PDFs can take minutes — parsing runs in background workers.
-- Set `MAX_PARALLEL_PARSE_DOCLING` to cap concurrency.
-- `MEMGRAPHRAG_FORCE_REPARSE_DOCLING=true` bypasses cached parse artifacts.
+- OCR-heavy PDFs can take minutes — parsing runs in background workers. Raise
+  `DOCLING_MAX_POLLS` (× `DOCLING_POLL_INTERVAL_SECONDS`) rather than expecting a
+  timeout knob.
+- OCR is **not** steerable from here. The adapter posts no conversion options, so
+  the docling-serve instance's own defaults decide; `DOCLING_DO_OCR` and
+  `DOCLING_FORCE_OCR` are read nowhere in this repository. Configure OCR on the
+  docling-serve side.
+- `MAX_PARALLEL_PARSE_DOCLING` and `MEMGRAPHRAG_FORCE_REPARSE_DOCLING` are likewise
+  not implemented — `grep -rn` finds no reader for either, and the adapter has no
+  parse-artifact cache to bypass in the first place.

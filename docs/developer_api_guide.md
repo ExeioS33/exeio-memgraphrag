@@ -116,12 +116,17 @@ curl -sS -X POST http://localhost:9621/query/data \
 
 ---
 
-## 5. Streaming (`POST /query/stream`)
+## 5. SSE delivery (`POST /query/stream`)
+
+**Not token streaming.** The server awaits the complete answer, then emits three
+frames at once, so the first byte arrives after the full query latency. The
+endpoint exists for LightRAG client compatibility; `--stream` buys you nothing in
+time-to-first-token.
 
 SSE events (LightRAG-compatible order):
 
 1. `{"references":[…]}`
-2. `{"response":"…"}` (full answer; token streaming not yet implemented)
+2. `{"response":"…"}` (the entire answer, in one frame)
 3. `[DONE]`
 
 ```bash
@@ -141,23 +146,35 @@ Wait until `GET /health` reports `"pipeline_busy": false`. Mutating document rou
 curl -sS -X POST http://localhost:9621/documents/upload \
   -F 'file=@./notes.pdf'
 
-# Insert raw text
+# Insert raw text (body fields: text, optional doc_id — nothing else is read)
 curl -sS -X POST http://localhost:9621/documents/text \
   -H 'Content-Type: application/json' \
-  -d '{"text":"MemGraphRAG uses a three-layer memory graph.","file_source":"note.txt"}'
+  -d '{"text":"MemGraphRAG uses a three-layer memory graph."}'
 
-# List statuses
-curl -sS http://localhost:9621/documents/
+# List statuses — paginated: 100 records per page, follow `next_offset`
+curl -sS 'http://localhost:9621/documents/?limit=100&offset=0'
 ```
+
+All three ingestion doors derive the document id from the **content hash**, so the
+same bytes uploaded twice resolve to one document: the second call answers 200 with
+`status="duplicate"` and leaves the indexed record (and its `chunk_ids`) alone.
+`POST /documents/{doc_id}/requeue` is the way to re-index it on purpose.
 
 Admin delete / clear-all: see [MemGraphRAG-API-Server.md](MemGraphRAG-API-Server.md).
 
 ---
 
-## 7. Health
+## 7. Health and readiness
 
 ```bash
+# Liveness: 200 while the process answers. Carries `ready` / `retrieval_status`.
 curl -sS http://localhost:9621/health
+
+# Readiness: 503 until the engine can actually serve a query.
+curl -sS -o /dev/null -w '%{http_code}\n' http://localhost:9621/health/ready
+
+# Prometheus metrics (authenticated, unlike the two above)
+curl -sS -H "X-API-Key: $MEMGRAPHRAG_API_KEY" http://localhost:9621/metrics
 ```
 
 ---

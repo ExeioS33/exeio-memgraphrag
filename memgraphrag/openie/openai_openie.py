@@ -82,7 +82,7 @@ class OpenIE:
             return _normalize_entities(data)
         except Exception as exc:
             fail_step(logger, "openie.ner", exc=exc)
-            return []
+            raise
 
     async def triple_extraction(
         self, passage: str, named_entities: Sequence[str]
@@ -99,16 +99,35 @@ class OpenIE:
             return _normalize_triples(data)
         except Exception as exc:
             fail_step(logger, "openie.triple", exc=exc)
-            return []
+            raise
 
     async def openie_one(self, idx: str, passage: str) -> dict[str, Any]:
-        entities = await self.ner(passage)
-        triples = await self.triple_extraction(passage, entities)
+        """Extract entities and triples for one passage.
+
+        A failed LLM call is reported as ``failed=True`` rather than as an empty
+        extraction. Swallowing the error used to make a provider outage look exactly
+        like a passage that legitimately holds no triple: the document was marked
+        PROCESSED, its passage was never indexed, and it became unreachable — even to
+        dense retrieval — without a single error line.
+        """
+        try:
+            entities = await self.ner(passage)
+            triples = await self.triple_extraction(passage, entities)
+        except Exception as exc:
+            return {
+                "idx": idx,
+                "passage": passage,
+                "extracted_entities": [],
+                "extracted_triples": [],
+                "failed": True,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
         return {
             "idx": idx,
             "passage": passage,
             "extracted_entities": entities,
             "extracted_triples": triples,
+            "failed": False,
         }
 
     async def batch_openie(

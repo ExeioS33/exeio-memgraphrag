@@ -1,0 +1,25 @@
+# Local mirror of the Lint workflow, adapted from LightRAG's
+# .pre-commit-config.yaml. Install with `make hooks`.
+#
+# Keep the ruff rev in step with the `ruff==` pin in pyproject.toml's `pytest`
+# extra: a hook on a different version formats code that CI then rejects.
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-merge-conflict
+      # Large files here are datasets or storage dumps, which belong outside the
+      # repo (see .gitignore: data/rag_storage, data/inputs).
+      - id: check-added-large-files
+        args: [--maxkb=1024]
+        exclude: ^uv\.lock$
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.1
+    hooks:
+      - id: ruff-format
+      - id: ruff
+        args: [--fix]

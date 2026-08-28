@@ -107,3 +107,72 @@ def test_retrieval_state_not_ready_by_default() -> None:
     assert mgr.is_ready is False
     with pytest.raises(Exception):
         mgr.require_ready()
+
+
+@pytest.mark.offline
+def test_ollama_api_not_whitelisted_by_default() -> None:
+    """/api/* must not be reachable without a credential.
+
+    The Ollama emulation router is mounted on /api and its chat/generate routes call
+    the billed LLM (the /bypass prefix skips retrieval entirely). It used to sit in
+    the default WHITELIST_PATHS, and the whitelist short-circuits before any token or
+    key check — so the most expensive surface was open even with auth configured.
+    """
+    from memgraphrag.api.config import parse_args
+
+    defaults = parse_args([])
+    assert "/api/*" not in (defaults.whitelist_paths or "")
+
+    app = create_app(
+        _test_args(key="secret-key", whitelist_paths=defaults.whitelist_paths),
+        testing=True,
+        rag=_mock_rag(),
+    )
+    with TestClient(app, raise_server_exceptions=False) as client:
+        denied = client.post(
+            "/api/chat",
+            json={"model": "memgraphrag", "messages": [{"role": "user", "content": "hi"}]},
+        )
+        assert denied.status_code in (401, 403)
+
+
+@pytest.mark.offline
+def test_create_app_honours_auth_accounts_argument() -> None:
+    """AuthHandler must be built from `args`, not from the import-time global_args.
+
+    It used to be a module-level singleton, so create_app(args) ran with no accounts
+    and /login fell into its "authentication is disabled" branch, returning 200 and a
+    valid guest token for any password.
+    """
+    app = create_app(
+        _test_args(auth_accounts="admin:pw123", token_secret="unit-test-secret"),
+        testing=True,
+        rag=_mock_rag(),
+    )
+    with TestClient(app, raise_server_exceptions=False) as client:
+        bad = client.post("/login", data={"username": "admin", "password": "wrong"})
+        assert bad.status_code == 401
+
+        good = client.post("/login", data={"username": "admin", "password": "pw123"})
+        assert good.status_code == 200
+        assert good.json()["auth_mode"] == "enabled"
+
+
+@pytest.mark.offline
+def test_wildcard_cors_disables_credentials() -> None:
+    """allow_origins=['*'] with allow_credentials=True makes Starlette reflect the
+    caller's Origin, which is a CSRF primitive against every mutating endpoint."""
+    from fastapi.middleware.cors import CORSMiddleware
+
+    app = create_app(_test_args(cors_origins="*"), testing=True, rag=_mock_rag())
+    cors = [m for m in app.user_middleware if m.cls is CORSMiddleware]
+    assert len(cors) == 1
+    assert cors[0].kwargs["allow_credentials"] is False
+
+    app_explicit = create_app(
+        _test_args(cors_origins="https://app.exeio.test"),
+        testing=True,
+        rag=_mock_rag(),
+    )
+    cors_explicit = [m for m in app_explicit.user_middleware if m.cls is CORSMiddleware]
+    assert cors_explicit[0].kwargs["allow_credentials"] is True

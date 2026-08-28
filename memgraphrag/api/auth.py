@@ -2,19 +2,19 @@
 
 Adapted from LightRAG ``lightrag/api/auth.py`` — slim AuthHandler using python-jose
 JWT and optional bcrypt with plaintext fallback for POC.
+
+Importing this module reads no ``.env``; see ``config.load_env_file``.
 """
 
 from __future__ import annotations
 
+import hmac
 import logging
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from dotenv import load_dotenv
-
 from memgraphrag.api.config import DEFAULT_TOKEN_SECRET, global_args
-
-load_dotenv(dotenv_path=".env", override=False)
 
 logger = logging.getLogger("memgraphrag.api.auth")
 
@@ -45,7 +45,9 @@ def _verify_password(plain: str, stored: str) -> bool:
         except Exception as exc:
             logger.warning("bcrypt verification failed: %s", exc)
             return False
-    return plain == stored
+    # Constant-time comparison: a plain `==` on secrets leaks their prefix length
+    # through response timing.
+    return hmac.compare_digest(plain, stored)
 
 
 class AuthHandler:
@@ -54,24 +56,37 @@ class AuthHandler:
     def __init__(self, args: Any | None = None) -> None:
         cfg = args or global_args
         auth_accounts = getattr(cfg, "auth_accounts", "") or ""
+        api_key = os.getenv("MEMGRAPHRAG_API_KEY") or getattr(cfg, "key", None) or ""
+        require_auth = bool(getattr(cfg, "require_auth", False))
         self.secret = getattr(cfg, "token_secret", None) or ""
         if not self.secret:
+            # DEFAULT_TOKEN_SECRET is published in this repository, so tokens signed
+            # with it can be forged by anyone.
             if auth_accounts:
                 raise ValueError(
                     "TOKEN_SECRET must be explicitly set when AUTH_ACCOUNTS is configured."
                 )
             self.secret = DEFAULT_TOKEN_SECRET
-            logger.warning(
-                "TOKEN_SECRET not set; using default guest-mode JWT secret."
-            )
+            if api_key or require_auth:
+                # API-key-only mode stays usable: a forged token can only carry
+                # role="guest", and guest tokens do not bypass the key check
+                # (see dependencies.combined_dependency). Still worth flagging.
+                logger.warning(
+                    "TOKEN_SECRET not set; JWTs are signed with the public default "
+                    "secret. Access is still gated by the API key, but /login tokens "
+                    "are forgeable. Set TOKEN_SECRET."
+                )
+            else:
+                logger.warning(
+                    "TOKEN_SECRET not set and no authentication configured; using the "
+                    "public default JWT secret. Do not expose this server."
+                )
         algorithm = getattr(cfg, "jwt_algorithm", None) or "HS256"
         if algorithm.lower() == "none":
             raise ValueError("JWT_ALGORITHM 'none' is not permitted.")
         self.algorithm = algorithm
         self.expire_hours = float(getattr(cfg, "token_expire_hours", 48) or 48)
-        self.guest_expire_hours = float(
-            getattr(cfg, "guest_token_expire_hours", 24) or 24
-        )
+        self.guest_expire_hours = float(getattr(cfg, "guest_token_expire_hours", 24) or 24)
         self.accounts: dict[str, str] = {}
         if auth_accounts:
             for account in auth_accounts.split(","):
@@ -85,9 +100,7 @@ class AuthHandler:
                         "AUTH_ACCOUNTS must use comma-separated user:password pairs."
                     ) from exc
                 if not username or not password:
-                    raise ValueError(
-                        "AUTH_ACCOUNTS must use comma-separated user:password pairs."
-                    )
+                    raise ValueError("AUTH_ACCOUNTS must use comma-separated user:password pairs.")
                 if len(username) > MAX_TOKEN_SUBJECT_LENGTH:
                     raise ValueError(
                         f"AUTH_ACCOUNTS usernames must be at most "
@@ -109,13 +122,9 @@ class AuthHandler:
         metadata: dict[str, Any] | None = None,
     ) -> str:
         if jwt is None:
-            raise RuntimeError(
-                "python-jose is required for JWT auth; install memgraphrag[api]"
-            )
+            raise RuntimeError("python-jose is required for JWT auth; install memgraphrag[api]")
         if custom_expire_hours is None:
-            expire_hours = (
-                self.guest_expire_hours if role == "guest" else self.expire_hours
-            )
+            expire_hours = self.guest_expire_hours if role == "guest" else self.expire_hours
         else:
             expire_hours = custom_expire_hours
         expire = datetime.now(timezone.utc) + timedelta(hours=expire_hours)
@@ -137,9 +146,7 @@ class AuthHandler:
 
         def _unauthorized(detail: str) -> None:
             if HTTPException is not None and status is not None:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED, detail=detail
-                )
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=detail)
             raise ValueError(detail)
 
         if jwt is None:
@@ -172,4 +179,25 @@ class AuthHandler:
             raise  # pragma: no cover — unreachable
 
 
-auth_handler = AuthHandler()
+class _LazyAuthHandler:
+    """Backwards-compatible module-level handler, built on first use.
+
+    ``create_app`` builds its own handler from the config it is handed and stores it
+    on ``app.state``; this fallback exists only for code that still imports
+    ``auth_handler`` directly. Constructing it eagerly at import time read the
+    environment before the entry point had loaded ``.env``, which emitted a
+    misleading "TOKEN_SECRET not set" warning even when the running app had one.
+    """
+
+    _handler: AuthHandler | None = None
+
+    def _resolve(self) -> AuthHandler:
+        if self._handler is None:
+            self._handler = AuthHandler()
+        return self._handler
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._resolve(), name)
+
+
+auth_handler = _LazyAuthHandler()

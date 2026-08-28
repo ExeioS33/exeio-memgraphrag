@@ -185,17 +185,13 @@ def available_engine_suffixes(
     return frozenset(out)
 
 
-def suffix_capabilities(
-    engine: str, specs: dict[str, ParserSpec] | None = None
-) -> frozenset[str]:
+def suffix_capabilities(engine: str, specs: dict[str, ParserSpec] | None = None) -> frozenset[str]:
     table = specs if specs is not None else _REGISTRY
     spec = table.get(engine)
     return spec.effective_suffixes() if spec is not None else frozenset()
 
 
-def engine_endpoint_configured(
-    engine: str, specs: dict[str, ParserSpec] | None = None
-) -> bool:
+def engine_endpoint_configured(engine: str, specs: dict[str, ParserSpec] | None = None) -> bool:
     table = specs if specs is not None else _REGISTRY
     spec = table.get(engine)
     return spec.endpoint_configured() if spec is not None else True

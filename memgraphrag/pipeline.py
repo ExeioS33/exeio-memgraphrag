@@ -25,10 +25,19 @@ from memgraphrag.parser.routing import (
     resolve_parser_directives,
 )
 from memgraphrag.utils.hashing import compute_mdhash_id
-from memgraphrag.utils.step_log import done_step, fail_step, main_step, sub_step
+from memgraphrag.utils.step_log import done_step, fail_step, main_step, sub_step, truncate
 from memgraphrag.utils.tokenizer import TiktokenTokenizer
 
 logger = logging.getLogger(__name__)
+
+# Upper bound on the preview kept in each doc-status record. The full body used to be
+# stored there, so ``GET /documents/`` serialized the whole corpus into one response;
+# a bounded preview keeps the listing useful without turning status into a store.
+CONTENT_SUMMARY_LIMIT = 200
+
+# Statuses a crash can freeze forever: nothing ever moves a document out of them
+# except the worker that died mid-flight.
+INTERRUPTED_STATUSES = (DocStatus.PARSING, DocStatus.PROCESSING)
 
 # PROCESSING sub-stages (AGENTS.md)
 _MEMORY_SUB_STAGES = (
@@ -78,7 +87,13 @@ async def enqueue_document(
     parse_engine: str | None = None,
     chunk_options: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Enqueue a document as ``PENDING`` for later :func:`process_pending`."""
+    """Enqueue a document as ``PENDING`` for later :func:`process_pending`.
+
+    ``content`` is only summarised into the record; the body itself is *not* stored in
+    doc-status. Callers that ingest raw text must first persist it (``file_path`` has
+    to resolve to a readable file) or :func:`process_pending` will find nothing to
+    parse.
+    """
     main_step(
         logger,
         "ingest.enqueue",
@@ -114,7 +129,10 @@ async def enqueue_document(
     record: dict[str, Any] = {
         "status": DocStatus.PENDING.value,
         "file_path": file_path,
-        "content": content,
+        # Preview + length only. Keeping the whole body here made every listing of
+        # doc-status proportional to the corpus size.
+        "content_summary": truncate(content, CONTENT_SUMMARY_LIMIT) if content else "",
+        "content_length": len(content) if content else 0,
         "parse_engine": engine,
         "process_options": process_options,
         "chunk_options": chunk_options or {},
@@ -131,6 +149,46 @@ async def enqueue_document(
         status="pending",
     )
     return record
+
+
+async def reset_interrupted_documents(
+    doc_status_storage: DocStatusStorage,
+) -> list[str]:
+    """Move documents stuck in PARSING/PROCESSING back to PENDING.
+
+    Those two statuses are only ever left behind by a worker that died mid-flight
+    (OOM kill, SIGTERM, container restart): :func:`process_pending` looks at PENDING
+    only, so without this sweep such a document is never retried and stays wedged for
+    the lifetime of the storage. Call it at startup, before serving traffic.
+
+    Returns the ids that were requeued.
+    """
+    stuck = await doc_status_storage.get_docs_by_statuses(list(INTERRUPTED_STATUSES))
+    if not stuck:
+        return []
+    recovered: list[str] = []
+    for doc_id, record in stuck.items():
+        previous = str((record or {}).get("status") or "")
+        updated = dict(record or {})
+        updated["status"] = DocStatus.PENDING.value
+        updated["updated_at"] = _now()
+        meta = dict(updated.get("metadata") or {})
+        meta["memory_sub_stage"] = None
+        meta["recovered_from"] = previous
+        updated["metadata"] = meta
+        # A half-indexed run may have recorded chunk ids that were never installed;
+        # drop them so the retry re-derives the set instead of trusting a torn write.
+        updated.pop("chunk_ids", None)
+        await doc_status_storage.upsert({doc_id: updated})
+        recovered.append(doc_id)
+        sub_step(
+            logger,
+            "ingest.recover.doc",
+            doc_id=doc_id,
+            from_status=previous,
+        )
+    done_step(logger, "ingest.recover", recovered=len(recovered))
+    return recovered
 
 
 def _assign_chunk_ids(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -218,7 +276,10 @@ async def process_pending(
         )
         try:
             record = await _set_status(
-                doc_status_storage, doc_id, record, DocStatus.PARSING,
+                doc_status_storage,
+                doc_id,
+                record,
+                DocStatus.PARSING,
                 memory_sub_stage=None,
             )
             sub_step(logger, "ingest.doc.status", doc_id=doc_id, status="parsing")
@@ -232,6 +293,8 @@ async def process_pending(
 
             engine_name = str(record.get("parse_engine") or "legacy")
             content_data: dict[str, Any] = {
+                # ``content`` is no longer written by enqueue_document; it is still
+                # read so doc-status files written by earlier versions keep working.
                 "content": record.get("content"),
                 "source_file": str(source) if source.is_file() else file_path,
             }
@@ -267,8 +330,7 @@ async def process_pending(
             strategy = parse_chunking_strategy(process_options)
             chunk_opts = dict(record.get("chunk_options") or {})
             chunk_token_size = int(
-                chunk_opts.get("chunk_token_size")
-                or os.getenv("CHUNK_SIZE", CHUNK_SIZE)
+                chunk_opts.get("chunk_token_size") or os.getenv("CHUNK_SIZE", CHUNK_SIZE)
             )
             chunk_overlap = int(
                 chunk_opts.get("chunk_overlap_token_size")
@@ -286,9 +348,7 @@ async def process_pending(
                 if "split_by_character" in chunk_opts:
                     chunk_kwargs["split_by_character"] = chunk_opts["split_by_character"]
                 if "split_by_character_only" in chunk_opts:
-                    chunk_kwargs["split_by_character_only"] = chunk_opts[
-                        "split_by_character_only"
-                    ]
+                    chunk_kwargs["split_by_character_only"] = chunk_opts["split_by_character_only"]
             elif strategy == "R" and "separators" in chunk_opts:
                 chunk_kwargs["separators"] = chunk_opts["separators"]
 

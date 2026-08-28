@@ -10,6 +10,8 @@ from memgraphrag.parser.base import ParseContext
 from memgraphrag.parser.legacy.parser import LegacyParser
 from memgraphrag.parser.registry import get_parser
 
+pytestmark = pytest.mark.offline
+
 
 @pytest.mark.asyncio
 async def test_legacy_parser_txt(tmp_path: Path) -> None:
@@ -17,9 +19,7 @@ async def test_legacy_parser_txt(tmp_path: Path) -> None:
     path.write_text("Hello MemGraphRAG.\nSecond line.\n", encoding="utf-8")
 
     parser = LegacyParser()
-    result = await parser.parse(
-        ParseContext(doc_id="doc-1", file_path=str(path), content_data={})
-    )
+    result = await parser.parse(ParseContext(doc_id="doc-1", file_path=str(path), content_data={}))
 
     assert result.parse_format == "raw"
     assert result.parse_engine == "legacy"

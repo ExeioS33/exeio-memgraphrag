@@ -102,9 +102,7 @@ class DoclingParser(BaseParser):
             )
             await self._poll_until_done(client, endpoint, task_id, poll_wait, max_polls)
             sub_step(logger, "parse.docling.fetch", task_id=task_id)
-            content, blocks = await self._fetch_result(
-                client, endpoint, task_id, source.name
-            )
+            content, blocks = await self._fetch_result(client, endpoint, task_id, source.name)
 
         if not content.strip() and not blocks:
             fail_step(
@@ -152,9 +150,7 @@ class DoclingParser(BaseParser):
             parse_engine=self.engine_name,
         )
 
-    async def _submit(
-        self, client: Any, endpoint: str, source: Path
-    ) -> str:
+    async def _submit(self, client: Any, endpoint: str, source: Path) -> str:
         url = f"{endpoint}{CONVERT_PATH}"
         data = {
             "pipeline": "standard",
@@ -187,9 +183,7 @@ class DoclingParser(BaseParser):
             resp = await client.get(url, params={"wait": poll_wait})
             resp.raise_for_status()
             payload = resp.json() if resp.text else {}
-            status = str(
-                payload.get("task_status") or payload.get("status") or ""
-            ).lower()
+            status = str(payload.get("task_status") or payload.get("status") or "").lower()
             if status in SUCCESS_STATES:
                 return
             if status in FAILURE_STATES:
@@ -239,9 +233,7 @@ class DoclingParser(BaseParser):
         text = body.decode("utf-8", errors="replace")
         return text, [{"content": text, "heading": "", "level": 0}] if text.strip() else []
 
-    def _extract_from_zip(
-        self, payload: bytes, filename: str
-    ) -> tuple[str, list[dict[str, Any]]]:
+    def _extract_from_zip(self, payload: bytes, filename: str) -> tuple[str, list[dict[str, Any]]]:
         """Unpack Docling zip and prefer markdown / DoclingDocument JSON."""
         stem = Path(filename).stem
         with tempfile.TemporaryDirectory(prefix="memgraphrag-docling-") as tmp:
@@ -290,8 +282,7 @@ class DoclingParser(BaseParser):
                 return markdown, [{"content": markdown, "heading": "", "level": 0}]
 
             raise RuntimeError(
-                f"Docling zip for {filename} had no usable .md/.json "
-                f"(entries={names[:20]!r})"
+                f"Docling zip for {filename} had no usable .md/.json (entries={names[:20]!r})"
             )
 
     @staticmethod
@@ -317,9 +308,7 @@ class DoclingParser(BaseParser):
                 return path
         return candidates[0]
 
-    def _extract_from_json(
-        self, payload: Any, filename: str
-    ) -> tuple[str, list[dict[str, Any]]]:
+    def _extract_from_json(self, payload: Any, filename: str) -> tuple[str, list[dict[str, Any]]]:
         markdown = ""
         document: dict[str, Any] | None = None
 
@@ -357,18 +346,14 @@ class DoclingParser(BaseParser):
                     if "title" in label.lower() or "heading" in label.lower():
                         heading = text
                         level = 1
-                    blocks.append(
-                        {"content": text, "heading": heading, "level": level}
-                    )
+                    blocks.append({"content": text, "heading": heading, "level": level})
 
         if not markdown and blocks:
             markdown = "\n\n".join(b["content"] for b in blocks)
         if not blocks and markdown.strip():
             blocks = [{"content": markdown, "heading": "", "level": 0}]
 
-        logger.debug(
-            "[docling] extracted %d blocks from %s", len(blocks), filename
-        )
+        logger.debug("[docling] extracted %d blocks from %s", len(blocks), filename)
         sub_step(
             logger,
             "parse.docling.extract_blocks",

@@ -18,7 +18,7 @@ RUN apt-get update \
 
 COPY pyproject.toml uv.lock ./
 COPY memgraphrag/ ./memgraphrag/
-COPY README.md LICENSE ./
+COPY README.md LICENSE NOTICE THIRD_PARTY_LICENSES.md ./
 
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --extra api --no-editable
@@ -44,7 +44,7 @@ RUN apt-get update \
 
 COPY --from=builder /app/.venv /app/.venv
 COPY --from=builder /app/memgraphrag /app/memgraphrag
-COPY --from=builder /app/pyproject.toml /app/README.md /app/LICENSE /app/
+COPY --from=builder /app/pyproject.toml /app/README.md /app/LICENSE /app/NOTICE /app/THIRD_PARTY_LICENSES.md /app/
 COPY docker-entrypoint.sh /app/docker-entrypoint.sh
 
 RUN chmod +x /app/docker-entrypoint.sh \
@@ -60,6 +60,17 @@ ENV PYTHONUNBUFFERED=1
 ENV MEMGRAPHRAG_VERSION=${MEMGRAPHRAG_VERSION}
 
 EXPOSE 9621
+
+# Liveness only: /health is whitelisted and answers 200 while the process serves, so
+# the container is not restarted merely because the corpus is still warming up.
+# Readiness (GET /health/ready, 503 until the engine can answer a query) belongs to
+# the orchestrator, not to the restart policy.
+# The scheme is unknown at build time (SSL=true flips the listener to HTTPS), so both
+# are tried; -k because the bundled cert is self-signed for local use.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
+    CMD curl -fsS "http://127.0.0.1:${PORT}/health" \
+     || curl -fsSk "https://127.0.0.1:${PORT}/health" \
+     || exit 1
 
 # Entrypoint starts as root to fix bind-mount ownership, then drops to UID 1000.
 ENTRYPOINT ["/app/docker-entrypoint.sh"]

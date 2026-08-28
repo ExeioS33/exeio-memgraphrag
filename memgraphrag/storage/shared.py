@@ -1,8 +1,16 @@
 """In-process shared state for retrieval refresh signaling.
 
-Simplified from LightRAG ``lightrag/kg/shared_storage.py``: a single-process
-dict + ``asyncio.Lock`` used by gunicorn workers within one process (or as
-a best-effort in-memory signal before a multi-process bus is added).
+Simplified from LightRAG ``lightrag/kg/shared_storage.py``: a plain module-level
+dict guarded by an ``asyncio.Lock``.
+
+Scope: **one interpreter only.** Each gunicorn worker gets its own copy of these
+dicts, so a flag set in one worker is invisible to the others — this is not the
+multi-process bus LightRAG's shared storage provides, and it is part of why
+``WORKERS > 1`` is refused for file-backed storage (see
+``memgraphrag.api.config.validate_worker_count``).
+
+Status: consumed only by ``memgraphrag.retrieval``, which is itself not yet wired
+into the server. Kept as that module's dependency, not as a general-purpose API.
 """
 
 from __future__ import annotations

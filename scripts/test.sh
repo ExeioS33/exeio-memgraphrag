@@ -45,6 +45,15 @@ run_uv() {
     if ! command -v uv >/dev/null 2>&1; then
         return 1
     fi
+    # --no-sync first: a plain `uv run` re-resolves the environment down to the
+    # default dependency set, which uninstalls the api/pytest/client extras and
+    # makes the fastapi/asyncpg tests importorskip themselves away — a silent
+    # green. Fall back to the syncing form only when nothing is installed yet.
+    TRIED+=("uv-managed environment: uv run --no-sync python -m pytest")
+    if uv run --no-sync python -c "import pytest" >/dev/null 2>&1; then
+        printf "Using uv-managed environment (--no-sync)\n"
+        exec uv run --no-sync python -m pytest "$@"
+    fi
     TRIED+=("uv-managed environment: uv run python -m pytest")
     if uv run python -c "import pytest" >/dev/null 2>&1; then
         printf "Using uv-managed environment\n"

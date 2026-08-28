@@ -75,11 +75,7 @@ def test_query_data_and_stream() -> None:
                 {"data": {"docs": ["a", "b"], "doc_scores": [0.9, 0.4]}},
             )
         if request.url.path == "/query/stream":
-            sse = (
-                'data: {"response": "Hel"}\n\n'
-                'data: {"response": "lo"}\n\n'
-                "data: [DONE]\n\n"
-            )
+            sse = 'data: {"response": "Hel"}\n\ndata: {"response": "lo"}\n\ndata: [DONE]\n\n'
             return httpx.Response(
                 200,
                 headers={"content-type": "text/event-stream"},
@@ -254,3 +250,40 @@ def test_upload_url_wraps_ssl_errors(monkeypatch: pytest.MonkeyPatch) -> None:
             client.upload_url("https://example.com/paper.pdf")
     finally:
         client.close()
+
+
+@pytest.mark.offline
+def test_list_documents_follows_pagination() -> None:
+    # GET /documents/ became paginated (100 records per page); the client used to
+    # return the raw first page, so a corpus of 250 documents displayed as 100.
+    offsets: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        offset = int(request.url.params.get("offset", 0))
+        offsets.append(request.url.params.get("offset"))
+        all_ids = [f"doc-{i}" for i in range(5)]
+        window = all_ids[offset : offset + 2]
+        page = {doc_id: {"status": "processed"} for doc_id in window}
+        next_offset = offset + len(window) if offset + len(window) < len(all_ids) else None
+        return _json_response(
+            request,
+            {
+                "statuses": page,
+                "total": 5,
+                "limit": 2,
+                "offset": offset,
+                "returned": len(page),
+                "next_offset": next_offset,
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    with MemGraphRAGClient(base_url="http://test", transport=transport) as client:
+        merged = client.list_documents(limit=2)
+        single = client.list_documents(limit=2, all_pages=False)
+
+    assert list(merged["statuses"]) == [f"doc-{i}" for i in range(5)]
+    assert merged["next_offset"] is None
+    assert offsets[:3] == ["0", "2", "4"]
+    assert len(single["statuses"]) == 2
+    assert single["next_offset"] == 2

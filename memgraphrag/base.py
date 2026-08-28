@@ -8,6 +8,7 @@ Query fields and modes are MemGraphRAG-native (PPR / naive / context / bypass).
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Literal
@@ -47,15 +48,11 @@ class QueryParam:
     """Number of linked nodes at each retrieval step."""
 
     passage_node_weight: float = field(
-        default_factory=lambda: get_env_value(
-            "PASSAGE_NODE_WEIGHT", PASSAGE_NODE_WEIGHT, float
-        )
+        default_factory=lambda: get_env_value("PASSAGE_NODE_WEIGHT", PASSAGE_NODE_WEIGHT, float)
     )
     """Multiplicative weight for passage nodes in PPR."""
 
-    damping: float = field(
-        default_factory=lambda: get_env_value("DAMPING", DAMPING, float)
-    )
+    damping: float = field(default_factory=lambda: get_env_value("DAMPING", DAMPING, float))
     """Damping factor for Personalized PageRank."""
 
     fact_similarity_threshold: float = field(
@@ -66,9 +63,7 @@ class QueryParam:
     """Minimum fact similarity when skip_fact_rerank is enabled."""
 
     skip_fact_rerank: bool = field(
-        default_factory=lambda: get_env_value(
-            "SKIP_FACT_RERANK", SKIP_FACT_RERANK, bool
-        )
+        default_factory=lambda: get_env_value("SKIP_FACT_RERANK", SKIP_FACT_RERANK, bool)
     )
     """If True, skip fact reranking and filter by similarity threshold."""
 
@@ -78,9 +73,7 @@ class QueryParam:
     """Number of ontology schemas to link from the query embedding."""
 
     schema_node_weight: float = field(
-        default_factory=lambda: get_env_value(
-            "SCHEMA_NODE_WEIGHT", SCHEMA_NODE_WEIGHT, float
-        )
+        default_factory=lambda: get_env_value("SCHEMA_NODE_WEIGHT", SCHEMA_NODE_WEIGHT, float)
     )
     """Multiplicative weight for schema-expanded seeds in PPR."""
 
@@ -107,6 +100,22 @@ class StorageNameSpace(ABC):
     @abstractmethod
     async def finalize(self) -> None:
         """Flush and release resources."""
+
+    @asynccontextmanager
+    async def batch(self):
+        """Group many writes into one persistence step.
+
+        Backends that rewrite their whole state on every write (``IgraphStorage``
+        rewrites the GraphML file, ``JsonKVStorage`` the JSON index, and
+        ``NanoVectorDBStorage`` the vector file) override this to defer the write
+        until the outermost block exits; an ingestion loop is otherwise O(N) full
+        rewrites, i.e. quadratic in the corpus. Declared here rather than per
+        storage kind so a caller can wrap any write loop without asking which
+        backend it got: the default is a no-op, which is already correct for
+        PostgreSQL. ``Neo4JStorage`` overrides it too, to buffer writes and send
+        them as UNWIND batches instead of one round trip per node or edge.
+        """
+        yield self
 
 
 @dataclass
@@ -135,15 +144,11 @@ class BaseKVStorage(StorageNameSpace, ABC):
 
     async def get_all(self) -> dict[str, dict[str, Any]]:
         """Optional: return all records. Backends may leave this unimplemented."""
-        raise NotImplementedError(
-            f"{type(self).__name__} does not implement get_all()"
-        )
+        raise NotImplementedError(f"{type(self).__name__} does not implement get_all()")
 
     async def drop(self) -> None:
         """Optional: wipe all records in this namespace."""
-        raise NotImplementedError(
-            f"{type(self).__name__} does not implement drop()"
-        )
+        raise NotImplementedError(f"{type(self).__name__} does not implement drop()")
 
 
 @dataclass
@@ -151,10 +156,24 @@ class BaseVectorStorage(StorageNameSpace, ABC):
     """Vector similarity storage ABC."""
 
     @abstractmethod
-    async def query(
-        self, query_embedding: list[float], top_k: int
-    ) -> list[dict[str, Any]]:
-        """Return the ``top_k`` nearest neighbours for ``query_embedding``."""
+    async def query(self, query_embedding: list[float], top_k: int) -> list[dict[str, Any]]:
+        """Return the ``top_k`` nearest neighbours for ``query_embedding``.
+
+        Score contract (binding on every backend):
+
+        * each hit carries a ``"score"`` key holding **cosine similarity**, a float in
+          ``[-1.0, 1.0]`` where **higher means more similar**;
+        * ``"distance"`` is a deprecated alias kept at the same value;
+        * hits are ordered by decreasing ``score``.
+
+        This contract exists because it used to be implicit: both backends already
+        returned a similarity but published it under the key ``distance``, so the
+        engine tried to guess whether it held a similarity or a distance and inverted
+        the whole list through ``1/(1+abs(s))`` — a *decreasing* function — as soon as
+        one negative score appeared. Under pgvector (cosine in ``[-1,1]``) that
+        reversed the ranking: the best fact was dropped and the least similar kept.
+        Never publish a raw distance here; convert at the backend boundary.
+        """
 
     @abstractmethod
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
@@ -169,9 +188,7 @@ class BaseVectorStorage(StorageNameSpace, ABC):
 
     async def drop(self) -> None:
         """Optional: wipe all vectors in this namespace."""
-        raise NotImplementedError(
-            f"{type(self).__name__} does not implement drop()"
-        )
+        raise NotImplementedError(f"{type(self).__name__} does not implement drop()")
 
 
 @dataclass
@@ -204,9 +221,7 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         """Return node properties, or ``None`` if missing."""
 
     @abstractmethod
-    async def get_edge(
-        self, source_node_id: str, target_node_id: str
-    ) -> dict[str, Any] | None:
+    async def get_edge(self, source_node_id: str, target_node_id: str) -> dict[str, Any] | None:
         """Return edge properties, or ``None`` if missing."""
 
     @abstractmethod
@@ -227,9 +242,7 @@ class BaseGraphStorage(StorageNameSpace, ABC):
 
     async def node_degree(self, node_id: str) -> int:
         """Optional: return the degree of ``node_id``."""
-        raise NotImplementedError(
-            f"{type(self).__name__} does not implement node_degree()"
-        )
+        raise NotImplementedError(f"{type(self).__name__} does not implement node_degree()")
 
 
 class DocStatus(str, Enum):
@@ -250,7 +263,5 @@ class DocStatusStorage(BaseKVStorage, ABC):
     """Document-status KV storage with status filtering."""
 
     @abstractmethod
-    async def get_docs_by_statuses(
-        self, statuses: list[DocStatus]
-    ) -> dict[str, dict[str, Any]]:
+    async def get_docs_by_statuses(self, statuses: list[DocStatus]) -> dict[str, dict[str, Any]]:
         """Return documents whose status is in ``statuses``, keyed by doc id."""

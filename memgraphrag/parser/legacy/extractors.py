@@ -161,9 +161,7 @@ def _decode_text(file_bytes: bytes) -> str:
     return content
 
 
-def extract_text(
-    file_bytes: bytes, suffix: str, *, pdf_password: str | None = None
-) -> str:
+def extract_text(file_bytes: bytes, suffix: str, *, pdf_password: str | None = None) -> str:
     """Extract plain text from ``file_bytes`` based on ``suffix`` (no dot)."""
     suffix = suffix.lower().lstrip(".")
     extractor = _BINARY_EXTRACTORS.get(suffix)

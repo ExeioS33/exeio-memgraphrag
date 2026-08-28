@@ -146,14 +146,11 @@ def _validate_filename_hint(
         return
     inner = m.group(1).strip()
     if not inner:
-        raise FilenameParserHintError(
-            f"Invalid filename parser hint in {basename!r}: empty hint"
-        )
+        raise FilenameParserHintError(f"Invalid filename parser hint in {basename!r}: empty hint")
     engine, options = split_engine_and_options(inner)
     if engine is None and not options and not inner.startswith("-"):
         raise FilenameParserHintError(
-            f"Invalid filename parser hint in {basename!r}: "
-            f"unsupported engine {inner!r}"
+            f"Invalid filename parser hint in {basename!r}: unsupported engine {inner!r}"
         )
     if engine and engine not in supported_parser_engines():
         supported = ", ".join(sorted(supported_parser_engines()))
@@ -169,14 +166,9 @@ def _validate_filename_hint(
                 f"engine {engine!r} does not support suffix {suffix!r}"
             )
         req = engine_endpoint_requirement(engine)
-        if (
-            require_external_endpoint
-            and req
-            and not engine_endpoint_configured(engine)
-        ):
+        if require_external_endpoint and req and not engine_endpoint_configured(engine):
             raise FilenameParserHintError(
-                f"Invalid filename parser hint in {basename!r}: "
-                f"requires {req} to be configured"
+                f"Invalid filename parser hint in {basename!r}: requires {req} to be configured"
             )
 
 
@@ -201,9 +193,7 @@ def _matching_rule_directives(
         engine = normalize_parser_engine(head)
         if not fnmatch.fnmatch(suffix, pattern):
             continue
-        if _engine_is_usable(
-            engine, suffix, require_external_endpoint=require_external_endpoint
-        ):
+        if _engine_is_usable(engine, suffix, require_external_endpoint=require_external_endpoint):
             return engine, sanitize_process_options(options_str)
     return None, ""
 
@@ -227,9 +217,7 @@ def resolve_parser_directives(
     Order: filename ``[hint]`` → ``MEMGRAPHRAG_PARSER`` rules → ``legacy``.
     """
     suffix = parser_suffix(file_path)
-    _validate_filename_hint(
-        file_path, require_external_endpoint=require_external_endpoint
-    )
+    _validate_filename_hint(file_path, require_external_endpoint=require_external_endpoint)
 
     hinted_engine, hinted_options = filename_parser_directives(file_path)
     if hinted_engine and not _engine_is_usable(

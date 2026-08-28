@@ -49,9 +49,7 @@ def _http_client():
     import httpx
 
     verify = ssl_verify()
-    _httpx_client = httpx.AsyncClient(
-        verify=verify, timeout=httpx.Timeout(150.0, connect=30.0)
-    )
+    _httpx_client = httpx.AsyncClient(verify=verify, timeout=httpx.Timeout(150.0, connect=30.0))
     return _httpx_client
 
 
@@ -61,9 +59,7 @@ def _llm_client() -> AsyncOpenAI:
         return _llm_openai
     api_key = os.getenv("LLM_BINDING_API_KEY") or os.getenv("OPENAI_API_KEY") or "no-key"
     base_url = os.getenv("LLM_BINDING_HOST") or None
-    _llm_openai = AsyncOpenAI(
-        api_key=api_key, base_url=base_url, http_client=_http_client()
-    )
+    _llm_openai = AsyncOpenAI(api_key=api_key, base_url=base_url, http_client=_http_client())
     return _llm_openai
 
 
@@ -78,9 +74,7 @@ def _embed_client() -> AsyncOpenAI:
         or "no-key"
     )
     base_url = os.getenv("EMBEDDING_BINDING_HOST") or os.getenv("LLM_BINDING_HOST") or None
-    _embed_openai = AsyncOpenAI(
-        api_key=api_key, base_url=base_url, http_client=_http_client()
-    )
+    _embed_openai = AsyncOpenAI(api_key=api_key, base_url=base_url, http_client=_http_client())
     return _embed_openai
 
 
@@ -197,17 +191,6 @@ async def openai_complete(
     return content
 
 
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=2, max=30),
-    retry=(
-        retry_if_exception_type(RateLimitError)
-        | retry_if_exception_type(APIConnectionError)
-        | retry_if_exception_type(APITimeoutError)
-        | retry_if_exception_type(InternalServerError)
-    ),
-    reraise=True,
-)
 def _embedding_max_tokens() -> int | None:
     """Optional hard cap for embed inputs (e.g. e5 family = 512)."""
     raw = (os.getenv("EMBEDDING_MAX_TOKENS") or "").strip()
@@ -317,6 +300,43 @@ def _parse_context_length_error(exc: BaseException) -> tuple[int, int] | None:
     return int(match.group("max")), int(match.group("req"))
 
 
+def _split_embedding_batches(texts: list[str], model_name: str) -> list[list[str]]:
+    """Split texts into requests bounded by item count AND token budget.
+
+    Providers cap both: OpenAI allows 2048 inputs and ~300k tokens per embeddings
+    request. The defaults here stay well under any known ceiling; raise
+    EMBEDDING_BATCH_SIZE / EMBEDDING_BATCH_MAX_TOKENS on a provider you control.
+    """
+    max_items = max(1, get_env_value("EMBEDDING_BATCH_SIZE", 64, int))
+    max_tokens = max(1, get_env_value("EMBEDDING_BATCH_MAX_TOKENS", 100_000, int))
+
+    try:
+        from memgraphrag.utils.tokenizer import TiktokenTokenizer
+
+        encode = TiktokenTokenizer().encode
+    except Exception:  # tokenizer unavailable: fall back to a character heuristic
+
+        def encode(text: str):
+            return range(max(1, len(text) // 4))
+
+    batches: list[list[str]] = []
+    current: list[str] = []
+    current_tokens = 0
+    for text in texts:
+        try:
+            size = len(encode(text))
+        except Exception:
+            size = max(1, len(text) // 4)
+        if current and (len(current) >= max_items or current_tokens + size > max_tokens):
+            batches.append(current)
+            current, current_tokens = [], 0
+        current.append(text)
+        current_tokens += size
+    if current:
+        batches.append(current)
+    return batches or [[]]
+
+
 async def openai_embed(
     texts: Sequence[str],
     model: str | None = None,
@@ -339,9 +359,103 @@ async def openai_embed(
         texts = [f"{instruction} {t}" for t in texts]
 
     texts_list = [t if t is not None else "" for t in texts]
-    dim = _embed_dim(embedding_dim)
+    if not texts_list:
+        return np.zeros((0, _embed_dim(embedding_dim)), dtype=np.float32)
+
     model_name = _embed_model(model)
     budget = _embedding_budget_tokens(model_name)
+
+    # Split into requests BEFORE calling the provider. The per-item truncation below
+    # bounds each text, but nothing bounded the request: every caller sent its whole
+    # list in one shot, so indexing a real corpus (1 700 chunks x 1 200 tokens ~ 2M
+    # tokens) blew past the provider's per-request ceiling and the document failed.
+    batches = _split_embedding_batches(texts_list, model_name)
+    if len(batches) > 1:
+        logger.info(
+            "Embedding %d texts in %d requests (model=%s)",
+            len(texts_list),
+            len(batches),
+            model_name,
+        )
+    chunks = []
+    for batch in batches:
+        chunks.append(
+            await _embed_request_bisecting(
+                batch,
+                model=model,
+                embedding_dim=embedding_dim,
+                budget=budget,
+                **kwargs,
+            )
+        )
+    return np.vstack(chunks) if len(chunks) > 1 else chunks[0]
+
+
+async def _embed_request_bisecting(
+    texts_list: list[str],
+    *,
+    model: str | None,
+    embedding_dim: int | None,
+    budget: int | None,
+    **kwargs: Any,
+) -> np.ndarray:
+    """One embedding request, halving the batch when the provider refuses it.
+
+    Per-item truncation cannot help when it is the *number* of items that overflows,
+    and the previous fallbacks were all gated on ``EMBEDDING_MAX_TOKENS`` being set —
+    unset by default, so the error was simply re-raised.
+    """
+    try:
+        return await _embed_request(
+            texts_list, model=model, embedding_dim=embedding_dim, budget=budget, **kwargs
+        )
+    except BadRequestError:
+        if len(texts_list) <= 1:
+            raise
+        mid = len(texts_list) // 2
+        logger.warning(
+            "Embedding request of %d texts refused; splitting into %d + %d",
+            len(texts_list),
+            mid,
+            len(texts_list) - mid,
+        )
+        left = await _embed_request_bisecting(
+            texts_list[:mid], model=model, embedding_dim=embedding_dim, budget=budget, **kwargs
+        )
+        right = await _embed_request_bisecting(
+            texts_list[mid:], model=model, embedding_dim=embedding_dim, budget=budget, **kwargs
+        )
+        return np.vstack([left, right])
+
+
+# Retry the individual request, not the batching wrapper: a transient 429 on one
+# batch must not re-embed every batch that already succeeded. (This block also used to
+# sit above `_embedding_max_tokens`, a synchronous pure function, so embeddings had no
+# retry at all while completions did.)
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=30),
+    retry=(
+        retry_if_exception_type(RateLimitError)
+        | retry_if_exception_type(APIConnectionError)
+        | retry_if_exception_type(APITimeoutError)
+        | retry_if_exception_type(InternalServerError)
+    ),
+    reraise=True,
+)
+async def _embed_request(
+    texts_list: list[str],
+    *,
+    model: str | None = None,
+    embedding_dim: int | None = None,
+    budget: int | None = None,
+    context: str = "document",
+    **kwargs: Any,
+) -> np.ndarray:
+    """Issue a single embeddings request for an already-batched list."""
+    texts = list(texts_list)
+    dim = _embed_dim(embedding_dim)
+    model_name = _embed_model(model)
     if budget is not None:
         texts_list = _truncate_for_embedding(texts_list, budget)
 

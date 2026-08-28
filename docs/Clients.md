@@ -37,7 +37,7 @@ Both clients load the nearest `.env` (cwd / repo) on startup. For Fortinet/Zscal
 | `GET /health` | `memgraphrag-cli health` | 🏠 Home |
 | `POST /query` | `memgraphrag-cli query` | 💬 Query |
 | `POST /query/data` | `query --data-only` | 💬 Query (context) |
-| `POST /query/stream` | `query --stream` | 💬 Query (stream) |
+| `POST /query/stream` | `query --stream` | 💬 Query (stream) — SSE framing only, see note |
 | `POST /documents/upload` | `docs upload` / `upload-dir` / `upload-url` | 📥 Ingest |
 | `POST /documents/text` | `docs text` | 📥 Ingest |
 | `GET /documents/` | `docs list` | 📥 Ingest |
@@ -52,6 +52,12 @@ Both clients load the nearest `.env` (cwd / repo) on startup. For Fortinet/Zscal
 | (client-side) | `optimize` | 🧪 Optimize |
 
 Also: `memgraphrag-cli params` prints the tunable knobs, presets, and this coverage table.
+
+> **`--stream` / the stream tab are not token streaming.** `POST /query/stream`
+> awaits the complete answer server-side and then emits `references`, `response`
+> and `[DONE]` as three SSE frames. The answer still appears all at once, after the
+> full query latency; the SSE shape exists for LightRAG client compatibility. See
+> [MemGraphRAG-API-Server.md](MemGraphRAG-API-Server.md).
 
 ## CLI usage
 
@@ -94,12 +100,12 @@ uv run --extra client streamlit run memgraphrag/client/app.py
 
 Opens at `http://localhost:8501` by default. Sidebar: server URL, API key, presets, and query-param knobs. Main area: tabbed Home / Query / Ingest / Optimize / Graph.
 
-![MemGraphRAG Playground — Query tab with presets and streamed answer](images/memgraphrag_webui.png)
+![MemGraphRAG Playground — Query tab with presets and answer](images/memgraphrag_webui.png)
 
 Tabs:
 
 1. **Home** — connect / health (core + API versions, pipeline busy).
-2. **Query** — full answer, context-only, or SSE stream; sidebar presets + sliders.
+2. **Query** — full answer, context-only, or SSE delivery; sidebar presets + sliders.
 3. **Ingest** — file upload, local directory, URL, inline text, server inbox scan; document status with per-doc delete/requeue/detail and guarded clear-all.
 4. **Optimize** — hybrid param lab (see below); apply winners back to the Query tab.
 5. **Graph** — label filter + node/edge explorer.
@@ -126,7 +132,7 @@ with MemGraphRAGClient() as client:
     client.insert_text("Alice lives in Paris.", doc_id="doc-demo")
     print(client.list_documents())
     print(client.get_document("doc-demo"))
-    client.delete_document("doc-demo")              # rebuild corpus from remaining OpenIE
+    client.delete_document("doc-demo")  # rebuild corpus from remaining OpenIE
     # client.delete_documents(["doc-a", "doc-b"])  # batch
     # client.requeue_document("doc-failed")
     # client.clear_documents(confirm=True)         # wipe workspace storages

@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import pytest
+
 from memgraphrag.memory import ThreeLayerMemory
+
+pytestmark = pytest.mark.offline
 
 
 def test_empty_openie_docs_build_empty_memory():

@@ -35,9 +35,12 @@ dependencies = [
     "python-igraph==1.0.0",
     "openai==2.53.0",
     "httpx==0.28.1",
-    "filelock==3.32.2",
+    # filelock was declared here but never imported: no inter-process lock exists.
+    # Multi-process safety is handled by refusing WORKERS>1 on file-backed storage
+    # (memgraphrag/api/config.py); re-add the pin the day a real lock is written.
     "packaging==25.0",
     "PyYAML==6.0.3",
+    "json-repair==0.63.4",
 ]
 
 [project.optional-dependencies]
@@ -96,9 +99,8 @@ markers = [
     "requires_api: needs a running API server",
 ]
 
-[tool.ruff]
-line-length = 100
-target-version = "py310"
+# Ruff is configured in ruff.toml, not here: ruff reads ruff.toml first and
+# ignores [tool.ruff] entirely, so a section here would silently do nothing.
 
 [tool.uv]
 # Prefer the locked set committed as uv.lock for reproducible installs/builds.

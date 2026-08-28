@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from memgraphrag.memory import PassageNode, ThreeLayerMemory
+
+pytestmark = pytest.mark.offline
 
 
 def test_empty_memory() -> None:
@@ -71,7 +75,10 @@ def test_to_dict_from_dict_roundtrip() -> None:
     assert restored.fact_layer[0].content == memory.fact_layer[0].content
     assert restored.passage_layer[0].chunk_id == memory.passage_layer[0].chunk_id
     assert restored.passage_layer[0].modality == "text"
-    assert restored._fact_to_idx[("X", "relates_to", "Y")] == 0
+    # The index is keyed on the canonical (case- and accent-folded) form so that
+    # "Réforme" and "reforme" resolve to one fact; the node keeps its display text.
+    assert restored._fact_to_idx[("x", "relates_to", "y")] == 0
+    assert restored.fact_layer[0].content == ("X", "relates_to", "Y")
     assert restored._chunk_id_to_idx["c1"] == 0
 
 
@@ -125,7 +132,14 @@ def test_duplicate_triples_merge_passage_indices() -> None:
     assert 0 in memory.passage_layer[1].fact_indices
 
 
-def test_empty_extracted_triples_skipped() -> None:
+def test_passages_without_triples_are_still_indexed() -> None:
+    """A passage with no usable triple must still enter the passage layer.
+
+    These chunks used to be dropped entirely, which meant no PassageNode, no entry in
+    chunks_vdb, and therefore a chunk unreachable even by the dense fallback: a cover
+    page or a table of figures vanished from the corpus with no error. An orphan
+    passage carrying no fact still answers dense queries.
+    """
     data = {
         "docs": [
             {"idx": "empty-list", "passage": "No triples.", "extracted_triples": []},
@@ -140,8 +154,14 @@ def test_empty_extracted_triples_skipped() -> None:
     memory = ThreeLayerMemory()
     memory.build_from_raw_openie_results(data)
 
-    assert memory.passage_layer == []
+    assert [p.chunk_id for p in memory.passage_layer] == [
+        "empty-list",
+        "missing",
+        "invalid",
+    ]
+    # No triple was usable, so no fact — but the text remains retrievable.
     assert memory.fact_layer == []
+    assert all(not p.fact_indices for p in memory.passage_layer)
 
 
 def test_modality_field_default() -> None:
@@ -166,3 +186,67 @@ def test_modality_field_default() -> None:
     del payload["passage_layer"][0]["modality"]
     restored = ThreeLayerMemory.from_dict(payload)
     assert restored.passage_layer[0].modality == "text"
+
+
+def test_accent_and_case_variants_are_one_fact() -> None:
+    """A French corpus must not grow one entity per spelling.
+
+    `Réforme de la Facture Électronique`, its uppercase form and its unaccented form
+    all name the same thing. Keyed on the raw tuple, each produced its own FactNode,
+    its own vector and its own graph node — and its own schema at frequency 1, which
+    is what pushes the deactivation ratio past its ceiling and silently switches the
+    ontology filter off.
+    """
+    memory = ThreeLayerMemory()
+    memory.build_from_raw_openie_results(
+        {
+            "docs": [
+                {
+                    "idx": "c1",
+                    "passage": "La Réforme de la Facture Électronique impose le format Factur-X.",
+                    "extracted_triples": [
+                        ["Réforme de la Facture Électronique", "impose", "Factur-X"]
+                    ],
+                },
+                {
+                    "idx": "c2",
+                    "passage": "La reforme de la facture electronique impose Factur-X.",
+                    "extracted_triples": [
+                        ["REFORME DE LA FACTURE ELECTRONIQUE", "impose", "factur-x"]
+                    ],
+                },
+            ]
+        }
+    )
+
+    assert len(memory.fact_layer) == 1, [f.content for f in memory.fact_layer]
+    # Both passages support the single surviving fact.
+    assert memory.fact_layer[0].passage_indices == [0, 1]
+    # Display text keeps the first, properly accented spelling.
+    assert memory.fact_layer[0].content[0] == "Réforme de la Facture Électronique"
+
+
+def test_schema_variants_collapse_to_one_node() -> None:
+    """`Organisation`/`organization` typed the same relation must be one schema."""
+    memory = ThreeLayerMemory()
+    memory.build_from_raw_openie_results(
+        {
+            "docs": [
+                {
+                    "idx": "c1",
+                    "passage": "p1",
+                    "extracted_triples": [["A", "émet", "B"]],
+                },
+                {
+                    "idx": "c2",
+                    "passage": "p2",
+                    "extracted_triples": [["C", "émet", "D"]],
+                },
+            ]
+        }
+    )
+    memory.link_fact_to_schema(0, ("Organisation", "émet", "Facture"))
+    memory.link_fact_to_schema(1, ("organisation", "EMET", "facture"))
+
+    assert len(memory.schema_layer) == 1
+    assert memory.schema_layer[0].frequency == 2, "frequency must accumulate, not split"

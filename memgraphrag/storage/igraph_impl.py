@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import os
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -58,22 +59,24 @@ class IgraphStorage(BaseGraphStorage):
     _file_name: str = field(default="", init=False, repr=False)
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False, repr=False)
     _dirty: bool = field(default=False, init=False, repr=False)
+    _batch_depth: int = field(default=0, init=False, repr=False)
+    _name_to_idx: dict = field(default_factory=dict, init=False, repr=False)
 
     def __post_init__(self) -> None:
         working_dir = self.global_config.get("working_dir", "./data/rag_storage")
         workspace_dir = _workspace_dir(working_dir, self.workspace or "")
         os.makedirs(workspace_dir, exist_ok=True)
-        self._file_name = os.path.join(
-            workspace_dir, f"graph_{self.namespace}.graphml"
-        )
+        self._file_name = os.path.join(workspace_dir, f"graph_{self.namespace}.graphml")
         directed = bool(self.global_config.get("is_directed_graph", False))
         self._graph = ig.Graph(directed=directed)
+        self._name_to_idx = {}
         self._dirty = False
 
     async def initialize(self) -> None:
         async with self._lock:
             if os.path.exists(self._file_name):
                 self._graph = ig.Graph.Read_GraphML(self._file_name)
+                self._reindex_names()
                 logger.info(
                     "Loaded graph from %s (%d nodes, %d edges)",
                     self._file_name,
@@ -83,26 +86,72 @@ class IgraphStorage(BaseGraphStorage):
             else:
                 directed = bool(self.global_config.get("is_directed_graph", False))
                 self._graph = ig.Graph(directed=directed)
+                self._name_to_idx = {}
             self._dirty = False
 
     async def finalize(self) -> None:
-        await self._flush()
+        self._batch_depth = 0
+        await self._flush(force=True)
 
-    async def _flush(self) -> None:
+    @asynccontextmanager
+    async def batch(self):
+        """Defer GraphML persistence until the outermost batch exits.
+
+        Every ``upsert_node`` / ``upsert_edge`` used to serialise the whole graph, so
+        installing a memory graph cost O(V+E) full rewrites — quadratic overall, and
+        on the event loop. Callers that write many elements should wrap the loop:
+
+            async with storage.batch():
+                ...  # thousands of upserts, one write at the end
+        """
+        self._batch_depth += 1
+        try:
+            yield self
+        finally:
+            self._batch_depth -= 1
+            if self._batch_depth <= 0:
+                self._batch_depth = 0
+                await self._flush()
+
+    async def _flush(self, *, force: bool = False) -> None:
+        # Inside a batch, only mark dirty; the outermost exit writes once.
+        if self._batch_depth > 0 and not force:
+            return
         async with self._lock:
             if not self._dirty:
                 return
             os.makedirs(os.path.dirname(self._file_name) or ".", exist_ok=True)
             tmp = f"{self._file_name}.tmp"
-            self._graph.write_graphml(tmp)
-            os.replace(tmp, self._file_name)
+            graph = self._graph
+
+            def _write() -> None:
+                graph.write_graphml(tmp)
+                os.replace(tmp, self._file_name)
+
+            # write_graphml is blocking CPU+IO; keep it off the event loop.
+            await asyncio.to_thread(_write)
             self._dirty = False
 
-    def _find_vertex(self, node_id: str):
+    def _reindex_names(self) -> None:
+        """Rebuild the name -> vertex-index map (after loading or replacing the graph)."""
         try:
-            return self._graph.vs.find(name=node_id)
-        except (ValueError, KeyError):
+            names = self._graph.vs["name"]
+        except KeyError:  # no vertices yet, so no "name" attribute
+            names = []
+        self._name_to_idx = {str(n): i for i, n in enumerate(names)}
+
+    def _find_vertex(self, node_id: str):
+        """O(1) vertex lookup by name.
+
+        ``vs.find(name=...)`` invalidates and rebuilds igraph's internal name index on
+        every ``add_vertex``, which made each insert O(V) and graph installation
+        quadratic. Vertices are only ever added or dropped wholesale by ``clear()``,
+        so indices stay stable and a plain dict is safe.
+        """
+        idx = self._name_to_idx.get(str(node_id))
+        if idx is None:
             return None
+        return self._graph.vs[idx]
 
     def _node_dict(self, vertex) -> dict[str, Any]:
         props = _loads_props(vertex.attributes().get("props"))
@@ -141,11 +190,7 @@ class IgraphStorage(BaseGraphStorage):
 
     async def upsert_node(self, node_id: str, node_data: dict[str, Any]) -> None:
         label = str(node_data.get("label", node_data.get("layer", "")))
-        props = {
-            k: v
-            for k, v in node_data.items()
-            if k not in ("id", "label", "props")
-        }
+        props = {k: v for k, v in node_data.items() if k not in ("id", "label", "props")}
         if isinstance(node_data.get("props"), dict):
             props.update(node_data["props"])
         async with self._lock:
@@ -156,6 +201,7 @@ class IgraphStorage(BaseGraphStorage):
                     label=label,
                     props=_dumps_props(props),
                 )
+                self._name_to_idx[str(node_id)] = self._graph.vcount() - 1
             else:
                 vertex["label"] = label
                 vertex["props"] = _dumps_props(props)
@@ -180,13 +226,9 @@ class IgraphStorage(BaseGraphStorage):
 
         async with self._lock:
             if self._find_vertex(source_node_id) is None:
-                self._graph.add_vertex(
-                    name=source_node_id, label="", props="{}"
-                )
+                self._graph.add_vertex(name=source_node_id, label="", props="{}")
             if self._find_vertex(target_node_id) is None:
-                self._graph.add_vertex(
-                    name=target_node_id, label="", props="{}"
-                )
+                self._graph.add_vertex(name=target_node_id, label="", props="{}")
             src = self._find_vertex(source_node_id)
             tgt = self._find_vertex(target_node_id)
             assert src is not None and tgt is not None
@@ -219,9 +261,7 @@ class IgraphStorage(BaseGraphStorage):
                 return None
             return self._node_dict(vertex)
 
-    async def get_edge(
-        self, source_node_id: str, target_node_id: str
-    ) -> dict[str, Any] | None:
+    async def get_edge(self, source_node_id: str, target_node_id: str) -> dict[str, Any] | None:
         async with self._lock:
             src = self._find_vertex(source_node_id)
             tgt = self._find_vertex(target_node_id)
@@ -244,6 +284,7 @@ class IgraphStorage(BaseGraphStorage):
         async with self._lock:
             directed = self._graph.is_directed()
             self._graph = ig.Graph(directed=directed)
+            self._name_to_idx = {}
             self._dirty = True
         await self._flush()
 

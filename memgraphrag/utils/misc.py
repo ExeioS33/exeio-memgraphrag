@@ -53,21 +53,30 @@ class QuerySolution:
         self.references = refs
         return refs
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self, *, max_docs: int | None = None) -> dict[str, Any]:
+        """Serialise the solution.
+
+        ``max_docs`` bounds the passage lists; ``None`` (the default) returns every
+        retrieved passage. The bound used to be hard-coded at 5, so a request with
+        ``top_k=20`` was answered with 20 passages by the engine and 5 by the API,
+        with no ``total`` and no indication that anything had been dropped.
+        """
+        limit = slice(None) if max_docs is None else slice(0, max_docs)
         doc_scores = None
         if self.doc_scores is not None:
             scores = self.doc_scores
             if hasattr(scores, "tolist"):
                 scores = scores.tolist()
-            doc_scores = [round(float(v), 4) for v in list(scores)[:5]]
+            doc_scores = [round(float(v), 4) for v in list(scores)[limit]]
         refs = self.ensure_references()
         return {
             "question": self.question,
             "answer": self.answer,
             "gold_answers": self.gold_answers,
-            "docs": self.docs[:5],
+            "docs": self.docs[limit],
             "doc_scores": doc_scores,
             "gold_docs": self.gold_docs,
-            "sources": list(self.sources or [])[:5],
+            "sources": list(self.sources or [])[limit],
             "references": refs,
+            "total_docs": len(self.docs),
         }

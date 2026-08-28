@@ -10,6 +10,9 @@ Production FastAPI server for the MemGraphRAG memory-based GraphRAG engine.
 - OpenAI-compatible LLM and embedding bindings
 - Document upload/scan/delete/clear with legacy + Docling parsers and F/R/P chunkers
 - Corpus-accumulating memory: each ingest merges OpenIE from all PROCESSED docs; delete rebuilds from cached OpenIE (no LLM re-run)
+- Checkpointed extraction (`OPENIE_CHECKPOINT_SIZE`), per-chunk and per-batch retries, JSON repair, bounded embedding requests — see [IngestionResilience.md](IngestionResilience.md)
+- Corpus language pin (`MEMGRAPHRAG_LANGUAGE`) and accent/case-folded entity keys, so one concept is one node
+- Neo4j workspace ownership guard (`mgr_owned`) and UNWIND-batched graph writes
 - JWT and/or API-key authentication
 - Ollama-compatible `/api` emulation
 
@@ -37,26 +40,26 @@ Compose wires `PGKVStorage` / `PGVectorStorage` / `PGDocStatusStorage` / `Neo4JS
 
 ## LLM bindings (including self-hosted vLLM)
 
-MemGraphRAG talks to any OpenAI-compatible chat API via `LLM_BINDING_*`. For a local/remote **vLLM** Mistral service (Compose `vllm-mistal`, host port `8001`, `--served-model-name mistral`):
+MemGraphRAG talks to any OpenAI-compatible chat API via `LLM_BINDING_*`. Pointing it
+at a self-hosted vLLM (say `--served-model-name mistral` on port `8001`) needs
+exactly four variables:
 
 ```bash
-# Helper vars (see env.example) — used by your vLLM compose stack
-VLLM_HOST=localhost
-VLLM_PORT=8001
-VLLM_BASE_URL=http://localhost:8001/v1
-VLLM_SERVED_MODEL_NAME=mistral
-VLLM_API_KEY=EMPTY
-HF_TOKEN=...
-MISTRAL_MODEL_7B_GPTQ_4=...
-
-# Wire MemGraphRAG to that endpoint
 LLM_BINDING=openai
 LLM_BINDING_HOST=http://localhost:8001/v1
 LLM_BINDING_API_KEY=EMPTY
 LLM_MODEL=mistral
 ```
 
-Keep a **separate** embedding endpoint (`EMBEDDING_BINDING_*`); the Mistral vLLM service is chat/completions only.
+`VLLM_*` / `HF_TOKEN` style settings belong to the vLLM container's own compose
+file: this repository ships no vLLM service and reads none of those names.
+
+Keep a **separate** embedding endpoint (`EMBEDDING_BINDING_*`); a chat-only vLLM
+service cannot serve embeddings.
+
+The request timeout is not configurable: `memgraphrag/llm/openai_compatible.py`
+hard-codes `httpx.Timeout(150.0, connect=30.0)`. A slow local model needs a code
+change, not an `LLM_TIMEOUT` variable.
 
 ## Auth
 
@@ -64,32 +67,83 @@ Keep a **separate** embedding endpoint (`EMBEDDING_BINDING_*`); the Mistral vLLM
 |------|-----|
 | API key | `MEMGRAPHRAG_API_KEY` → header `X-API-Key` |
 | JWT | `AUTH_ACCOUNTS=user:pass` + `TOKEN_SECRET` → `POST /login` then `Authorization: Bearer …` |
-| Open (dev) | neither set — safe only on loopback |
+| Open (dev) | neither set — safe only on loopback, and only when `REQUIRE_AUTH=false` |
 
-`WHITELIST_PATHS` defaults include `/health` and `/api/*`.
+`TOKEN_SECRET` is mandatory whenever `AUTH_ACCOUNTS` is set: the fallback secret is
+published in this repository, so tokens signed with it are forgeable. `JWT_ALGORITHM=none`
+is rejected outright.
+
+### Hardening currently enforced
+
+| Control | Behaviour |
+|---------|-----------|
+| `WHITELIST_PATHS` | Defaults to `/health,/docs,/openapi.json` — **`/api/*` is deliberately excluded.** The Ollama router is mounted on `/api`, and `/api/chat`, `/api/generate` reach the billed LLM (`/bypass` skips retrieval entirely). The whitelist short-circuits before any token or key check, so whitelisting `/api/*` publishes an open LLM proxy. |
+| `REQUIRE_AUTH=true` | Fail-closed switch: unauthenticated requests get 403 even when neither `AUTH_ACCOUNTS` nor `MEMGRAPHRAG_API_KEY` resolved — a `.env` that failed to load degrades into a locked server instead of an open one. |
+| `CORS_ORIGINS=*` | Credentialed cross-origin requests are disabled while the origin list is `*`. Name explicit origins to allow cookies / `Authorization` from a browser. |
+| `LOGIN_MAX_ATTEMPTS` / `LOGIN_WINDOW_SECONDS` | `POST /login` is rate-limited per client IP (default 10 attempts / 60 s, then 429). |
+| `MAX_UPLOAD_SIZE` | Per-file upload cap, default 100 MiB; larger bodies are rejected with 413. |
+| Secrets in Compose | `POSTGRES_PASSWORD` and `NEO4J_PASSWORD` have no defaults — `docker compose up` fails unless they are set. Auth variables are passed through to the container. |
+| `WORKERS` | Startup **refuses** `WORKERS > 1` while any file-backed backend is selected (see below). |
+| API key / password comparison | Constant-time (`hmac.compare_digest`), so response timing does not leak a prefix. |
+
+## Workers and concurrency
+
+Run one worker. `validate_worker_count` in `memgraphrag/api/config.py` aborts
+startup when `WORKERS > 1` and any of `JsonKVStorage`, `NanoVectorDBStorage`,
+`IgraphStorage`, `JsonDocStatusStorage` is selected: those backends guard their
+files with `asyncio` locks that exist inside a single interpreter, so two
+processes sharing `WORKING_DIR` interleave rewrites of the same JSON / GraphML
+file. The check runs both in the `memgraphrag-gunicorn` entry point and in
+`gunicorn_config.py`, before any worker forks.
+
+Moving to `PGKVStorage` / `PGVectorStorage` / `PGDocStatusStorage` /
+`Neo4JStorage` lifts the refusal but not the whole limitation: the ingest
+`pipeline_lock` is an `asyncio.Lock` on `app.state`, so the "409 while busy"
+guarantee below only holds within the worker that owns the running ingest.
+`memgraphrag/storage/shared.py` is likewise per-process, not a cross-worker bus.
 
 ## Main endpoints
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/health` | Liveness |
+| GET | `/health` | Liveness — 200 while the process answers, plus `ready` / `retrieval_status`. No `working_dir`/`workspace`: the path is whitelisted. |
+| GET | `/health/ready` | Readiness — 503 until retrieval is warmed up (unauthenticated, carries only the bit) |
+| GET | `/metrics` | Prometheus exposition (authenticated) |
 | POST | `/login` | JWT login |
 | POST | `/documents/upload` | Upload file (locks pipeline) |
 | POST | `/documents/text` | Insert raw text (locks pipeline) |
-| GET | `/documents` | List doc statuses |
+| GET | `/documents/` | List doc statuses — paginated (`limit` 1..1000, default 100, `offset`, optional `status`); returns `total`/`returned`/`next_offset` and never the document body |
 | GET | `/documents/{doc_id}` | Document detail (chunk ids, paths) |
 | DELETE | `/documents/{doc_id}` | Delete one doc + rebuild corpus |
 | POST | `/documents/delete` | Batch delete `{doc_ids, delete_file}` |
 | POST | `/documents/{doc_id}/requeue` | Reset failed/stuck doc to PENDING |
 | DELETE | `/documents/?confirm=true` | Clear all storages (optional `delete_files`) |
 | POST | `/documents/scan` | Scan `INPUT_DIR` |
-
-Admin mutate endpoints return **409** while `/health` reports `pipeline_busy=true`. Clear-all requires `confirm=true` (400 otherwise). Per-doc delete needs content-hash `chunk_ids` on the status record (re-ingest legacy docs, or use clear-all).
-| POST | `/query` | Retrieve + QA → `{response, references}` (LightRAG-compatible) |
+| POST | `/query` | Retrieve + QA → `{response, references}` |
 | POST | `/query/data` | Retrieval evidence only (`response`/`references` + docs) |
-| POST | `/query/stream` | SSE: `references` event, then `response`, then `[DONE]` |
+| POST | `/query/stream` | SSE framing, **not token streaming** — see below |
 | GET | `/graphs` | Explore memory graph |
-| GET/POST | `/api/*` | Ollama emulation |
+| GET | `/graph/label/list` | List node labels |
+| GET/POST | `/api/*` | Ollama emulation (`/api/chat`, `/api/generate`, `/api/tags`, `/api/ps`, `/api/version`) |
+
+That is the whole surface: 23 operations in total.
+
+Admin mutate endpoints return **409** while `/health` reports `pipeline_busy=true`.
+Clear-all requires `confirm=true` (400 otherwise). Per-doc delete needs content-hash
+`chunk_ids` on the status record (re-ingest legacy docs, or use clear-all).
+
+The busy check is read-then-acquire, so two requests arriving at the same instant
+can both pass the test; the loser then waits on the lock instead of receiving 409.
+Treat 409 as the common case, not as a guarantee.
+
+### `/query/stream` is chunked delivery, not streaming
+
+The handler awaits the complete answer, then emits three SSE frames:
+`{"references": …}`, `{"response": …}`, `data: [DONE]`. `QueryParam.stream` is set
+on the request object but the engine never reads it (`grep -c stream
+memgraphrag/core.py` → 0), and no token-level path exists between the LLM binding
+and the response. Time-to-first-byte therefore equals total query latency — the
+endpoint is SSE-shaped for LightRAG client compatibility, nothing more.
 
 ## Query modes (MemGraphRAG-native)
 
@@ -131,6 +185,31 @@ MEMGRAPHRAG_DOC_STATUS_STORAGE=JsonDocStatusStorage|PGDocStatusStorage
 ```
 
 Always call `await rag.initialize_storages()` after constructing `MemGraphRAG` in Python.
+
+These variables are read by the API server (`memgraphrag/api/config.py`). The
+`MemGraphRAG` constructor itself defaults to the file backends whatever the
+environment says — an embedded script must pass the backends explicitly, e.g.
+`MemGraphRAG(..., **resolve_storage_backends())`.
+
+### Sharing a Neo4j server
+
+`Neo4JStorage` labels every node with the workspace name — the same convention
+LightRAG uses — so two engines pointed at one workspace would mix their graphs in
+every traversal, and a naive `clear()` would delete the other engine's nodes.
+Three rules apply:
+
+- every node MemGraphRAG writes carries `mgr_owned = true`; `clear()` matches only
+  those, so it can never destroy a foreign graph;
+- startup refuses a workspace that already holds unmarked nodes, with their count
+  in the error; set `MEMGRAPHRAG_ALLOW_SHARED_NEO4J_WORKSPACE=true` only to share
+  one knowingly;
+- an empty `WORKSPACE` falls back to `base` — name the workspace explicitly on a
+  shared server.
+
+Graph installs run inside `graph.batch()`: `Neo4JStorage` buffers the writes and
+flushes them as `UNWIND` statements of 1 000 rows grouped by label and
+relationship type, so an install costs a handful of statements instead of two
+round trips per node and three per edge. Reads issued inside a batch flush first.
 
 ## Clients (CLI + Streamlit)
 

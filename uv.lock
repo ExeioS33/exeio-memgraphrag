@@ -728,15 +728,6 @@ wheels = [
 ]
 
 [[package]]
-name = "filelock"
-version = "3.32.2"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/f6/57/3ba6e6cb097f85b855b00163d169f35365f44277df044dcf96d55b8f62a3/filelock-3.32.2.tar.gz", hash = "sha256:c33351e1f49cae33414acbc6d56784e6ecee82514ec90795da1161fc4836b5b8", size = 217172 }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/c1/e8/72f8cef9fdfeffe06213fe8508039396ee48daa0e3259457ed766173bfd6/filelock-3.32.2-py3-none-any.whl", hash = "sha256:87dd94cf281e586d135fa51132b8e3d9a598b316e90377a288663c9321036c82", size = 98830 },
-]
-
-[[package]]
 name = "frozenlist"
 version = "1.8.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1156,6 +1147,15 @@ wheels = [
 ]
 
 [[package]]
+name = "json-repair"
+version = "0.63.4"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/62/72/4ec122befe7c2091ba7370d985cf0a3d4dbeccc2f832898ddb7921b4ab94/json_repair-0.63.4.tar.gz", hash = "sha256:77aa642193d62b02b889e8ce0df33898d3ea87282f0b9d8653f8ce8772c642b4", size = 52906 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a1/ea/1a7b47196b0d03f59a80f5218b2a34160587c84ca8b0bcb56cb4ee93834e/json_repair-0.63.4-py3-none-any.whl", hash = "sha256:0f374f3eee21454aef0a5d72c06b8689b660a1788f80ab392639e3f7d5c5d458", size = 51295 },
+]
+
+[[package]]
 name = "jsonpatch"
 version = "1.33"
 source = { registry = "https://pypi.org/simple" }
@@ -1523,8 +1523,8 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
-    { name = "filelock" },
     { name = "httpx" },
+    { name = "json-repair" },
     { name = "nano-vectordb" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*'" },
@@ -1605,10 +1605,10 @@ requires-dist = [
     { name = "bcrypt", marker = "extra == 'api'", specifier = "==4.3.0" },
     { name = "defusedxml", marker = "extra == 'api'", specifier = "==0.7.1" },
     { name = "fastapi", marker = "extra == 'api'", specifier = "==0.141.1" },
-    { name = "filelock", specifier = "==3.32.2" },
     { name = "gunicorn", marker = "extra == 'api'", specifier = "==26.0.0" },
     { name = "httpx", specifier = "==0.28.1" },
     { name = "httpx", marker = "extra == 'pytest'", specifier = "==0.28.1" },
+    { name = "json-repair", specifier = "==0.63.4" },
     { name = "langchain-text-splitters", marker = "extra == 'api'", specifier = "==1.1.2" },
     { name = "langfuse", marker = "extra == 'api'", specifier = "==3.15.0" },
     { name = "memgraphrag", extras = ["api", "pytest", "client"], marker = "extra == 'test'" },

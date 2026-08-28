@@ -49,5 +49,24 @@ def extract_json_object(text: str) -> dict[str, Any]:
             if isinstance(data, dict):
                 return data
         except Exception as exc:
+            # Small instruction-tuned models routinely break JSON on French text:
+            # an unescaped quote inside a string, a trailing comma, a truncated
+            # last element. Measured on the RFE corpus, 2 % of extraction calls
+            # came back like that and were treated as empty. json_repair (the same
+            # fallback LightRAG relies on) recovers the well-formed prefix.
+            repaired = _repair(match.group(0))
+            if repaired is not None:
+                logger.debug("Repaired malformed LLM JSON (%s)", exc)
+                return repaired
             logger.warning("Failed to parse LLM JSON: %s", exc)
     return {}
+
+
+def _repair(text: str) -> dict[str, Any] | None:
+    try:
+        from json_repair import repair_json
+
+        data = repair_json(text, return_objects=True)
+    except Exception:
+        return None
+    return data if isinstance(data, dict) and data else None

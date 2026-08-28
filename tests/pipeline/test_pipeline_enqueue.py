@@ -11,6 +11,8 @@ from memgraphrag.namespace import NameSpace
 from memgraphrag.pipeline import enqueue_document
 from memgraphrag.storage.json_doc_status_impl import JsonDocStatusStorage
 
+pytestmark = pytest.mark.offline
+
 
 @pytest.mark.asyncio
 async def test_pipeline_enqueue_sets_pending(tmp_path: Path) -> None:

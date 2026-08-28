@@ -10,9 +10,10 @@ from memgraphrag.rerank import FactFilter
 
 @pytest.mark.offline
 def test_threshold_filter_basic():
-    ff = FactFilter(default_threshold=0.5)
     scores = [0.1, 0.5, 0.9, 0.49]
     assert FactFilter.threshold_filter(scores, 0.5) == [1, 2]
+    # The instance default is used when no threshold is passed explicitly.
+    assert FactFilter(default_threshold=0.5).default_threshold == 0.5
 
 
 @pytest.mark.offline

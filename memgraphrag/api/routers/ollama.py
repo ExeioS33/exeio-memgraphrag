@@ -26,7 +26,8 @@ except ImportError:  # pragma: no cover
     Depends = None  # type: ignore[misc, assignment]
     Request = None  # type: ignore[misc, assignment]
     BaseModel = object  # type: ignore[misc, assignment]
-    Field = lambda *a, **k: None  # type: ignore[misc, assignment]
+    # Stub so the module still imports without the [api] extra; never called.
+    Field = lambda *a, **k: None  # type: ignore[misc, assignment]  # noqa: E731
 
 
 class SearchMode(str, Enum):
@@ -191,9 +192,7 @@ def create_ollama_router(
                 "done": True,
             }
         query = body.messages[-1].content
-        history = [
-            {"role": m.role, "content": m.content} for m in body.messages[:-1]
-        ]
+        history = [{"role": m.role, "content": m.content} for m in body.messages[:-1]]
         answer = await _run_rag(rag, query, history=history, system=body.system)
         return {
             "model": body.model,

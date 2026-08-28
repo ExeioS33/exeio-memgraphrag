@@ -39,9 +39,7 @@ def _sniff_extension(data: bytes) -> str | None:
     return None
 
 
-def _filename_from_headers(
-    content_disp: str, content_type: str, fallback: str
-) -> str:
+def _filename_from_headers(content_disp: str, content_type: str, fallback: str) -> str:
     """Derive a filename from Content-Disposition / Content-Type when URL has none."""
     name = fallback
     cd = content_disp or ""
@@ -119,13 +117,9 @@ class MemGraphRAGClient:
         verify: Any = None,
     ) -> None:
         self.base_url = (
-            base_url
-            or os.environ.get("MEMGRAPHRAG_SERVER_URL")
-            or DEFAULT_BASE_URL
+            base_url or os.environ.get("MEMGRAPHRAG_SERVER_URL") or DEFAULT_BASE_URL
         ).rstrip("/")
-        self.api_key = api_key if api_key is not None else os.environ.get(
-            "MEMGRAPHRAG_API_KEY"
-        )
+        self.api_key = api_key if api_key is not None else os.environ.get("MEMGRAPHRAG_API_KEY")
         self.verify = ssl_verify() if verify is None else verify
         headers: dict[str, str] = {"Accept": "application/json"}
         if self.api_key:
@@ -173,15 +167,52 @@ class MemGraphRAGClient:
                     yield line[5:].strip()
 
     # -------------------------------------------------------------- documents
-    def list_documents(self) -> dict[str, Any]:
-        return self._get("/documents/")
+    def list_documents(
+        self,
+        *,
+        limit: Optional[int] = None,
+        offset: int = 0,
+        status: Optional[str] = None,
+        all_pages: bool = True,
+    ) -> dict[str, Any]:
+        """List document status records.
+
+        ``GET /documents/`` is paginated (100 records per page by default), so a
+        caller that just read ``statuses`` silently saw only the first page. With
+        ``all_pages`` the client follows ``next_offset`` and returns the merged
+        mapping; pass ``all_pages=False`` to keep one page and page by hand.
+        """
+        params: dict[str, Any] = {"offset": offset}
+        if limit is not None:
+            params["limit"] = limit
+        if status:
+            params["status"] = status
+        resp = self._client.get("/documents/", params=params)
+        self._raise(resp)
+        data = resp.json()
+        if not all_pages:
+            return data
+        statuses = dict(data.get("statuses") or {})
+        next_offset = data.get("next_offset")
+        while next_offset is not None:
+            params["offset"] = next_offset
+            resp = self._client.get("/documents/", params=params)
+            self._raise(resp)
+            page = resp.json()
+            statuses.update(page.get("statuses") or {})
+            # A server that keeps echoing the same offset would loop forever.
+            if page.get("next_offset") == next_offset:
+                break
+            next_offset = page.get("next_offset")
+        data["statuses"] = statuses
+        data["returned"] = len(statuses)
+        data["next_offset"] = None
+        return data
 
     def get_document(self, doc_id: str) -> dict[str, Any]:
         return self._get(f"/documents/{doc_id}")
 
-    def delete_document(
-        self, doc_id: str, *, delete_file: bool = False
-    ) -> dict[str, Any]:
+    def delete_document(self, doc_id: str, *, delete_file: bool = False) -> dict[str, Any]:
         resp = self._client.delete(
             f"/documents/{doc_id}",
             params={"delete_file": str(delete_file).lower()},
@@ -189,9 +220,7 @@ class MemGraphRAGClient:
         self._raise(resp)
         return resp.json()
 
-    def delete_documents(
-        self, doc_ids: list[str], *, delete_file: bool = False
-    ) -> dict[str, Any]:
+    def delete_documents(self, doc_ids: list[str], *, delete_file: bool = False) -> dict[str, Any]:
         return self._post(
             "/documents/delete",
             json={"doc_ids": list(doc_ids), "delete_file": delete_file},
@@ -231,7 +260,10 @@ class MemGraphRAGClient:
         directory = Path(directory)
         if not directory.is_dir():
             raise NotADirectoryError(f"Not a directory: {directory}")
-        exts = {e.lower() if e.startswith(".") else f".{e.lower()}" for e in (extensions or SUPPORTED_EXTENSIONS)}
+        exts = {
+            e.lower() if e.startswith(".") else f".{e.lower()}"
+            for e in (extensions or SUPPORTED_EXTENSIONS)
+        }
         pattern = "**/*" if recursive else "*"
         results: list[dict[str, Any]] = []
         for path in sorted(directory.glob(pattern)):
@@ -336,9 +368,7 @@ class MemGraphRAGClient:
     def list_labels(self) -> dict[str, Any]:
         return self._get("/graph/label/list")
 
-    def explore_graph(
-        self, label: Optional[str] = None, limit: int = 200
-    ) -> dict[str, Any]:
+    def explore_graph(self, label: Optional[str] = None, limit: int = 200) -> dict[str, Any]:
         params: dict[str, Any] = {"limit": limit}
         if label:
             params["label"] = label
@@ -360,9 +390,7 @@ class MemGraphRAGClient:
         self._raise(resp)
         return resp.json()
 
-    def _post(
-        self, path: str, json: Optional[dict[str, Any]] = None
-    ) -> dict[str, Any]:
+    def _post(self, path: str, json: Optional[dict[str, Any]] = None) -> dict[str, Any]:
         resp = self._client.post(path, json=json)
         self._raise(resp)
         return resp.json()

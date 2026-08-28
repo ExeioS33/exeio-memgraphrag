@@ -37,9 +37,7 @@ class IgraphPPREngine(PPREngine):
         try:
             import igraph as ig
         except ImportError as exc:  # pragma: no cover
-            raise ImportError(
-                "python-igraph is required for IgraphPPREngine"
-            ) from exc
+            raise ImportError("python-igraph is required for IgraphPPREngine") from exc
 
         self._ig = ig
         self.passage_ids = set(passage_ids or [])
@@ -84,9 +82,7 @@ class IgraphPPREngine(PPREngine):
         if not self.passage_ids:
             # Heuristic: ids prefixed with "chunk-" / "passage-" are passages
             self.passage_ids = {
-                n
-                for n in self.name_to_idx
-                if n.startswith(("chunk-", "passage-", "doc-"))
+                n for n in self.name_to_idx if n.startswith(("chunk-", "passage-", "doc-"))
             }
 
     def set_passage_ids(self, passage_ids: Iterable[str]) -> None:

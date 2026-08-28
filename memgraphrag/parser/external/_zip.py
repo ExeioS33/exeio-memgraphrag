@@ -24,24 +24,17 @@ def safe_extract_zip(
     with zipfile.ZipFile(buf) as zf:
         infos = zf.infolist()
         if max_entries is not None and len(infos) > max_entries:
-            raise RuntimeError(
-                f"Refusing zip with {len(infos)} entries (max {max_entries})"
-            )
+            raise RuntimeError(f"Refusing zip with {len(infos)} entries (max {max_entries})")
         if max_total_bytes is not None:
             total = sum(info.file_size for info in infos)
             if total > max_total_bytes:
                 raise RuntimeError(
-                    f"Refusing zip: uncompressed size {total} bytes "
-                    f"exceeds limit {max_total_bytes}"
+                    f"Refusing zip: uncompressed size {total} bytes exceeds limit {max_total_bytes}"
                 )
         names = zf.namelist()
         for name in names:
             norm = os.path.normpath(name)
-            if (
-                norm.startswith("..")
-                or os.path.isabs(norm)
-                or norm.startswith(("/", os.sep))
-            ):
+            if norm.startswith("..") or os.path.isabs(norm) or norm.startswith(("/", os.sep)):
                 raise RuntimeError(f"Refusing zip entry with unsafe path: {name!r}")
         zf.extractall(dest_dir)
     return names
