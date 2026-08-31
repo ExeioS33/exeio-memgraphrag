@@ -245,6 +245,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     args.embedding_model = get_env_value("EMBEDDING_MODEL", "text-embedding-3-small")
     args.embedding_dim = get_env_value("EMBEDDING_DIM", EMBEDDING_DIM, int)
     args.max_async_llm = get_env_value("MAX_ASYNC_LLM", MAX_ASYNC_LLM, int)
+    # Allow-list for the per-request `model` override. Empty means "no override":
+    # every query uses args.llm_model. A request naming a model outside this list is
+    # rejected with 400 rather than forwarded, so a typo cannot silently bill a
+    # different model than the operator intended.
+    args.llm_models = get_env_value("LLM_MODELS", "")
+
+    # Application data — chat threads and messages. This is a dedicated Postgres,
+    # deliberately separate from the RAG's own stores: conversations are product
+    # data, not knowledge, and mixing them into the engine namespaces would blur a
+    # boundary that is worth keeping sharp. Unset means chat persistence is off and
+    # /chat/* answers 503; the rest of the API is unaffected.
+    args.app_database_url = get_env_value("APP_DATABASE_URL", None)
 
     # Query / PPR knobs
     args.top_k = get_env_value("TOP_K", TOP_K, int)

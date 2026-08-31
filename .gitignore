@@ -55,3 +55,9 @@ certs/*.cer
 
 # RFE ingestion working artefacts (imported sidecars, DB snapshots)
 data/rfe/
+
+# Web UI: dependencies and build output are artefacts, never committed.
+# The bundle would also trip the check-added-large-files pre-commit hook (1 MiB).
+web/node_modules/
+web/dist/
+memgraphrag/api/static/

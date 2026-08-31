@@ -9,6 +9,7 @@ import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any, Optional
 
 from memgraphrag import __version__ as core_version
@@ -122,7 +123,11 @@ try:
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import PlainTextResponse
     from fastapi.security import OAuth2PasswordRequestForm
+    from fastapi.staticfiles import StaticFiles
+    from starlette.exceptions import HTTPException as StarletteHTTPException
 except ImportError:  # pragma: no cover
+    StaticFiles = None  # type: ignore[misc, assignment]
+    StarletteHTTPException = None  # type: ignore[misc, assignment]
     uvicorn = None  # type: ignore[assignment]
     FastAPI = None  # type: ignore[misc, assignment]
     Depends = None  # type: ignore[misc, assignment]
@@ -138,8 +143,16 @@ except ImportError:  # pragma: no cover
 def _build_rag(args: Any) -> MemGraphRAG:
     """Construct MemGraphRAG with openai-compatible LLM/embed bindings."""
 
-    async def llm_model_func(prompt: str, **kwargs: Any) -> str:
-        result = await openai_complete(prompt, model=getattr(args, "llm_model", None), **kwargs)
+    async def llm_model_func(prompt: str, **kwargs: Any) -> Any:
+        # `model` is popped, not passed through: the engine now forwards a per-request
+        # override, and binding it here as well would raise
+        # "TypeError: got multiple values for keyword argument 'model'".
+        model = kwargs.pop("model", None) or getattr(args, "llm_model", None)
+        result = await openai_complete(prompt, model=model, **kwargs)
+        # A streaming call returns an async iterator of tokens; str() on it would
+        # yield the generator's repr, so only the buffered result is coerced.
+        if kwargs.get("stream"):
+            return result
         return str(result)
 
     async def embedding_func(texts, **kwargs: Any):
@@ -227,6 +240,42 @@ async def drain_background_tasks(app: Any, timeout: float) -> int:
     return len(unfinished)
 
 
+WEB_UI_DIR = Path(__file__).parent / "static"
+
+
+def mount_web_ui(app: Any, directory: Path | None = None) -> bool:
+    """Serve the built web UI at ``/``. Returns True when a build was found.
+
+    Two things worth knowing:
+
+    - It must be mounted **last**. A mount at "/" swallows every path the routers did
+      not already claim, so mounting earlier would shadow the API.
+    - The assets are public. A StaticFiles mount is not covered by the per-route auth
+      dependency — auth is attached per route, there is no global middleware — but an
+      SPA shell is not a secret and every call it makes back to the API is still
+      authenticated. Do not put anything sensitive in the bundle.
+    """
+    target = directory or WEB_UI_DIR
+    if StaticFiles is None or not (target / "index.html").is_file():
+        logger.info("Web UI not built; serving API only (looked in %s)", target)
+        return False
+
+    class _SpaStaticFiles(StaticFiles):
+        """Falls back to index.html so client-side routes resolve on a hard refresh."""
+
+        async def get_response(self, path: str, scope: Any) -> Any:
+            try:
+                return await super().get_response(path, scope)
+            except StarletteHTTPException as exc:
+                if exc.status_code == 404:
+                    return await super().get_response("index.html", scope)
+                raise
+
+    app.mount("/", _SpaStaticFiles(directory=str(target), html=True), name="webui")
+    logger.info("Web UI mounted at / from %s", target)
+    return True
+
+
 def create_app(
     args: Any | None = None,
     *,
@@ -248,10 +297,12 @@ def create_app(
         compile_whitelist,
         get_combined_auth_dependency,
     )
+    from memgraphrag.api.routers.chat import create_chat_router
     from memgraphrag.api.routers.documents import create_documents_router
     from memgraphrag.api.routers.graphs import create_graphs_router
     from memgraphrag.api.routers.ollama import create_ollama_router
-    from memgraphrag.api.routers.query import create_query_router
+    from memgraphrag.api.routers.query import create_query_router, models_for
+    from memgraphrag.chat import InMemoryChatStore, create_chat_store
 
     cfg = args or global_args
     api_key = os.getenv("MEMGRAPHRAG_API_KEY") or getattr(cfg, "key", None) or None
@@ -285,6 +336,15 @@ def create_app(
                     app.state.retrieval_ready = False
                     app.state.retrieval_error = str(exc)
                     logger.warning("Retrieval warm-up skipped: %s", exc)
+                if app.state.chat_store is not None:
+                    try:
+                        await app.state.chat_store.initialize()
+                    except Exception as exc:
+                        # Same failure mode as the retrieval warm-up: an application
+                        # database that is briefly unreachable must not stop the
+                        # server from serving queries. /chat/* answers 503 instead.
+                        app.state.chat_store = None
+                        logger.warning("Chat persistence unavailable: %s", exc)
                 logger.info("MemGraphRAG server ready")
             yield
         finally:
@@ -294,6 +354,11 @@ def create_app(
                     await app.state.rag.finalize_storages()
                 except Exception as exc:
                     logger.warning("finalize_storages: %s", exc)
+            if getattr(app.state, "chat_store", None) is not None:
+                try:
+                    await app.state.chat_store.close()
+                except Exception as exc:
+                    logger.warning("chat_store.close: %s", exc)
 
     app = FastAPI(
         title="MemGraphRAG API",
@@ -322,6 +387,9 @@ def create_app(
         allow_credentials=not allow_any_origin,
         allow_methods=["*"],
         allow_headers=["*"],
+        # Without this the browser hides both headers from JS, so the web UI cannot
+        # quote a request id in an error toast nor honour the 429 back-off.
+        expose_headers=["X-Request-ID", "Retry-After"],
     )
 
     metrics_registry = MetricsRegistry()
@@ -348,11 +416,19 @@ def create_app(
     # about; a real boot starts not-ready and flips once prepare_retrieval succeeds.
     app.state.retrieval_ready = bool(testing)
     app.state.retrieval_error = None
+    # Chat lives in its own database, never in a RAG storage backend. Under `testing`
+    # it is an in-memory double, mirroring how the engine itself is mocked.
+    app.state.chat_store = (
+        InMemoryChatStore()
+        if testing
+        else create_chat_store(getattr(cfg, "app_database_url", None))
+    )
     os.makedirs(app.state.input_dir, exist_ok=True)
 
     app.include_router(create_documents_router(api_key))
     app.include_router(create_query_router(api_key))
     app.include_router(create_graphs_router(api_key))
+    app.include_router(create_chat_router(api_key))
     app.include_router(
         create_ollama_router(
             api_key=api_key,
@@ -483,6 +559,21 @@ def create_app(
             "core_version": core_version,
             "api_version": __api_version__,
         }
+
+    @app.get("/models", dependencies=[Depends(combined_auth)])
+    async def list_models():
+        """Models the UI may offer in its picker, server default first.
+
+        Distinct from the Ollama emulation's ``/api/tags``, which advertises one
+        synthetic entry for client compatibility and does not select anything.
+        """
+        return {
+            "default": getattr(cfg, "llm_model", None),
+            "models": models_for(cfg),
+        }
+
+    # Last: a mount at "/" claims every path the routers did not.
+    mount_web_ui(app)
 
     return app
 

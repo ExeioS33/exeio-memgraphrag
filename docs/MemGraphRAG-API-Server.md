@@ -122,11 +122,25 @@ guarantee below only holds within the worker that owns the running ingest.
 | POST | `/query` | Retrieve + QA → `{response, references}` |
 | POST | `/query/data` | Retrieval evidence only (`response`/`references` + docs) |
 | POST | `/query/stream` | SSE framing, **not token streaming** — see below |
+| GET | `/query/params` | Tunable-parameter registry (bounds + presets) for clients |
+| GET | `/documents/{doc_id}/chunks` | Passages a document was split into (paged) |
 | GET | `/graphs` | Explore memory graph |
 | GET | `/graph/label/list` | List node labels |
+| GET | `/models` | Models selectable per request (`LLM_MODELS` + the server default) |
+| POST | `/chat/threads` | Create a conversation |
+| GET | `/chat/threads` | List conversations (paged, owner-scoped) |
+| GET | `/chat/threads/{thread_id}` | One conversation with its messages |
+| PATCH | `/chat/threads/{thread_id}` | Rename / retarget a conversation |
+| DELETE | `/chat/threads/{thread_id}` | Delete a conversation and its messages |
+| POST | `/chat/threads/{thread_id}/messages` | Append a message |
 | GET/POST | `/api/*` | Ollama emulation (`/api/chat`, `/api/generate`, `/api/tags`, `/api/ps`, `/api/version`) |
 
-That is the whole surface: 23 operations in total.
+That is the whole surface: 32 operations in total.
+
+The `/chat/*` routes are backed by a **separate** application database
+(`APP_DATABASE_URL`, the `postgres-app` compose service), never by a RAG storage
+backend. With that variable unset they answer **503** and everything else keeps
+working; the web UI then holds conversations in the browser tab only.
 
 Admin mutate endpoints return **409** while `/health` reports `pipeline_busy=true`.
 Clear-all requires `confirm=true` (400 otherwise). Per-doc delete needs content-hash

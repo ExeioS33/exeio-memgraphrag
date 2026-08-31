@@ -83,6 +83,13 @@ class QueryParam:
     user_prompt: str | None = None
     """Optional extra instruction injected into the QA prompt."""
 
+    model: str | None = None
+    """Per-request LLM override. None means the model the server was started with.
+
+    Validated against LLM_MODELS at the API boundary, not here: the engine is also
+    driven from scripts and notebooks, where an operator naming a model directly is
+    a deliberate act rather than untrusted input."""
+
 
 @dataclass
 class StorageNameSpace(ABC):

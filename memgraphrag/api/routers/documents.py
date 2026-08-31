@@ -719,6 +719,49 @@ def create_documents_router(api_key: Optional[str] = None) -> Any:
             raise HTTPException(status_code=404, detail=f"Document not found: {doc_id}")
         return {"doc_id": doc_id, "document": _strip_document_body(record)}
 
+    @router.get("/{doc_id}/chunks", dependencies=[Depends(combined_auth)])
+    async def get_document_chunks(
+        request: Request,
+        doc_id: str,
+        limit: int = Query(50, ge=1, le=500),
+        offset: int = Query(0, ge=0),
+    ):
+        """Return the passages a document was split into.
+
+        The only other way to see corpus text through this API is POST /query/data,
+        which returns whatever retrieval happened to select. A library the user can
+        actually read needs to address a document directly, so this serves the text
+        from ``chunks_kv`` — which already holds it and, until now, was reachable
+        from no route at all.
+        """
+        rag = request.app.state.rag
+        record = await rag.doc_status.get_by_id(doc_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail=f"Document not found: {doc_id}")
+        chunk_ids = list(record.get("chunk_ids") or [])
+        window = chunk_ids[offset : offset + limit]
+        chunks: list[dict[str, Any]] = []
+        if window:
+            try:
+                records = await rag.chunks_kv.get_by_ids(window)
+            except Exception as exc:
+                fail_step(logger, "api.documents.chunks", doc_id=doc_id, exc=exc)
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Chunk store unavailable: {exc}",
+                ) from exc
+            for position, (chunk_id, rec) in enumerate(zip(window, records or []), start=offset):
+                content = str((rec or {}).get("content") or "") if isinstance(rec, dict) else ""
+                if not content:
+                    continue
+                chunks.append({"chunk_id": chunk_id, "content": content, "order": position})
+        return {
+            "doc_id": doc_id,
+            "chunks": chunks,
+            "total": len(chunk_ids),
+            "returned": len(chunks),
+        }
+
     @router.delete("/{doc_id}", dependencies=[Depends(combined_auth)])
     async def delete_document(
         request: Request,

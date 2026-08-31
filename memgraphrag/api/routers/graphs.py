@@ -39,12 +39,32 @@ def _edge_endpoints(edge: dict[str, Any]) -> tuple[str, str]:
     return source, target
 
 
+def _is_passage_node(node: dict[str, Any]) -> bool:
+    """True when the node's ``content`` is corpus text rather than a short label."""
+    props = node.get("props")
+    props = props if isinstance(props, dict) else {}
+    candidates = (
+        node.get("label"),
+        node.get("layer"),
+        props.get("label"),
+        props.get("layer"),
+    )
+    return any(str(value or "").strip().lower() == "passage" for value in candidates)
+
+
 def redact_node(node: dict[str, Any]) -> dict[str, Any]:
-    """Return ``node`` without its document body, keeping a length for each field.
+    """Strip the document body from Passage nodes, keeping a length for each field.
 
     ``props`` is scrubbed too: the storage backends splat props over the node dict, so
     the same text is present twice.
+
+    Only Passage nodes are redacted. The blanket strip this replaces also emptied
+    Entity, Fact, Schema and Type nodes — whose ``content`` is a short label like an
+    entity name or an ``(h, rel, t)`` triple, never corpus text — which left a graph
+    client with nothing to write on any node it drew.
     """
+    if not _is_passage_node(node):
+        return dict(node)
     cleaned = dict(node)
     props = cleaned.get("props")
     cleaned_props = dict(props) if isinstance(props, dict) else None

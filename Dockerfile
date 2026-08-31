@@ -2,6 +2,19 @@
 # Built/tagged by Compose as exeio-memgraphrag:<MEMGRAPHRAG_VERSION>
 
 ARG PYTHON_VERSION=3.12
+ARG NODE_VERSION=22
+
+# The web UI is built here rather than committed. Only package.json and the lockfile
+# are copied first so `npm ci` stays cached across source-only changes.
+FROM node:${NODE_VERSION}-bookworm-slim AS frontend
+
+WORKDIR /ui
+COPY web/package.json web/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY web/ ./
+# vite.config.ts writes to ../memgraphrag/api/static, so give it that directory to
+# land in; the runtime stage copies the result next to the Python package.
+RUN mkdir -p /memgraphrag/api/static && npm run build
 
 FROM ghcr.io/astral-sh/uv:python${PYTHON_VERSION}-bookworm-slim AS builder
 
@@ -44,6 +57,8 @@ RUN apt-get update \
 
 COPY --from=builder /app/.venv /app/.venv
 COPY --from=builder /app/memgraphrag /app/memgraphrag
+# Served at / by create_app; absent from the builder stage because it is gitignored.
+COPY --from=frontend /memgraphrag/api/static /app/memgraphrag/api/static
 COPY --from=builder /app/pyproject.toml /app/README.md /app/LICENSE /app/NOTICE /app/THIRD_PARTY_LICENSES.md /app/
 COPY docker-entrypoint.sh /app/docker-entrypoint.sh
 

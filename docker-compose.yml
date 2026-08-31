@@ -22,6 +22,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      postgres-app:
+        condition: service_healthy
       neo4j:
         condition: service_healthy
     restart: unless-stopped
@@ -54,6 +56,11 @@ services:
       CORS_ORIGINS: "${CORS_ORIGINS:-*}"
       # Do not add /api/* here: it fronts the billed LLM (see api/config.py).
       WHITELIST_PATHS: "${WHITELIST_PATHS:-/health,/docs,/openapi.json}"
+      # Chat persistence. Points at the dedicated `postgres-app` service over the
+      # compose network, so the host publish port (5433) is irrelevant here.
+      APP_DATABASE_URL: "postgresql://${APP_POSTGRES_USER:-app}:${APP_POSTGRES_PASSWORD:?set APP_POSTGRES_PASSWORD in .env}@postgres-app:5432/${APP_POSTGRES_DATABASE:-memgraphrag_app}"
+      # Allow-list for the web UI's model picker; empty means LLM_MODEL only.
+      LLM_MODELS: "${LLM_MODELS:-}"
       POSTGRES_HOST: "postgres"
       POSTGRES_PORT: "5432"
       POSTGRES_USER: "${POSTGRES_USER:-rag}"
@@ -109,6 +116,32 @@ services:
       retries: 10
     restart: unless-stopped
 
+  # Application data only — chat threads and messages. Deliberately a SECOND
+  # instance rather than another schema in `postgres` above: product data and
+  # knowledge data have different lifecycles and different blast radii, and wiping
+  # the RAG corpus must never take the conversations with it.
+  postgres-app:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: "${APP_POSTGRES_USER:-app}"
+      POSTGRES_PASSWORD: "${APP_POSTGRES_PASSWORD:?set APP_POSTGRES_PASSWORD in .env}"
+      POSTGRES_DB: "${APP_POSTGRES_DATABASE:-memgraphrag_app}"
+    volumes:
+      - postgres_app_data:/var/lib/postgresql/data
+    ports:
+      # 5433 on the host: 5432 is normally already taken by the RAG database.
+      - "${APP_POSTGRES_PUBLISH_ADDR:-127.0.0.1}:${APP_POSTGRES_PUBLISH_PORT:-5433}:5432"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${APP_POSTGRES_USER:-app} -d ${APP_POSTGRES_DATABASE:-memgraphrag_app}",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
   neo4j:
     image: neo4j:5-community
     environment:
@@ -142,4 +175,5 @@ services:
 
 volumes:
   postgres_data:
+  postgres_app_data:
   neo4j_data:

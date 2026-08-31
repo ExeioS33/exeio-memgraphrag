@@ -42,3 +42,8 @@ docs
 !THIRD_PARTY_LICENSES.md
 agent-transcripts
 *.log
+
+# Web UI build inputs: the bundle is produced by the node stage inside the image,
+# so the host's dependency tree must never enter the build context.
+web/node_modules
+web/dist
