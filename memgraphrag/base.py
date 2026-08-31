@@ -83,6 +83,14 @@ class QueryParam:
     user_prompt: str | None = None
     """Optional extra instruction injected into the QA prompt."""
 
+    provider: str | None = None
+    """Per-request provider id (``together``, ``ollama``, …). None means the binding
+    the server was started with.
+
+    Completions only. Embeddings stay pinned to the model the corpus was indexed
+    with — routing them elsewhere returns vectors from a different space and
+    silently degrades retrieval."""
+
     model: str | None = None
     """Per-request LLM override. None means the model the server was started with.
 

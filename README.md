@@ -31,6 +31,20 @@ API docs: `http://localhost:9621/docs`
 Clients guide: [`docs/Clients.md`](docs/Clients.md).  
 Compose image: `exeio-memgraphrag:0.1.0` (also `:latest`). Direct deps are exact-pinned in `pyproject.toml`; full tree is locked in `uv.lock`.
 
+### 💬 Web UI
+
+A React chat interface served by the API itself — one process, one port, no CORS. Threads persist in a dedicated PostgreSQL container, answers stream token by token with their source passages cited, and the model can be switched per request across any OpenAI-compatible provider (Together AI, Ollama, vLLM, OpenAI).
+
+```bash
+docker compose up -d postgres-app     # chat persistence, host port 5433
+cd web && npm install && npm run build
+uv run memgraphrag-server             # http://localhost:9621/
+```
+
+The bundle is a build artifact and is not committed; without it the server logs `Web UI not built; serving API only` and every API route keeps working. The Docker image builds it in its own `node` stage, so `docker compose up` needs nothing extra. Full guide: [`docs/WebUI.md`](docs/WebUI.md).
+
+It also ships a read-only Cypher console over the memory graph and a filesystem-backed document library (`LIBRARY_ROOT`) with per-page PDF preview.
+
 ### 🎮 Streamlit playground
 
 Optional emoji-heavy UI for query, ingest, param optimization, and graph exploration (talks to the running API — not baked into the service image):

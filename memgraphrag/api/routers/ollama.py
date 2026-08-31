@@ -160,19 +160,42 @@ def create_ollama_router(
             ]
         }
 
+    def _selected_model(requested: str | None) -> str | None:
+        """A real model name, or None when the caller echoed our emulated identity.
+
+        Ollama clients always send a `model`, and ours defaults to the synthetic
+        `memgraphrag:latest` advertised by /api/tags. Forwarding that verbatim would
+        ask the provider for a model that does not exist, so only a genuinely
+        different name is treated as an override.
+        """
+        name = (requested or "").strip()
+        if not name or name in {model_name, f"{model_name}:{model_tag}"}:
+            return None
+        return name
+
     async def _run_rag(
         rag: Any,
         query: str,
         history: list[dict[str, str]] | None = None,
         system: str | None = None,
+        request: Any = None,
+        model: str | None = None,
     ) -> str:
         cleaned, mode, only_need_context, user_prompt = parse_query_mode(query)
+        selected = _selected_model(model)
+        if selected is not None and request is not None:
+            # Same allow-list as /query: this router fronts the billed LLM and was
+            # the only query surface with no model validation at all.
+            from memgraphrag.api.routers.query import validate_selection
+
+            await validate_selection(request, None, selected)
         param = QueryParam(
             mode=mode.value,  # type: ignore[arg-type]
             only_need_context=only_need_context,
             conversation_history=history or [],
             user_prompt=user_prompt or system,
             top_k=getattr(rag, "top_k", 10),
+            model=selected,
         )
         sol = await rag.arag_qa(cleaned, param=param)
         if isinstance(sol, str):
@@ -193,7 +216,9 @@ def create_ollama_router(
             }
         query = body.messages[-1].content
         history = [{"role": m.role, "content": m.content} for m in body.messages[:-1]]
-        answer = await _run_rag(rag, query, history=history, system=body.system)
+        answer = await _run_rag(
+            rag, query, history=history, system=body.system, request=request, model=body.model
+        )
         return {
             "model": body.model,
             "created_at": datetime.now(timezone.utc).isoformat(),
@@ -205,7 +230,9 @@ def create_ollama_router(
     async def generate(request: Request, body: OllamaGenerateRequest):
         rag = request.app.state.rag
         t0 = time.time_ns()
-        answer = await _run_rag(rag, body.prompt, system=body.system)
+        answer = await _run_rag(
+            rag, body.prompt, system=body.system, request=request, model=body.model
+        )
         return {
             "model": body.model,
             "created_at": datetime.now(timezone.utc).isoformat(),

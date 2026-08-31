@@ -30,11 +30,46 @@ for `docker compose up`.
 |---|---|
 | Conversation | `POST /query/stream` (answer), `POST /chat/threads/{id}/messages` (persist) |
 | Sidebar thread list | `GET /chat/threads`, grouped client-side by age |
-| Model picker | `GET /models`, sent back as `model` on the query |
+| Provider + model picker | `GET /models`, sent back as `provider` / `model` on the query |
+| Suggestion cards | `GET /graph/highlights` — derived from the corpus, not hardcoded |
 | Settings panel | `GET /query/params` — the form is generated from the registry |
-| Library | `GET /documents/`, `GET /documents/{id}/chunks`, upload / text / scan / delete / requeue |
-| Graph explorer | `GET /graph/label/list`, `GET /graphs` |
+| Library | `GET /library/tree`, `/library/file`, `/library/preview`, `/library/passages` |
+| Cypher console | `POST /graph/cypher`, `GET /graph/schema`, `GET /graph/neighborhood` |
 | Login | `POST /login` (form-encoded), Bearer token in `localStorage` |
+
+## Provider routing
+
+A request names a provider **id**; the server resolves the credential from its own
+environment, so a browser never carries a key. `together`, `ollama`, `openai`,
+`vllm` and `default` (the binding the server started with) are registered in
+`memgraphrag/llm/providers.py`. Each takes an optional `<ID>_MODELS` allow-list;
+when none is pinned the endpoint's own `GET /v1/models` catalogue is used instead,
+filtered to chat-capable entries — Together AI advertises 278 models on one
+endpoint, embeddings and image generators included.
+
+Two things this deliberately does not do. **Embeddings are never routed**: the
+corpus is indexed with one model at one dimension, and sending query embeddings
+elsewhere returns vectors from a different space. And the catalogue is read with a
+raw HTTP GET rather than `client.models.list()`, because the OpenAI SDK insists on
+the `{"object": "list", "data": [...]}` envelope while Together answers with a bare
+JSON array and raises while parsing a perfectly good 200.
+
+## Cypher console
+
+Read-only, enforced in three layers because any one of them alone has a hole:
+
+1. the graph backend must be `Neo4JStorage` (the default is `IgraphStorage`, which
+   has no session to open);
+2. write keywords are rejected **after** string literals and comments are stripped,
+   so `WHERE n.content CONTAINS 'DELETE the invoice'` is not a false positive and
+   `n.created_at` is not mistaken for `CREATE`;
+3. execution runs inside `default_access_mode="READ"` — Neo4j itself refuses to
+   write from that transaction, which is the only layer a parser bypass cannot beat.
+
+A `LIMIT` is injected when the statement has none, and every query is scoped to the
+workspace label. That last part is not cosmetic: this Neo4j instance is shared with
+a LightRAG deployment whose 14 556 nodes live under a different label, and an
+unscoped query renders two unrelated knowledge graphs at once.
 
 ## Three things worth knowing
 
@@ -61,6 +96,15 @@ forwarded, so a typo cannot bill a model nobody sanctioned.
 - **Citations carry a filename, not a snippet.** `references[].content` is always
   `null`. Passage text is reachable through `POST /query/data` or
   `GET /documents/{id}/chunks`, not through a citation.
+- **Provenance depends on doc-status.** `_passage_id_to_source` is built
+  exclusively from doc-status records (`file_path` + `chunk_ids`), so a corpus
+  ingested by a script that calls `core.ainsert()` directly cites `"unknown"` and
+  shows an empty library — the two are one missing table, not two bugs.
+  `scripts/backfill_rfe_sources.py` repairs it without re-ingesting: chunk ids are
+  content hashes, so re-running the same chunking over the same sidecars reproduces
+  them exactly. It verifies the overlap against the graph and refuses to write
+  below a threshold, because a misaligned backfill attaches the wrong filename to a
+  passage — worse than no citation at all.
 - **Conversation history is not used for retrieval.** It reaches the LLM, but the
   PPR query is the literal question, so "et le second ?" retrieves against that text.
   The UI caps history at 12 turns; the server neither validates nor caps it.

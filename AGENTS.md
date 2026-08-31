@@ -31,7 +31,7 @@ This repository packages that engine as a production FastAPI service inspired by
 - OpenAI-compatible bindings only for POC (no local torch/HF embedders in the service image).
 - Storage selected by `MEMGRAPHRAG_{KV,VECTOR,GRAPH,DOC_STATUS}_STORAGE`.
 - PPR hybrid: igraph default + Neo4j GDS alternative.
-- LightRAG-*shaped* API, not a drop-in replacement: the same four surfaces (documents / query / graph / Ollama `/api`) with 32 operations against LightRAG's ~47, and differing response shapes on several of them. A LightRAG client can be pointed at this server for the common query/ingest calls, but expect to adapt; treat parity as partial and unverified per route.
+- LightRAG-*shaped* API, not a drop-in replacement: the same four surfaces (documents / query / graph / Ollama `/api`) with 40 operations against LightRAG's ~47, and differing response shapes on several of them. A LightRAG client can be pointed at this server for the common query/ingest calls, but expect to adapt; treat parity as partial and unverified per route.
 - Optional Streamlit/CLI clients talk to the API (not embedded in the service image).
 - Docling via optional compose profile; VLM ANALYZING stage reserved, not implemented.
 - One local commit per advancement; single-line messages; details live in `docs/`.

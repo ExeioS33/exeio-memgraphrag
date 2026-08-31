@@ -49,11 +49,63 @@ def test_allow_list_is_prefixed_by_the_default() -> None:
     assert models_for(args) == ["b", "c"]
 
 
-def test_models_endpoint_reports_default_and_list() -> None:
-    with _client(llm_model="gpt-4o-mini", llm_models="gpt-4o") as client:
+def test_models_endpoint_reports_default_providers_and_locked_embedding() -> None:
+    with _client(
+        llm_model="gpt-4o-mini",
+        llm_models="gpt-4o",
+        embedding_model="intfloat/multilingual-e5-large-instruct",
+        embedding_dim=1024,
+    ) as client:
         body = client.get("/models").json()
-    assert body["default"] == "gpt-4o-mini"
+
+    assert body["default"] == {"provider": "default", "model": "gpt-4o-mini"}
     assert body["models"] == ["gpt-4o-mini", "gpt-4o"]
+
+    ids = [p["id"] for p in body["providers"]]
+    assert {"default", "together", "ollama", "openai", "vllm"} <= set(ids)
+
+    # Ollama needs no credential, so it is always usable; the others depend on env.
+    ollama = next(p for p in body["providers"] if p["id"] == "ollama")
+    assert ollama["available"] is True
+    assert ollama["base_url"] == "http://localhost:11434/v1"
+
+    # The embedding model is reported but never selectable — the corpus is indexed
+    # with it, so offering to change it would promise something that breaks answers.
+    assert body["embedding"]["locked"] is True
+    assert body["embedding"]["dim"] == 1024
+    assert body["embedding"]["reason"]
+
+
+def test_unknown_provider_is_rejected() -> None:
+    with _client() as client:
+        response = client.post("/query", json={"query": "q", "provider": "anthropic"})
+    assert response.status_code == 400
+    assert "anthropic" in response.json()["detail"]
+
+
+def test_provider_without_a_credential_is_rejected_by_name(monkeypatch) -> None:
+    """A missing key is an operator problem and must say so, rather than being
+    forwarded and surfacing as an opaque 401 from someone else's API."""
+    monkeypatch.delenv("TOGETHER_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_BINDING_API_KEY", raising=False)
+    with _client() as client:
+        response = client.post("/query", json={"query": "q", "provider": "together"})
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert "together" in detail and "TOGETHER_API_KEY" in detail
+
+
+def test_provider_allow_list_comes_from_its_own_env(monkeypatch) -> None:
+    monkeypatch.setenv("TOGETHER_API_KEY", "sk-test")
+    monkeypatch.setenv("TOGETHER_MODELS", "openai/gpt-oss-20b")
+    with _client() as client:
+        ok = client.post(
+            "/query", json={"query": "q", "provider": "together", "model": "openai/gpt-oss-20b"}
+        )
+        bad = client.post("/query", json={"query": "q", "provider": "together", "model": "gpt-4o"})
+    assert ok.status_code == 200
+    assert bad.status_code == 400
+    assert "gpt-4o" in bad.json()["detail"]
 
 
 def test_query_accepts_an_allowed_model() -> None:

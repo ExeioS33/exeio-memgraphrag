@@ -1,10 +1,16 @@
 import type {
   ChatMessage,
   ChatThread,
+  CypherResponse,
   DocumentChunksResponse,
   DocumentListResponse,
+  GraphHighlights,
   GraphResponse,
+  GraphSchema,
   HealthResponse,
+  LibraryPassages,
+  LibraryPreview,
+  LibraryTree,
   ModelsResponse,
   QueryParamsResponse,
   QuerySettings,
@@ -185,6 +191,47 @@ export const exploreGraph = (label: string | null, limit = 200) => {
   const qs = new URLSearchParams({ limit: String(limit) })
   if (label) qs.set('label', label)
   return request<GraphResponse>(`/graphs?${qs}`)
+}
+
+/** Run a read-only Cypher statement. Writes are refused server-side. */
+export const runCypher = (query: string, limit?: number) =>
+  request<CypherResponse>('/graph/cypher', {
+    method: 'POST',
+    body: JSON.stringify({ query, ...(limit ? { limit } : {}) }),
+  })
+
+export const graphSchema = () => request<GraphSchema>('/graph/schema')
+
+export const graphNeighborhood = (entityId: string, hops = 1, limit = 100) =>
+  request<CypherResponse>(
+    `/graph/neighborhood?entity_id=${encodeURIComponent(entityId)}&hops=${hops}&limit=${limit}`,
+  )
+
+export const graphHighlights = () => request<GraphHighlights>('/graph/highlights')
+
+/* --------------------------------------------------------------- library - */
+
+export const libraryTree = () => request<LibraryTree>('/library/tree')
+
+export const libraryPreview = (path: string, page = 1, pages = 1) =>
+  request<LibraryPreview>(
+    `/library/preview?path=${encodeURIComponent(path)}&page=${page}&pages=${pages}`,
+  )
+
+export const libraryPassages = (path: string, limit = 30) =>
+  request<LibraryPassages>(
+    `/library/passages?path=${encodeURIComponent(path)}&limit=${limit}`,
+  )
+
+/** URL for the raw file. Served inline so the browser's PDF viewer can render it.
+ *  Note the static mount is unauthenticated but this route is not — an <iframe>
+ *  cannot carry the bearer header, so the token is passed as a query parameter,
+ *  which the server accepts for this read-only route only. */
+export const libraryFileUrl = (path: string): string => {
+  const qs = new URLSearchParams({ path })
+  const token = readToken()
+  if (token) qs.set('token', token)
+  return `/library/file?${qs}`
 }
 
 /* --------------------------------------------------------------- streaming - */

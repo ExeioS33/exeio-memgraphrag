@@ -37,12 +37,22 @@ from memgraphrag.utils.step_log import embed_call, llm_call, truncate
 logger = logging.getLogger(__name__)
 
 _httpx_client = None
-_llm_openai: AsyncOpenAI | None = None
-_embed_openai: AsyncOpenAI | None = None
+# Keyed on (base_url, api_key) rather than being one global per role. The previous
+# two singletons froze the base URL and credential at the first call in the process,
+# which made a per-request provider impossible: a caller could already ask for a
+# model from another provider and it would be sent to whichever host happened to be
+# configured, producing a provider-side 404 instead of a routing decision.
+_openai_clients: dict[tuple[str | None, str], AsyncOpenAI] = {}
 
 
 def _http_client():
-    """Shared httpx client so corporate CAs (SSL_CERT_FILE) are honored."""
+    """Shared httpx client so corporate CAs (SSL_CERT_FILE) are honored.
+
+    Deliberately ONE instance across every provider: it carries the connection pool
+    and the SSL context, both of which are transport concerns. Building one per
+    provider would redo the TLS handshake on every switch and leak sockets under
+    MAX_ASYNC_LLM concurrency.
+    """
     global _httpx_client
     if _httpx_client is not None:
         return _httpx_client
@@ -53,20 +63,38 @@ def _http_client():
     return _httpx_client
 
 
-def _llm_client() -> AsyncOpenAI:
-    global _llm_openai
-    if _llm_openai is not None:
-        return _llm_openai
-    api_key = os.getenv("LLM_BINDING_API_KEY") or os.getenv("OPENAI_API_KEY") or "no-key"
-    base_url = os.getenv("LLM_BINDING_HOST") or None
-    _llm_openai = AsyncOpenAI(api_key=api_key, base_url=base_url, http_client=_http_client())
-    return _llm_openai
+def _client_for(base_url: str | None, api_key: str) -> AsyncOpenAI:
+    """Return a cached client for one (endpoint, credential) pair."""
+    key = (base_url or None, api_key)
+    cached = _openai_clients.get(key)
+    if cached is not None:
+        return cached
+    client = AsyncOpenAI(api_key=api_key, base_url=base_url, http_client=_http_client())
+    _openai_clients[key] = client
+    return client
+
+
+def _llm_client(base_url: str | None = None, api_key: str | None = None) -> AsyncOpenAI:
+    """Completion client. Explicit arguments win; otherwise the server binding."""
+    resolved_key = (
+        api_key or os.getenv("LLM_BINDING_API_KEY") or os.getenv("OPENAI_API_KEY") or "no-key"
+    )
+    resolved_url = base_url if base_url is not None else (os.getenv("LLM_BINDING_HOST") or None)
+    return _client_for(resolved_url, resolved_key)
 
 
 def _embed_client() -> AsyncOpenAI:
-    global _embed_openai
-    if _embed_openai is not None:
-        return _embed_openai
+    """Embedding client — resolved ONLY from EMBEDDING_*, never from a request.
+
+    The corpus is indexed with one embedding model at one dimension; routing
+    embeddings to a different provider at query time returns vectors from a
+    different space and silently degrades every answer (or trips the Postgres
+    dimension guard). This function therefore takes no arguments by design.
+
+    Note the LLM_BINDING_HOST fallback below: it is the one place where completion
+    configuration can still reach embeddings, kept for deployments that set only the
+    LLM host. It reads the env, never a per-request override.
+    """
     api_key = (
         os.getenv("EMBEDDING_BINDING_API_KEY")
         or os.getenv("LLM_BINDING_API_KEY")
@@ -74,8 +102,84 @@ def _embed_client() -> AsyncOpenAI:
         or "no-key"
     )
     base_url = os.getenv("EMBEDDING_BINDING_HOST") or os.getenv("LLM_BINDING_HOST") or None
-    _embed_openai = AsyncOpenAI(api_key=api_key, base_url=base_url, http_client=_http_client())
-    return _embed_openai
+    return _client_for(base_url, api_key)
+
+
+def reset_client_cache() -> None:
+    """Drop cached clients and catalogues. For tests that swap env between cases."""
+    _openai_clients.clear()
+    _model_catalogue.clear()
+
+
+#: Model ids advertised by an endpoint, cached per (base_url, api_key).
+_model_catalogue: dict[tuple[str | None, str], tuple[str, ...]] = {}
+
+#: Catalogue entry kinds that can serve a chat completion.
+_CHAT_MODEL_TYPES = {"chat", "language", "code", "completion"}
+
+
+def _is_chat_model(entry: dict[str, Any]) -> bool:
+    """Keep only what can answer a completion.
+
+    Together AI advertises 278 models on one endpoint — embeddings, rerankers and
+    image generators included. Offering those in a model picker would let someone
+    pick an image model to answer a question about invoicing. Providers that do not
+    label their entries (OpenAI, Ollama, vLLM) are left untouched.
+    """
+    kind = entry.get("type")
+    if not isinstance(kind, str):
+        return True
+    return kind.strip().lower() in _CHAT_MODEL_TYPES
+
+
+async def list_models(base_url: str | None = None, api_key: str | None = None) -> tuple[str, ...]:
+    """Model ids the endpoint advertises via ``GET /v1/models``.
+
+    Every provider in the registry implements this — it is part of the OpenAI
+    protocol they all speak. Used as the allow-list when an operator has not pinned
+    one explicitly, so a newly configured provider works without a second env var
+    while a model name is still checked against something real.
+
+    Returns an empty tuple on any failure: an unreachable catalogue must not take
+    the query path down with it, and the caller falls back to its own allow-list.
+    """
+    resolved_key = (
+        api_key or os.getenv("LLM_BINDING_API_KEY") or os.getenv("OPENAI_API_KEY") or "no-key"
+    )
+    root = (base_url or os.getenv("LLM_BINDING_HOST") or "https://api.openai.com/v1").rstrip("/")
+    cache_key = (root, resolved_key)
+    cached = _model_catalogue.get(cache_key)
+    if cached is not None:
+        return cached
+
+    names: tuple[str, ...] = ()
+    try:
+        response = await _http_client().get(
+            f"{root}/models",
+            headers={"Authorization": f"Bearer {resolved_key}"},
+            timeout=20.0,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        # Deliberately NOT client.models.list(): the OpenAI SDK insists on the
+        # {"object": "list", "data": [...]} envelope, while Together AI answers with
+        # a bare JSON array and the SDK raises while parsing a perfectly good 200.
+        entries = payload.get("data", payload) if isinstance(payload, dict) else payload
+        if isinstance(entries, list):
+            names = tuple(
+                sorted(
+                    {
+                        str(item["id"])
+                        for item in entries
+                        if isinstance(item, dict) and item.get("id") and _is_chat_model(item)
+                    }
+                )
+            )
+    except Exception as exc:  # noqa: BLE001 - catalogue is advisory, never fatal
+        logger.warning("Model catalogue unavailable for %s: %s", root, exc)
+
+    _model_catalogue[cache_key] = names
+    return names
 
 
 def _llm_model(explicit: str | None = None) -> str:
@@ -111,6 +215,8 @@ async def openai_complete(
     temperature: float = 0.0,
     max_tokens: int | None = None,
     stream: bool = False,
+    base_url: str | None = None,
+    api_key: str | None = None,
     **kwargs: Any,
 ) -> str | AsyncIterator[str]:
     """Chat-complete via an OpenAI-compatible endpoint.
@@ -146,7 +252,11 @@ async def openai_complete(
         if key in kwargs and kwargs[key] is not None:
             params[key] = kwargs[key]
 
-    client = _llm_client()
+    # Declared parameters, not **kwargs: the pass-through whitelist below silently
+    # drops anything it does not recognise, so a routing argument smuggled through
+    # kwargs would be swallowed and the call would go to the wrong provider with no
+    # error at all.
+    client = _llm_client(base_url=base_url, api_key=api_key)
     if agent or llm_action:
         llm_call(
             logger,

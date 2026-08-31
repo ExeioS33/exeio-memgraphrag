@@ -53,8 +53,10 @@ class QueryRequest(BaseModel):
     conversation_history: Optional[list[dict[str, str]]] = None
     user_prompt: Optional[str] = None
     stream: Optional[bool] = False
-    # Per-request override, checked against LLM_MODELS. Absent means the model the
-    # server was started with.
+    # Per-request overrides, validated server-side. Absent means the binding the
+    # server was started with. Completions only — embeddings stay pinned to the
+    # model the corpus was indexed with.
+    provider: Optional[str] = None
     model: Optional[str] = None
 
 
@@ -98,6 +100,8 @@ def _build_param(body: QueryRequest, rag: Any) -> QueryParam:
         kwargs["stream"] = True
     if body.model:
         kwargs["model"] = body.model
+    if body.provider:
+        kwargs["provider"] = body.provider
     return QueryParam(**kwargs)
 
 
@@ -120,24 +124,63 @@ def allowed_models(request: Any) -> list[str]:
     return models_for(getattr(request.app.state, "args", None))
 
 
-def validate_model(request: Any, model: Optional[str]) -> None:
-    """Reject an unlisted model rather than forwarding it.
+async def validate_selection(
+    request: Any,
+    provider_id: Optional[str],
+    model: Optional[str],
+) -> None:
+    """Validate the provider/model pair, rejecting anything unusable with a 400.
 
-    A typo would otherwise reach the provider and either fail deep inside the call
-    or — worse — silently bill a model the operator never sanctioned.
+    Order matters: an unknown provider, or one with no credential configured, is an
+    operator problem and must say so — forwarding it would surface as an opaque 401
+    from somebody else's API.
+
+    The model allow-list is per provider (``TOGETHER_MODELS``, ``LLM_MODELS``, …).
+    When none is pinned, the endpoint's own ``GET /v1/models`` catalogue is used
+    instead, so a freshly configured provider works without a second env var while
+    a typo is still caught before it bills anything.
     """
+    if not provider_id and not model:
+        return
+
+    def _reject(name: str, label: str, permitted: list[str]) -> None:
+        shown = ", ".join(permitted[:12]) + ("…" if len(permitted) > 12 else "")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Modèle {name!r} indisponible chez {label}. Disponibles : {shown}.",
+        )
+
+    if not provider_id:
+        # No provider named — the server's own binding. Deliberately does NOT resolve
+        # a credential: a process may legitimately have none configured (tests,
+        # offline runs) and must still be able to validate a model name.
+        permitted = allowed_models(request)
+        if model and permitted and model not in permitted:
+            _reject(model, "ce serveur", permitted)
+        return
+
+    from memgraphrag.llm import providers as provider_registry
+    from memgraphrag.llm.openai_compatible import list_models
+
+    try:
+        resolved = provider_registry.resolve(provider_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
     if not model:
         return
-    permitted = allowed_models(request)
-    if model in permitted:
+
+    permitted = list(resolved.models)
+    if not permitted and resolved.id == provider_registry.DEFAULT_PROVIDER_ID:
+        permitted = allowed_models(request)
+    if not permitted:
+        permitted = list(await list_models(resolved.base_url, resolved.api_key))
+    if not permitted or model in permitted:
+        # An empty catalogue means the endpoint could not be asked; refusing here
+        # would make an unreachable /v1/models break every query, which is worse
+        # than letting the provider reject the name itself.
         return
-    raise HTTPException(
-        status_code=status.HTTP_400_BAD_REQUEST,
-        detail=(
-            f"Model {model!r} is not available. "
-            f"Allowed: {', '.join(permitted) if permitted else '(none configured)'}."
-        ),
-    )
+    _reject(model, resolved.label, permitted)
 
 
 async def _iter_stream_frames(rag: Any, query: str, param: QueryParam) -> AsyncIterator[dict]:
@@ -211,7 +254,7 @@ def create_query_router(api_key: Optional[str] = None) -> Any:
     )
     async def query(request: Request, body: QueryRequest):
         rag = request.app.state.rag
-        validate_model(request, body.model)
+        await validate_selection(request, body.provider, body.model)
         param = _build_param(body, rag)
         if body.only_need_context or body.mode == "context":
             param.only_need_context = True
@@ -322,7 +365,7 @@ def create_query_router(api_key: Optional[str] = None) -> Any:
     @router.post("/query/stream", dependencies=[Depends(combined_auth)])
     async def query_stream(request: Request, body: QueryRequest):
         rag = request.app.state.rag
-        validate_model(request, body.model)
+        await validate_selection(request, body.provider, body.model)
         param = _build_param(body, rag)
         param.stream = True
         main_step(

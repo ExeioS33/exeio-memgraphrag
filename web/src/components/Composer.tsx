@@ -1,16 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 
-import { BulbIcon, ClipIcon, LayersIcon, SendIcon, SparkIcon } from './icons'
+import { BulbIcon, LayersIcon, SendIcon, SparkIcon } from './icons'
 
 interface Props {
   disabled: boolean
   streaming: boolean
-  deepMode: boolean
-  extensions: string[]
-  onToggleDeep: () => void
   onSend: (text: string) => void
   onStop: () => void
-  onAttach: (files: FileList) => void
   onOpenSettings: () => void
 }
 
@@ -19,17 +15,12 @@ const MAX_ROWS_PX = 190
 export default function Composer({
   disabled,
   streaming,
-  deepMode,
-  extensions,
-  onToggleDeep,
   onSend,
   onStop,
-  onAttach,
   onOpenSettings,
 }: Props) {
   const [value, setValue] = useState('')
   const textarea = useRef<HTMLTextAreaElement>(null)
-  const fileInput = useRef<HTMLInputElement>(null)
 
   // Grow with the content up to a cap, then scroll inside — a fixed-height box
   // hides the start of a long question while it is being written.
@@ -67,19 +58,6 @@ export default function Composer({
 
       <div className="flex items-center justify-between gap-2 px-3 pb-2.5">
         <div className="flex items-center gap-1.5">
-          <button
-            onClick={onToggleDeep}
-            title="Récupération approfondie : élargit le linking et réactive le rerank LLM des faits"
-            className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[13px]
-              transition ${
-                deepMode
-                  ? 'border-violet-300 bg-violet-50 text-violet-700'
-                  : 'border-edge text-ink-muted hover:border-edge-strong'
-              }`}
-          >
-            <SparkIcon size={14} />
-            Recherche approfondie
-          </button>
           <button className="icon-btn" onClick={onOpenSettings} title="Réglages de récupération">
             <LayersIcon size={16} />
           </button>
@@ -115,30 +93,11 @@ export default function Composer({
         </div>
       </div>
 
-      <div className="flex items-center justify-between rounded-b-panel border-t border-edge bg-violet-50 px-4 py-2">
+      <div className="flex items-center justify-center rounded-b-panel border-t border-edge bg-violet-50 px-4 py-2">
         <span className="inline-flex items-center gap-1.5 text-[12px] text-ink-muted">
           <SparkIcon size={13} className="text-violet-600" />
           Entrée pour envoyer · Maj+Entrée pour un saut de ligne
         </span>
-        <button
-          className="inline-flex items-center gap-1.5 rounded-full border border-edge bg-white
-            px-3 py-1 text-[12px] text-ink-muted transition hover:text-ink"
-          onClick={() => fileInput.current?.click()}
-        >
-          <ClipIcon size={14} />
-          Joindre un fichier
-        </button>
-        <input
-          ref={fileInput}
-          type="file"
-          multiple
-          hidden
-          accept={extensions.join(',')}
-          onChange={(e) => {
-            if (e.target.files?.length) onAttach(e.target.files)
-            e.target.value = ''
-          }}
-        />
       </div>
     </div>
   )

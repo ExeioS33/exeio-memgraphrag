@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 
-import type { ChatMessage } from '../api/types'
-import { BrandMark, ChevronDownIcon, DotsIcon, DownloadIcon, LinkIcon, SlidersIcon } from './icons'
+import type { ChatMessage, ProviderInfo } from '../api/types'
+import { BrandMark, ChevronDownIcon, DownloadIcon, SlidersIcon } from './icons'
 
 interface Props {
-  models: string[]
+  providers: ProviderInfo[]
+  provider: string
   model: string | null
-  onModelChange: (model: string) => void
+  onSelect: (provider: string, model: string) => void
   mode: string
   messages: ChatMessage[]
   threadTitle: string | null
@@ -38,16 +39,16 @@ function exportChat(title: string, messages: ChatMessage[]): void {
 }
 
 export default function TopBar({
-  models,
+  providers,
+  provider,
   model,
-  onModelChange,
+  onSelect,
   mode,
   messages,
   threadTitle,
   onOpenSettings,
 }: Props) {
   const [open, setOpen] = useState(false)
-  const [copied, setCopied] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -59,11 +60,9 @@ export default function TopBar({
     return () => document.removeEventListener('mousedown', onClick)
   }, [open])
 
-  useEffect(() => {
-    if (!copied) return
-    const timer = window.setTimeout(() => setCopied(false), 1800)
-    return () => window.clearTimeout(timer)
-  }, [copied])
+  const current = providers.find((p) => p.id === provider)
+  const label = current?.label ?? provider
+  const pill = model ? `${label} · ${model}` : 'Modèle par défaut'
 
   return (
     <header className="flex items-center justify-between gap-3 px-5 py-3">
@@ -74,34 +73,60 @@ export default function TopBar({
             py-1.5 pl-1.5 pr-3 text-sm transition hover:border-edge-strong"
         >
           <BrandMark size={22} />
-          <span className="max-w-[220px] truncate font-medium">{model ?? 'Modèle par défaut'}</span>
+          <span className="max-w-[260px] truncate font-medium">{pill}</span>
           <ChevronDownIcon size={15} className="text-ink-faint" />
         </button>
         {open && (
           <div
-            className="absolute left-0 top-[calc(100%+6px)] z-30 w-[290px] overflow-hidden
-              rounded-card border border-edge bg-white py-1 shadow-lg"
+            className="absolute left-0 top-[calc(100%+6px)] z-30 max-h-[70vh] w-[320px]
+              overflow-y-auto rounded-card border border-edge bg-white py-1 shadow-lg"
           >
-            {models.length === 0 ? (
-              <p className="px-3 py-2 text-xs text-ink-faint">Aucun modèle exposé par le serveur.</p>
+            {providers.length === 0 ? (
+              <p className="px-3 py-2 text-xs text-ink-faint">
+                Aucun fournisseur exposé par le serveur.
+              </p>
             ) : (
-              models.map((name) => (
-                <button
-                  key={name}
-                  onClick={() => {
-                    onModelChange(name)
-                    setOpen(false)
-                  }}
-                  className={`block w-full truncate px-3 py-2 text-left text-sm transition
-                    hover:bg-surface-sunken ${name === model ? 'text-violet-700' : 'text-ink'}`}
-                >
-                  {name}
-                </button>
+              providers.map((p) => (
+                <div key={p.id} className="py-1">
+                  <p
+                    className={`px-3 pb-1 pt-1 text-[11px] font-semibold uppercase tracking-wide
+                      ${p.available ? 'text-ink-muted' : 'text-ink-faint'}`}
+                  >
+                    {p.label}
+                  </p>
+                  {!p.available ? (
+                    <p className="px-3 pb-1 text-[11px] leading-snug text-ink-faint">
+                      Indisponible : renseignez <code className="font-mono">{p.models_env}</code>{' '}
+                      côté serveur.
+                    </p>
+                  ) : p.models.length === 0 ? (
+                    <p className="px-3 pb-1 text-[11px] leading-snug text-ink-faint">
+                      Aucun modèle dans <code className="font-mono">{p.models_env}</code>.
+                    </p>
+                  ) : (
+                    p.models.map((name) => {
+                      const selected = p.id === provider && name === model
+                      return (
+                        <button
+                          key={`${p.id}:${name}`}
+                          onClick={() => {
+                            onSelect(p.id, name)
+                            setOpen(false)
+                          }}
+                          className={`block w-full truncate px-3 py-2 text-left text-sm transition
+                            hover:bg-surface-sunken ${selected ? 'text-violet-700' : 'text-ink'}`}
+                        >
+                          {name}
+                        </button>
+                      )
+                    })
+                  )}
+                </div>
               ))
             )}
             <p className="border-t border-edge px-3 pb-1 pt-2 text-[11px] leading-snug text-ink-faint">
-              Liste définie par <code className="font-mono">LLM_MODELS</code>. Un modèle absent
-              de cette liste est refusé côté serveur.
+              Le modèle d’embedding est verrouillé : le corpus est déjà indexé avec lui, en changer
+              rendrait les vecteurs existants incomparables.
             </p>
           </div>
         )}
@@ -115,24 +140,12 @@ export default function TopBar({
           <SlidersIcon size={17} />
         </button>
         <button
-          className="icon-btn"
-          title={copied ? 'Lien copié' : 'Copier le lien'}
-          onClick={() => {
-            void navigator.clipboard?.writeText(window.location.href).then(() => setCopied(true))
-          }}
-        >
-          <LinkIcon size={17} />
-        </button>
-        <button
           className="btn-ghost"
           disabled={messages.length === 0}
           onClick={() => exportChat(threadTitle ?? 'Discussion', messages)}
         >
           <DownloadIcon size={15} />
           Exporter
-        </button>
-        <button className="icon-btn" title="Plus d'actions">
-          <DotsIcon size={17} />
         </button>
       </div>
     </header>

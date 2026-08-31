@@ -258,6 +258,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     # /chat/* answers 503; the rest of the API is unaffected.
     args.app_database_url = get_env_value("APP_DATABASE_URL", None)
 
+    # Root of the on-disk document library browsed by the web UI. Read-only: the
+    # library serves and previews what is already there, it never writes. Every
+    # request path is resolved and checked for containment under this root.
+    args.library_root = get_env_value(
+        "LIBRARY_ROOT", "~/Desktop/project/lightrag/cf_lightrag/data/rfe-igor"
+    )
+
     # Query / PPR knobs
     args.top_k = get_env_value("TOP_K", TOP_K, int)
     args.linking_top_k = get_env_value("LINKING_TOP_K", LINKING_TOP_K, int)

@@ -1,8 +1,13 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
 
 import * as api from './api/client'
 import { ApiError } from './api/client'
-import type { HealthResponse, QuerySettings } from './api/types'
+import type {
+  GraphSuggestion,
+  HealthResponse,
+  ProviderInfo,
+  QuerySettings,
+} from './api/types'
 import Composer from './components/Composer'
 import EmptyState, { SuggestionCards } from './components/EmptyState'
 import { CloseIcon, HelpIcon, TranslateIcon } from './components/icons'
@@ -13,47 +18,35 @@ import TopBar from './components/TopBar'
 import { useChat } from './state/useChat'
 
 // Panels are loaded on demand: the chat path is what the page is for, and neither
-// the library nor the graph explorer is needed to render the first screen.
+// the library nor the Cypher console is needed to render the first screen.
 const LibraryPanel = lazy(() => import('./components/LibraryPanel'))
 const GraphPanel = lazy(() => import('./components/GraphPanel'))
 const SettingsPanel = lazy(() => import('./components/SettingsPanel'))
 
-const BASE_SETTINGS: QuerySettings = { mode: 'ppr', model: null }
-
-/** "Recherche approfondie" in the composer. Widens fact linking and re-enables the
- *  LLM fact rerank, which is what actually deepens a MemGraphRAG answer. */
-const DEEP_SETTINGS: Partial<QuerySettings> = {
-  linking_top_k: 90,
-  top_k: 18,
-  skip_fact_rerank: false,
-  schema_top_k: 12,
-}
+const BASE_SETTINGS: QuerySettings = { mode: 'ppr', provider: null, model: null }
 
 export default function App() {
   const [authed, setAuthed] = useState<boolean | null>(null)
   const [health, setHealth] = useState<HealthResponse | null>(null)
-  const [models, setModels] = useState<string[]>([])
-  const [extensions, setExtensions] = useState<string[]>([])
+  const [providers, setProviders] = useState<ProviderInfo[]>([])
   const [settings, setSettings] = useState<QuerySettings>(BASE_SETTINGS)
-  const [deep, setDeep] = useState(false)
+  const [suggestions, setSuggestions] = useState<GraphSuggestion[]>([])
   const [nav, setNav] = useState<NavKey>('chat')
   const [showSettings, setShowSettings] = useState(false)
   const [collapsed, setCollapsed] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
 
-  const effective = useMemo<QuerySettings>(
-    () => (deep ? { ...settings, ...DEEP_SETTINGS } : settings),
-    [deep, settings],
-  )
-
-  const chat = useChat(effective)
+  const chat = useChat(settings)
 
   const bootstrap = useCallback(async () => {
     try {
-      const [modelsResponse, params] = await Promise.all([api.listModels(), api.queryParams()])
-      setModels(modelsResponse.models)
-      setExtensions(params.supported_extensions)
-      setSettings((prev) => ({ ...prev, model: prev.model ?? modelsResponse.default }))
+      const models = await api.listModels()
+      setProviders(models.providers)
+      setSettings((prev) => ({
+        ...prev,
+        provider: prev.provider ?? models.default.provider,
+        model: prev.model ?? models.default.model,
+      }))
       setAuthed(true)
     } catch (exc) {
       if (exc instanceof ApiError && exc.isAuthError) {
@@ -73,27 +66,29 @@ export default function App() {
       .catch(() => setHealth(null))
   }, [bootstrap])
 
+  // Suggestion cards are derived from the graph, so they name entities that are
+  // actually in the corpus. A hardcoded set goes stale the moment the corpus does.
+  useEffect(() => {
+    if (authed !== true) return
+    let alive = true
+    api
+      .graphHighlights()
+      .then((data) => {
+        if (alive) setSuggestions(data.suggestions)
+      })
+      .catch(() => {
+        /* the empty state still renders; the cards just stay as skeletons */
+      })
+    return () => {
+      alive = false
+    }
+  }, [authed])
+
   useEffect(() => {
     if (!toast) return
     const timer = window.setTimeout(() => setToast(null), 6000)
     return () => window.clearTimeout(timer)
   }, [toast])
-
-  const attach = useCallback(async (files: FileList) => {
-    const names: string[] = []
-    for (const file of Array.from(files)) {
-      try {
-        await api.uploadFile(file)
-        names.push(file.name)
-      } catch (exc) {
-        setToast(`${file.name} : ${exc instanceof Error ? exc.message : String(exc)}`)
-        return
-      }
-    }
-    setToast(
-      `${names.length} document(s) mis en file. L'indexation est asynchrone — suivez-la dans la bibliothèque.`,
-    )
-  }, [])
 
   const logout = useCallback(() => {
     api.logout()
@@ -142,10 +137,11 @@ export default function App() {
       <main className="flex min-w-0 flex-1 flex-col py-3 pr-3">
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-panel border border-edge bg-surface">
           <TopBar
-            models={models}
+            providers={providers}
+            provider={settings.provider ?? 'default'}
             model={settings.model ?? null}
-            onModelChange={(model) => setSettings((prev) => ({ ...prev, model }))}
-            mode={effective.mode}
+            onSelect={(provider, model) => setSettings((prev) => ({ ...prev, provider, model }))}
+            mode={settings.mode}
             messages={chat.messages}
             threadTitle={activeThread?.title ?? null}
             onOpenSettings={() => setShowSettings(true)}
@@ -189,17 +185,16 @@ export default function App() {
               <Composer
                 disabled={chat.streaming}
                 streaming={chat.streaming}
-                deepMode={deep}
-                extensions={extensions}
-                onToggleDeep={() => setDeep((v) => !v)}
                 onSend={(text) => void chat.send(text)}
                 onStop={chat.stop}
-                onAttach={(files) => void attach(files)}
                 onOpenSettings={() => setShowSettings(true)}
               />
               {empty && (
                 <div className="mt-3">
-                  <SuggestionCards onPick={(prompt) => void chat.send(prompt)} />
+                  <SuggestionCards
+                    suggestions={suggestions}
+                    onPick={(prompt) => void chat.send(prompt)}
+                  />
                 </div>
               )}
               <div className="mt-2 flex items-center justify-between text-[11px] text-ink-faint">

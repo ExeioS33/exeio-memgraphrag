@@ -79,9 +79,115 @@ export interface DocumentChunksResponse {
   returned: number
 }
 
-export interface ModelsResponse {
-  default: string | null
+export interface ProviderInfo {
+  id: string
+  label: string
+  available: boolean
+  base_url: string | null
   models: string[]
+  models_env: string
+  doc_url: string
+  note: string
+}
+
+export interface ModelsResponse {
+  default: { provider: string; model: string | null }
+  providers: ProviderInfo[]
+  /** Allow-list for the server's own binding; kept for older clients. */
+  models: string[]
+  /** Always locked: the corpus is indexed with this model at this dimension. */
+  embedding: { model: string | null; dim: number | null; locked: boolean; reason: string }
+}
+
+/* ------------------------------------------------------------ cypher --- */
+
+/** A node as returned by the Cypher console — Neo4j shape, not the engine's. */
+export interface CypherNode {
+  id: string
+  labels: string[]
+  properties: Record<string, unknown>
+}
+
+export interface CypherEdge {
+  id: string
+  type: string
+  source: string
+  target: string
+  properties: Record<string, unknown>
+}
+
+export interface CypherResponse {
+  columns: string[]
+  rows: Record<string, unknown>[]
+  nodes: CypherNode[]
+  edges: CypherEdge[]
+  stats: { records: number; elapsed_ms: number; truncated: boolean; limit_applied: number | null }
+}
+
+export interface GraphSchema {
+  workspace: string
+  node_count: number
+  relationship_count: number
+  labels: { label: string; count: number }[]
+  relationship_types: { type: string; count: number }[]
+  property_keys: string[]
+}
+
+export interface GraphSuggestion {
+  title: string
+  body: string
+  prompt: string
+  kind: 'entity' | 'schema' | 'type'
+}
+
+export interface GraphHighlights {
+  suggestions: GraphSuggestion[]
+}
+
+/* ----------------------------------------------------------- library --- */
+
+export interface LibraryEntry {
+  name: string
+  /** Path relative to the configured library root — never absolute. */
+  path: string
+  is_dir: boolean
+  size: number
+  /** ISO-8601 UTC, e.g. "2026-08-31T09:12:44+00:00". `new Date(...)` parses it. */
+  modified: string
+  ext: string
+  children?: LibraryEntry[]
+}
+
+export interface LibraryTree {
+  root: string
+  entries: LibraryEntry[]
+  total_files: number
+  /** True when the walk hit its file/depth cap and stopped early. */
+  truncated?: boolean
+}
+
+export interface LibraryPage {
+  page: number
+  text: string
+}
+
+export interface LibraryPreview {
+  path: string
+  page_count: number
+  pages: LibraryPage[]
+}
+
+export interface LibraryPassage {
+  chunk_id: string
+  content: string
+}
+
+export interface LibraryPassages {
+  path: string
+  passages: LibraryPassage[]
+  total: number
+  /** False when provenance has not been backfilled for this corpus. */
+  linked: boolean
 }
 
 export interface ParamSpec {
@@ -142,6 +248,8 @@ export interface GraphResponse {
 
 export interface QuerySettings {
   mode: 'ppr' | 'naive' | 'context' | 'bypass'
+  /** Provider id from /models. Completions only — embeddings are locked. */
+  provider?: string | null
   model?: string | null
   top_k?: number
   linking_top_k?: number

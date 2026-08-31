@@ -30,7 +30,11 @@ from memgraphrag.constants import (
     LOGIN_WINDOW_SECONDS,
 )
 from memgraphrag.core import MemGraphRAG
+from memgraphrag.llm.openai_compatible import list_models as catalogue_for
 from memgraphrag.llm.openai_compatible import openai_complete, openai_embed
+from memgraphrag.llm.providers import DEFAULT_PROVIDER_ID
+from memgraphrag.llm.providers import describe_available as describe_providers
+from memgraphrag.llm.providers import resolve as resolve_provider
 from memgraphrag.pipeline import reset_interrupted_documents
 
 logger = logging.getLogger("memgraphrag.api.server")
@@ -144,11 +148,22 @@ def _build_rag(args: Any) -> MemGraphRAG:
     """Construct MemGraphRAG with openai-compatible LLM/embed bindings."""
 
     async def llm_model_func(prompt: str, **kwargs: Any) -> Any:
-        # `model` is popped, not passed through: the engine now forwards a per-request
-        # override, and binding it here as well would raise
+        # `model` and `provider` are popped, not passed through: the engine forwards
+        # per-request overrides, and binding them here as well would raise
         # "TypeError: got multiple values for keyword argument 'model'".
         model = kwargs.pop("model", None) or getattr(args, "llm_model", None)
-        result = await openai_complete(prompt, model=model, **kwargs)
+        provider_id = kwargs.pop("provider", None)
+        base_url: str | None = None
+        api_key: str | None = None
+        if provider_id:
+            # Index-time calls (OpenIE, schema, conflicts) never pass a provider, so
+            # ingestion always runs on the server's own binding — only the query path
+            # can be re-routed.
+            resolved = resolve_provider(provider_id)
+            base_url, api_key = resolved.base_url, resolved.api_key
+        result = await openai_complete(
+            prompt, model=model, base_url=base_url, api_key=api_key, **kwargs
+        )
         # A streaming call returns an async iterator of tokens; str() on it would
         # yield the generator's repr, so only the buffered result is coerced.
         if kwargs.get("stream"):
@@ -298,7 +313,9 @@ def create_app(
         get_combined_auth_dependency,
     )
     from memgraphrag.api.routers.chat import create_chat_router
+    from memgraphrag.api.routers.cypher import create_cypher_router
     from memgraphrag.api.routers.documents import create_documents_router
+    from memgraphrag.api.routers.library import create_library_router
     from memgraphrag.api.routers.graphs import create_graphs_router
     from memgraphrag.api.routers.ollama import create_ollama_router
     from memgraphrag.api.routers.query import create_query_router, models_for
@@ -428,6 +445,8 @@ def create_app(
     app.include_router(create_documents_router(api_key))
     app.include_router(create_query_router(api_key))
     app.include_router(create_graphs_router(api_key))
+    app.include_router(create_cypher_router(api_key))
+    app.include_router(create_library_router(api_key))
     app.include_router(create_chat_router(api_key))
     app.include_router(
         create_ollama_router(
@@ -562,14 +581,54 @@ def create_app(
 
     @app.get("/models", dependencies=[Depends(combined_auth)])
     async def list_models():
-        """Models the UI may offer in its picker, server default first.
+        """Providers and models the UI may offer in its picker.
 
         Distinct from the Ollama emulation's ``/api/tags``, which advertises one
         synthetic entry for client compatibility and does not select anything.
+
+        ``embedding`` is reported as locked on purpose: the corpus is indexed with
+        one embedding model at one dimension, so offering to change it at query time
+        would promise something that silently degrades every answer.
         """
+        providers = describe_providers()
+        for entry in providers:
+            if entry["id"] == DEFAULT_PROVIDER_ID and not entry["models"]:
+                entry["models"] = models_for(cfg)
+
+        # Providers with no pinned allow-list get their real catalogue, so a
+        # configured provider is usable without a second env var. Bounded and
+        # concurrent: an Ollama that is not running would otherwise stall this
+        # endpoint for the client's full connect timeout. Failures degrade to an
+        # empty list, which the picker renders as "no model configured".
+        async def _fill(entry: dict[str, Any]) -> None:
+            if entry["models"] or not entry["available"]:
+                return
+            try:
+                resolved = resolve_provider(str(entry["id"]))
+                names = await asyncio.wait_for(
+                    catalogue_for(resolved.base_url, resolved.api_key), timeout=8.0
+                )
+                entry["models"] = list(names)
+            except Exception as exc:  # noqa: BLE001 - advisory only
+                logger.debug("Catalogue unavailable for %s: %s", entry["id"], exc)
+
+        await asyncio.gather(*(_fill(entry) for entry in providers))
         return {
-            "default": getattr(cfg, "llm_model", None),
+            "default": {
+                "provider": DEFAULT_PROVIDER_ID,
+                "model": getattr(cfg, "llm_model", None),
+            },
+            "providers": providers,
             "models": models_for(cfg),
+            "embedding": {
+                "model": getattr(cfg, "embedding_model", None),
+                "dim": getattr(cfg, "embedding_dim", None),
+                "locked": True,
+                "reason": (
+                    "Le corpus est indexé avec ce modèle ; en changer invaliderait "
+                    "la recherche vectorielle."
+                ),
+            },
         }
 
     # Last: a mount at "/" claims every path the routers did not.

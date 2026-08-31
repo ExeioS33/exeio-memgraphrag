@@ -2699,13 +2699,16 @@ class MemGraphRAG:
                         "memgraphrag.llm_bypass",
                         as_type="generation",
                         input={"query": query},
-                        model=os.getenv("LLM_MODEL"),
+                        # param.model first: labelling the span with the env default
+                        # traced a per-request override under the wrong model name.
+                        model=param.model or os.getenv("LLM_MODEL"),
                     ) as gen_span:
                         stage(logger, "mode=bypass")
                         answer = await self.llm_model_func(
                             query,
                             system_prompt=param.user_prompt,
                             model=param.model,
+                            provider=param.provider,
                             agent="qa.bypass",
                             llm_action="complete",
                         )
@@ -2785,7 +2788,9 @@ class MemGraphRAG:
                         "n_docs": len(sol.docs),
                         "docs": truncate_docs(sol.docs),
                     },
-                    model=os.getenv("LLM_MODEL"),
+                    # See the bypass span above: a per-request override must be
+                    # traced under the model that actually ran.
+                    model=param.model or os.getenv("LLM_MODEL"),
                     metadata={"system_prompt_chars": len(system or "")},
                 ) as gen_span:
                     stage(
@@ -2800,6 +2805,7 @@ class MemGraphRAG:
                         system_prompt=system,
                         history_messages=history,
                         model=param.model,
+                        provider=param.provider,
                         agent="qa.reading",
                         llm_action="complete",
                     )
@@ -2887,6 +2893,7 @@ class MemGraphRAG:
                 system_prompt=system,
                 history_messages=param.conversation_history or None,
                 model=param.model,
+                provider=param.provider,
                 stream=True,
                 agent=agent,
                 llm_action="stream",
