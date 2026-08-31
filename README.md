@@ -6,44 +6,144 @@ Industrialized API server for [MemGraphRAG](https://arxiv.org/abs/2606.00610): a
 
 This repository (`memgraphrag`; remote [`exeio-memgraphrag`](https://github.com/ExeioS33/exeio-memgraphrag)) packages the research engine as a LightRAG-style production service: FastAPI REST API, pluggable storage (PostgreSQL + pgvector, Neo4j + GDS), OpenAI-compatible LLM/embedding bindings, Docling-capable file processing, Docker Compose, and uv-based tooling.
 
-## 🚀 Quick start
+## 💬 The web UI
+
+![MemGraphRAG chat UI](docs/images/memgraphrag_chat_ui.png)
+
+A React chat interface **served by the API itself** — one process, one port, no CORS. Answers stream token by token with their source documents cited, threads persist in their own database, and the model can be switched per message across any OpenAI-compatible provider.
 
 ```bash
-# Install (requires uv)
-uv sync --extra api
+uv sync --extra api                   # Python side
+docker compose up -d postgres-app     # chat persistence, host port 5433
+cd web && npm install && npm run build && cd ..
+cp env.example .env                   # then set LLM_BINDING_HOST / LLM_BINDING_API_KEY
+uv run memgraphrag-server             # → http://localhost:9621/
+```
 
-# Copy and edit environment
-cp env.example .env
+The bundle is a build artifact and is **not committed**. Without it the server logs `Web UI not built; serving API only` and every API route keeps working, so the UI is strictly additive. `docker compose up` needs none of the above — the image builds the bundle in its own `node` stage.
 
-# Run API server (file-based defaults; no external DB required)
-uv run memgraphrag-server
+Four screens, all backed by real endpoints — see [`docs/WebUI.md`](docs/WebUI.md) for the full mapping.
 
-# Or full stack (API image tagged exeio-memgraphrag:<version>)
+**Chat.** Ask in natural language; the engine retrieves through Personalized PageRank over the memory graph and answers with `[n]` citations resolving to the source documents. The three cards on the empty screen are **generated from your corpus** (most connected entities, most frequent fact schemas, dominant types), so they name things that are actually in your data. `Entrée` sends, `Maj+Entrée` inserts a newline.
+
+**Provider + model picker** (top-left pill). Route a single message to Together AI, Ollama, vLLM, OpenAI, or the binding the server started with. The picker lists each provider's real catalogue, filtered to chat-capable models. **Embeddings are never switched** — the corpus is indexed with one model at one dimension, and the UI says so rather than offering a control that would quietly break retrieval.
+
+**Bibliothèque.** Browse the folder set by `LIBRARY_ROOT`, recursively. Preview a PDF page by page, open or download the original, and jump to the graph passages extracted from it.
+
+**Explorer le graphe.** A read-only Cypher console over the memory graph, with Graph / Table / Raw result views and a sidebar listing labels, relationship types and property keys. Write statements are refused; see [Cypher console](#-cypher-console) below.
+
+## 🚀 Other ways to run it
+
+```bash
+# API only, file-backed defaults — no database, no Docker
+uv sync --extra api && cp env.example .env
+uv run memgraphrag-server                     # http://localhost:9621/docs
+
+# Full stack: app + PostgreSQL/pgvector + Neo4j/GDS (+ app database)
 docker compose up -d --build
 
-# Optional: CLI + Streamlit clients (talk to the running API)
+# Optional CLI and Streamlit playground (talk to a running API)
 uv sync --extra client
 uv run memgraphrag-cli health
 uv run streamlit run memgraphrag/client/app.py
 ```
 
-API docs: `http://localhost:9621/docs`  
-Clients guide: [`docs/Clients.md`](docs/Clients.md).  
-Compose image: `exeio-memgraphrag:0.1.0` (also `:latest`). Direct deps are exact-pinned in `pyproject.toml`; full tree is locked in `uv.lock`.
+Compose image: `exeio-memgraphrag:0.1.0` (also `:latest`). Direct deps are exact-pinned in `pyproject.toml`; the full tree is locked in `uv.lock`.
 
-### 💬 Web UI
+### Minimum configuration
 
-A React chat interface served by the API itself — one process, one port, no CORS. Threads persist in a dedicated PostgreSQL container, answers stream token by token with their source passages cited, and the model can be switched per request across any OpenAI-compatible provider (Together AI, Ollama, vLLM, OpenAI).
+`env.example` is the only template and documents every variable the code actually reads. To get a working server you need at least:
+
+| Variable | What it does |
+|---|---|
+| `LLM_BINDING_HOST` / `LLM_BINDING_API_KEY` / `LLM_MODEL` | Where completions go. Any OpenAI-compatible gateway. |
+| `EMBEDDING_BINDING_HOST` / `EMBEDDING_MODEL` / `EMBEDDING_DIM` | Where embeddings go. **Fix these before your first ingest and never change them** — they define the vector space the corpus lives in. |
+| `MEMGRAPHRAG_{KV,VECTOR,GRAPH,DOC_STATUS}_STORAGE` | Backend selection. Defaults are file-backed and need no infrastructure. |
+| `APP_DATABASE_URL` | Chat persistence. Unset ⇒ `/chat/*` answers 503 and the UI keeps threads in the browser tab. |
+| `LIBRARY_ROOT` | Folder the library browses. Read-only. |
+
+Auth is optional: with neither `AUTH_ACCOUNTS` nor `MEMGRAPHRAG_API_KEY` set the server is open, which is fine on a laptop and wrong anywhere else. Set `REQUIRE_AUTH=true` to fail closed.
+
+## 📥 Ingesting documents
+
+Four ways in, all landing in the same async pipeline (`pending → parsing → processing → processed`):
 
 ```bash
-docker compose up -d postgres-app     # chat persistence, host port 5433
-cd web && npm install && npm run build
-uv run memgraphrag-server             # http://localhost:9621/
+# One file
+uv run memgraphrag-cli docs upload ./contract.pdf
+
+# A whole tree
+uv run memgraphrag-cli docs upload-dir ./corpus --recursive
+
+# Raw text
+uv run memgraphrag-cli docs text "MemGraphRAG builds a three-layer memory."
+
+# Whatever is already sitting in INPUT_DIR
+uv run memgraphrag-cli docs scan
 ```
 
-The bundle is a build artifact and is not committed; without it the server logs `Web UI not built; serving API only` and every API route keeps working. The Docker image builds it in its own `node` stage, so `docker compose up` needs nothing extra. Full guide: [`docs/WebUI.md`](docs/WebUI.md).
+Indexing is asynchronous — the upload returns as soon as the document is queued. Follow it with `uv run memgraphrag-cli docs list`, or watch the library panel, which polls while anything is in flight.
 
-It also ships a read-only Cypher console over the memory graph and a filesystem-backed document library (`LIBRARY_ROOT`) with per-page PDF preview.
+Extraction is checkpointed: each sub-batch is written to the OpenIE cache before the next starts, so a relaunch after a crash re-bills only what is missing. Ingesting the same bytes twice is a no-op.
+
+> **Provenance.** Citations resolve through doc-status records (`file_path` + `chunk_ids`). A corpus ingested by a script calling `core.ainsert()` directly skips that table, and every citation then reads `unknown` while the library shows nothing — one missing table, not two bugs. `scripts/backfill_rfe_sources.py` repairs it **without re-ingesting**: chunk ids are content hashes, so re-running the same chunking reproduces them exactly. Run `--verify` first; it refuses to write below a 95 % overlap, because a misaligned backfill attaches the wrong filename to a passage, which is worse than no citation at all.
+
+## 🔎 Querying
+
+```bash
+# Simple question
+uv run memgraphrag-cli query "What are the obligations for an association?"
+
+# Retrieval evidence only, no generation
+uv run memgraphrag-cli query "..." --data-only
+
+# Tune retrieval, or apply a named preset
+uv run memgraphrag-cli query "..." --top-k 20 --linking-top-k 90 --no-skip-fact-rerank
+uv run memgraphrag-cli query "..." --preset "⚖️ Balanced"
+```
+
+```bash
+# Same thing over HTTP, routed to a specific provider
+curl -X POST localhost:9621/query -H 'Content-Type: application/json' -d '{
+  "query": "Quelles obligations pour une association ?",
+  "mode": "ppr",
+  "provider": "together",
+  "model": "deepseek-ai/DeepSeek-V3",
+  "top_k": 10
+}'
+```
+
+**Four modes.** `ppr` (default) seeds Personalized PageRank from the facts matching your question and ranks passages by the resulting scores. `naive` skips the graph and does dense passage retrieval only — a useful baseline. `context` returns the retrieved evidence without generating an answer. `bypass` calls the LLM directly with no retrieval at all.
+
+**Streaming.** `POST /query/stream` emits the references frame first, then one frame per token, then `[DONE]`. Retrieval is *not* streamed — Personalized PageRank has no partial result to emit — so the first token still costs a full retrieval, which the UI shows as a "Récupération en cours…" indicator.
+
+**Multi-turn.** `conversation_history` reaches the LLM but is **not** used to rewrite the retrieval query: a follow-up like *"and the second one?"* retrieves against that literal text. Phrase follow-ups so they stand alone.
+
+## 🕸 Cypher console
+
+`POST /graph/cypher` runs read-only Cypher against the memory graph, and the UI wraps it in a Neo4j-Browser-style console.
+
+```bash
+curl -X POST localhost:9621/graph/cypher -H 'Content-Type: application/json' \
+  -d '{"query": "MATCH p=()-[:ENTITY_TO_TYPE]->() RETURN p LIMIT 25"}'
+```
+
+Read-only is enforced in three layers, because no single one is sufficient: the backend must be `Neo4JStorage`; write keywords are rejected *after* string literals and comments are stripped (so `CONTAINS 'DELETE the invoice'` is not a false positive, and `n.created_at` is not mistaken for `CREATE`); and execution runs in a `default_access_mode="READ"` transaction, which Neo4j itself refuses to write from — the only layer a parser bypass cannot beat. A `LIMIT` is injected when the statement has none.
+
+Every query is scoped to the workspace label. That matters if your Neo4j hosts more than one project: an unscoped query would render two unrelated knowledge graphs at once.
+
+Three traps when writing your own Cypher against this schema: nodes have **no `id` property** (match on `entity_id`); `PASSAGE_ENTITY` runs **Entity → Passage** despite its name; and `ENTITY_RELATION` direction is not semantic — the pair is ordered by string sort at write time, so traverse it undirected.
+
+## 🩺 Troubleshooting
+
+| Symptom | Cause |
+|---|---|
+| Citations all read `unknown`, library empty | No doc-status records — see the provenance note above. |
+| `/chat/*` returns 503 | `APP_DATABASE_URL` unset or the `postgres-app` container is down. |
+| Server starts, every query 500s | An `SSL_CERT_FILE` pointing at a file that does not exist. |
+| Model picker shows one entry | No `<PROVIDER>_API_KEY` set, so only the server's own binding is offered. |
+| `WORKERS > 1` refused at startup | A file-backed backend is selected; its locks are in-process. Switch to PostgreSQL/Neo4j. |
+| Answers ignore the corpus | Check `/health` — `retrieval_status` must be `ready`. |
 
 ### 🎮 Streamlit playground
 
@@ -240,7 +340,8 @@ memgraphrag/                 # repository root
 │   ├── parser/              # Legacy + Docling parsers & registry
 │   ├── storage/             # KV / vector / graph / doc-status backends
 │   ├── ppr/                 # igraph & Neo4j GDS Personalized PageRank
-│   ├── llm/                 # OpenAI-compatible LLM / embedding bindings
+│   ├── chat/                # Chat threads & messages (own database, not RAG storage)
+│   ├── llm/                 # OpenAI-compatible bindings + provider registry
 │   ├── observability/       # Langfuse retrieval tracing (optional)
 │   ├── client/              # HTTP client, CLI (memgraphrag-cli), Streamlit UI
 │   ├── openie/              # OpenIE fact extraction
@@ -253,6 +354,7 @@ memgraphrag/                 # repository root
 │   ├── retrieval.py         # Retrieval-state scaffolding (not yet wired in)
 │   ├── base.py              # Storage ABCs
 │   └── rerank.py            # Fact / passage reranking
+├── web/                     # React + Vite chat UI (built into memgraphrag/api/static)
 ├── docs/                    # Deployment & API guides
 ├── tests/                   # Unit / edge / gated integration tests
 ├── scripts/                 # test.sh, evaluate.py, bench.py, e2e_arxiv.py, import_lightrag_parsed.py
@@ -272,6 +374,7 @@ memgraphrag/                 # repository root
 Guides under [`docs/`](docs/), including:
 
 - [`docs/MemGraphRAG-API-Server.md`](docs/MemGraphRAG-API-Server.md) — API server
+- [`docs/WebUI.md`](docs/WebUI.md) — web chat UI, provider routing, Cypher console
 - [`docs/Clients.md`](docs/Clients.md) — CLI + Streamlit clients
 - [`docs/DockerDeployment.md`](docs/DockerDeployment.md) — Compose stack
 - [`docs/FileProcessingPipeline.md`](docs/FileProcessingPipeline.md) — parsers & chunkers
