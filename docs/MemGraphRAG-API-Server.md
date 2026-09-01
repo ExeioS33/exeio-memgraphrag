@@ -122,11 +122,44 @@ guarantee below only holds within the worker that owns the running ingest.
 | POST | `/query` | Retrieve + QA → `{response, references}` |
 | POST | `/query/data` | Retrieval evidence only (`response`/`references` + docs) |
 | POST | `/query/stream` | SSE framing, **not token streaming** — see below |
+| GET | `/query/params` | Tunable-parameter registry (bounds + presets) for clients |
+| GET | `/documents/{doc_id}/chunks` | Passages a document was split into (paged) |
 | GET | `/graphs` | Explore memory graph |
 | GET | `/graph/label/list` | List node labels |
+| POST | `/graph/cypher` | Run a **read-only** Cypher statement against the memory graph |
+| GET | `/graph/schema` | Workspace-scoped labels, relationship types and property keys |
+| GET | `/graph/neighborhood` | N-hop expansion around one node |
+| GET | `/graph/highlights` | Corpus-derived suggestions for the UI's empty state |
+| GET | `/library/tree` | Browse the on-disk document library (`LIBRARY_ROOT`) |
+| GET | `/library/file` | Serve one library file inline |
+| GET | `/library/preview` | Per-page extracted text |
+| GET | `/library/passages` | Graph passages whose `file_path` matches a library file |
+| GET | `/models` | Providers and models selectable per request |
+| POST | `/chat/threads` | Create a conversation |
+| GET | `/chat/threads` | List conversations (paged, owner-scoped) |
+| GET | `/chat/threads/{thread_id}` | One conversation with its messages |
+| PATCH | `/chat/threads/{thread_id}` | Rename / retarget a conversation |
+| DELETE | `/chat/threads/{thread_id}` | Delete a conversation and its messages |
+| POST | `/chat/threads/{thread_id}/messages` | Append a message |
 | GET/POST | `/api/*` | Ollama emulation (`/api/chat`, `/api/generate`, `/api/tags`, `/api/ps`, `/api/version`) |
 
-That is the whole surface: 23 operations in total.
+That is the whole surface: 40 operations in total.
+
+`POST /graph/cypher` is read-only and enforced in three layers: the backend must be
+`Neo4JStorage`, write keywords are rejected after string literals and comments are
+stripped, and execution runs in a `default_access_mode="READ"` transaction — which
+Neo4j itself refuses to write from. A `LIMIT` is injected when the statement has
+none. The graph is shared with other tools, so this is not optional hardening.
+
+Per-request `provider` / `model` on `/query` route completions to any
+OpenAI-compatible endpoint (Together AI, Ollama, vLLM). **Embeddings are never
+routed**: the corpus is indexed with one model at one dimension, and sending query
+embeddings elsewhere returns vectors from a different space.
+
+The `/chat/*` routes are backed by a **separate** application database
+(`APP_DATABASE_URL`, the `postgres-app` compose service), never by a RAG storage
+backend. With that variable unset they answer **503** and everything else keeps
+working; the web UI then holds conversations in the browser tab only.
 
 Admin mutate endpoints return **409** while `/health` reports `pipeline_busy=true`.
 Clear-all requires `confirm=true` (400 otherwise). Per-doc delete needs content-hash

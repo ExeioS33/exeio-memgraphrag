@@ -7,6 +7,7 @@ Modes: ``ppr`` | ``naive`` | ``context`` | ``bypass``.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 from typing import Any, AsyncIterator, Literal, Optional
@@ -19,13 +20,15 @@ from memgraphrag.utils.step_log import done_step, fail_step, main_step, truncate
 logger = logging.getLogger("memgraphrag.api.query")
 
 try:
-    from fastapi import APIRouter, Depends, Request
+    from fastapi import APIRouter, Depends, HTTPException, Request, status
     from fastapi.responses import StreamingResponse
     from pydantic import BaseModel, Field
 except ImportError:  # pragma: no cover
     APIRouter = None  # type: ignore[misc, assignment]
     Depends = None  # type: ignore[misc, assignment]
+    HTTPException = None  # type: ignore[misc, assignment]
     Request = None  # type: ignore[misc, assignment]
+    status = None  # type: ignore[assignment]
     StreamingResponse = None  # type: ignore[misc, assignment]
     BaseModel = object  # type: ignore[misc, assignment]
     # Stub so the module still imports without the [api] extra; never called.
@@ -50,6 +53,11 @@ class QueryRequest(BaseModel):
     conversation_history: Optional[list[dict[str, str]]] = None
     user_prompt: Optional[str] = None
     stream: Optional[bool] = False
+    # Per-request overrides, validated server-side. Absent means the binding the
+    # server was started with. Completions only — embeddings stay pinned to the
+    # model the corpus was indexed with.
+    provider: Optional[str] = None
+    model: Optional[str] = None
 
 
 class QueryResponse(BaseModel):
@@ -90,7 +98,120 @@ def _build_param(body: QueryRequest, rag: Any) -> QueryParam:
         kwargs["user_prompt"] = body.user_prompt
     if body.stream:
         kwargs["stream"] = True
+    if body.model:
+        kwargs["model"] = body.model
+    if body.provider:
+        kwargs["provider"] = body.provider
     return QueryParam(**kwargs)
+
+
+def models_for(args: Any) -> list[str]:
+    """Models a caller may select: ``LLM_MODELS`` plus the server default.
+
+    The default is always included. Without that, an operator who never set
+    LLM_MODELS would see the running model offered in the picker and get a 400 on
+    selecting it — the one choice that is guaranteed to work.
+    """
+    raw = getattr(args, "llm_models", "") or ""
+    models = [m.strip() for m in str(raw).split(",") if m.strip()]
+    default = getattr(args, "llm_model", None)
+    if default and default not in models:
+        models.insert(0, default)
+    return models
+
+
+def allowed_models(request: Any) -> list[str]:
+    return models_for(getattr(request.app.state, "args", None))
+
+
+async def validate_selection(
+    request: Any,
+    provider_id: Optional[str],
+    model: Optional[str],
+) -> None:
+    """Validate the provider/model pair, rejecting anything unusable with a 400.
+
+    Order matters: an unknown provider, or one with no credential configured, is an
+    operator problem and must say so — forwarding it would surface as an opaque 401
+    from somebody else's API.
+
+    The model allow-list is per provider (``TOGETHER_MODELS``, ``LLM_MODELS``, …).
+    When none is pinned, the endpoint's own ``GET /v1/models`` catalogue is used
+    instead, so a freshly configured provider works without a second env var while
+    a typo is still caught before it bills anything.
+    """
+    if not provider_id and not model:
+        return
+
+    def _reject(name: str, label: str, permitted: list[str]) -> None:
+        shown = ", ".join(permitted[:12]) + ("…" if len(permitted) > 12 else "")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Modèle {name!r} indisponible chez {label}. Disponibles : {shown}.",
+        )
+
+    if not provider_id:
+        # No provider named — the server's own binding. Deliberately does NOT resolve
+        # a credential: a process may legitimately have none configured (tests,
+        # offline runs) and must still be able to validate a model name.
+        permitted = allowed_models(request)
+        if model and permitted and model not in permitted:
+            _reject(model, "ce serveur", permitted)
+        return
+
+    from memgraphrag.llm import providers as provider_registry
+    from memgraphrag.llm.openai_compatible import list_models
+
+    try:
+        resolved = provider_registry.resolve(provider_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    if not model:
+        return
+
+    permitted = list(resolved.models)
+    if not permitted and resolved.id == provider_registry.DEFAULT_PROVIDER_ID:
+        permitted = allowed_models(request)
+    if not permitted:
+        permitted = list(await list_models(resolved.base_url, resolved.api_key))
+    if not permitted or model in permitted:
+        # An empty catalogue means the endpoint could not be asked; refusing here
+        # would make an unreachable /v1/models break every query, which is worse
+        # than letting the provider reject the name itself.
+        return
+    _reject(model, resolved.label, permitted)
+
+
+async def _iter_stream_frames(rag: Any, query: str, param: QueryParam) -> AsyncIterator[dict]:
+    """Yield engine frames, falling back to one buffered answer.
+
+    The fallback keeps this route working against an engine without ``astream_qa``
+    — a test double, or an older engine object — instead of raising mid-response
+    once the 200 has already been committed.
+    """
+    stream_fn = getattr(rag, "astream_qa", None)
+    agen = None
+    if stream_fn is not None:
+        try:
+            candidate = stream_fn(query, param=param)
+            # `inspect.isasyncgen`, not `hasattr(candidate, "__aiter__")`: a MagicMock
+            # answers True to the latter, so a mocked engine would iterate an empty
+            # async iterator and stream nothing at all instead of falling back.
+            if inspect.isasyncgen(candidate):
+                agen = candidate
+        except (AttributeError, TypeError):
+            agen = None
+    if agen is not None:
+        async for frame in agen:
+            yield frame
+        return
+
+    sol = await rag.arag_qa(query, param=param)
+    payload = _solution_payload(sol)
+    yield {"references": payload.get("references") or []}
+    yield {"token": payload.get("response") or ""}
+    yield {"done": True, "answer": payload.get("response") or ""}
 
 
 def _solution_payload(sol: QuerySolution | str) -> dict[str, Any]:
@@ -133,6 +254,7 @@ def create_query_router(api_key: Optional[str] = None) -> Any:
     )
     async def query(request: Request, body: QueryRequest):
         rag = request.app.state.rag
+        await validate_selection(request, body.provider, body.model)
         param = _build_param(body, rag)
         if body.only_need_context or body.mode == "context":
             param.only_need_context = True
@@ -171,6 +293,35 @@ def create_query_router(api_key: Optional[str] = None) -> Any:
             # Off the event loop: flush_langfuse() does synchronous network I/O, so
             # calling it inline froze every concurrent request on the worker.
             await asyncio.to_thread(flush_langfuse)
+
+    @router.get("/query/params", dependencies=[Depends(combined_auth)])
+    async def query_params():
+        """Expose the tunable-parameter registry so clients build their own form.
+
+        Single source of truth is ``memgraphrag/client/params.py``, already shared by
+        the CLI, the Streamlit playground and the optimizer. Serving it here keeps the
+        web UI from hardcoding a fourth copy of the same bounds and presets.
+        """
+        from memgraphrag.client.params import PRESETS, QUERY_PARAMS, SUPPORTED_EXTENSIONS
+
+        return {
+            "params": [
+                {
+                    "name": spec.name,
+                    "kind": spec.kind,
+                    "emoji": spec.emoji,
+                    "help": spec.help,
+                    "default": spec.default,
+                    "choices": list(spec.choices) if spec.choices else None,
+                    "min": spec.min,
+                    "max": spec.max,
+                    "step": spec.step,
+                }
+                for spec in QUERY_PARAMS
+            ],
+            "presets": {name: dict(values) for name, values in PRESETS.items()},
+            "supported_extensions": sorted(SUPPORTED_EXTENSIONS),
+        }
 
     @router.post("/query/data", dependencies=[Depends(combined_auth)])
     async def query_data(request: Request, body: QueryRequest):
@@ -214,6 +365,7 @@ def create_query_router(api_key: Optional[str] = None) -> Any:
     @router.post("/query/stream", dependencies=[Depends(combined_auth)])
     async def query_stream(request: Request, body: QueryRequest):
         rag = request.app.state.rag
+        await validate_selection(request, body.provider, body.model)
         param = _build_param(body, rag)
         param.stream = True
         main_step(
@@ -224,23 +376,34 @@ def create_query_router(api_key: Optional[str] = None) -> Any:
         )
 
         async def event_gen() -> AsyncIterator[str]:
+            answer_chars = 0
+            refs_count = 0
             try:
-                sol = await rag.arag_qa(body.query, param=param)
-                payload = _solution_payload(sol)
-                answer = payload.get("response") or ""
-                refs = payload.get("references") or []
-                docs = getattr(sol, "docs", None) or []
+                # Wire format is unchanged — `references` first, then `response`
+                # frames, then [DONE]. What changed is that `response` now arrives as
+                # many small frames instead of one big one, so a client that already
+                # concatenates them (the Streamlit playground does) gains the
+                # typewriter effect without any change on its side.
+                async for frame in _iter_stream_frames(rag, body.query, param):
+                    if "token" in frame:
+                        token = frame.get("token") or ""
+                        if not token:
+                            continue
+                        answer_chars += len(token)
+                        payload = json.dumps({"response": token}, ensure_ascii=False)
+                        yield f"data: {payload}\n\n"
+                    elif "references" in frame:
+                        refs = frame.get("references") or []
+                        refs_count = len(refs)
+                        payload = json.dumps({"references": refs}, ensure_ascii=False)
+                        yield f"data: {payload}\n\n"
                 done_step(
                     logger,
                     "api.query.stream",
                     mode=param.mode,
-                    docs=len(docs),
-                    answer_chars=len(str(answer)),
-                    references=len(refs),
+                    answer_chars=answer_chars,
+                    references=refs_count,
                 )
-                # LightRAG-compatible order: references first, then response.
-                yield f"data: {json.dumps({'references': refs}, ensure_ascii=False)}\n\n"
-                yield f"data: {json.dumps({'response': answer}, ensure_ascii=False)}\n\n"
                 yield "data: [DONE]\n\n"
             except Exception as exc:
                 fail_step(
@@ -250,7 +413,11 @@ def create_query_router(api_key: Optional[str] = None) -> Any:
                     exc=exc,
                     exc_info=True,
                 )
+                # The 200 and the headers are already on the wire by now, so the only
+                # way to report this is an in-band frame.
                 yield f"data: {json.dumps({'error': str(exc)})}\n\n"
+            finally:
+                await asyncio.to_thread(flush_langfuse)
 
         return StreamingResponse(event_gen(), media_type="text/event-stream")
 

@@ -1,0 +1,733 @@
+<mxfile host="app.diagrams.net" agent="Claude Code" type="device">
+  <diagram id="page-architecture" name="1 · Architecture">
+    <mxGraphModel dx="1400" dy="900" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1900" pageHeight="1600" math="0" shadow="0" adaptiveColors="auto">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <mxCell id="p1_title" value="MemGraphRAG — Architecture système" style="text;html=1;fontSize=24;fontStyle=1;align=left;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="30" y="-95" width="1100" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_subtitle" value="Squelette à adapter à la stack interne. La colonne de droite et les blocs en pointillés sont les points de substitution." style="text;html=1;fontSize=13;fontStyle=2;align=left;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="30" y="-55" width="1100" height="30" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="p1_L1" value="Clients (hors image du service)" style="swimlane;whiteSpace=wrap;html=1;startSize=30;fillColor=#F5F5F5;strokeColor=#666666;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="0" y="0" width="1180" height="150" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_c_cli" value="memgraphrag-cli&#xa;Typer + Rich" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#666666;" vertex="1" parent="p1_L1">
+          <mxGeometry x="50" y="50" width="180" height="70" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_c_st" value="Playground Streamlit&#xa;client/app.py" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#666666;" vertex="1" parent="p1_L1">
+          <mxGeometry x="245" y="50" width="180" height="70" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_c_ol" value="Clients compatibles&#xa;Ollama" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#666666;" vertex="1" parent="p1_L1">
+          <mxGeometry x="440" y="50" width="180" height="70" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_c_http" value="Outils internes&#xa;HTTP / notebooks" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#666666;" vertex="1" parent="p1_L1">
+          <mxGeometry x="635" y="50" width="180" height="70" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_c_note" value="Tout client authentifié atteint n&apos;importe quel router. Les liens ci-dessous indiquent l&apos;usage principal." style="text;html=1;fontSize=11;fontStyle=2;align=left;verticalAlign=middle;whiteSpace=wrap;" vertex="1" parent="p1_L1">
+          <mxGeometry x="860" y="50" width="290" height="70" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="p1_L2" value="Couche API — FastAPI (memgraphrag/api/)" style="swimlane;whiteSpace=wrap;html=1;startSize=30;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="0" y="170" width="1180" height="310" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_subA" value="Routers — fabriques, chaque route sous Depends(combined_auth)" style="swimlane;whiteSpace=wrap;html=1;startSize=30;fillColor=#FFFFFF;strokeColor=#6C8EBF;fontSize=11;" vertex="1" parent="p1_L2">
+          <mxGeometry x="30" y="50" width="800" height="130" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_r_doc" value="&lt;b&gt;documents.py&lt;/b&gt;&lt;br&gt;/documents/upload · text · scan&lt;br&gt;list · delete · requeue" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontSize=10;" vertex="1" parent="p1_subA">
+          <mxGeometry x="20" y="40" width="180" height="55" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_r_q" value="&lt;b&gt;query.py&lt;/b&gt;&lt;br&gt;/query · /query/data&lt;br&gt;/query/stream" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontSize=10;" vertex="1" parent="p1_subA">
+          <mxGeometry x="215" y="40" width="180" height="55" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_r_ol" value="&lt;b&gt;ollama.py&lt;/b&gt;&lt;br&gt;/api/tags · version · ps&lt;br&gt;/api/chat · /api/generate" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontSize=10;" vertex="1" parent="p1_subA">
+          <mxGeometry x="410" y="40" width="180" height="55" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_r_g" value="&lt;b&gt;graphs.py&lt;/b&gt;&lt;br&gt;/graphs&lt;br&gt;/graph/label/list" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontSize=10;" vertex="1" parent="p1_subA">
+          <mxGeometry x="605" y="40" width="180" height="55" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_subB" value="server.py — cycle de vie &amp; sécurité" style="swimlane;whiteSpace=wrap;html=1;startSize=30;fillColor=#FFFFFF;strokeColor=#6C8EBF;fontSize=11;" vertex="1" parent="p1_L2">
+          <mxGeometry x="860" y="50" width="290" height="240" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_mw" value="Middleware&#xa;RequestContext → Metrics → CORS" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontSize=10;" vertex="1" parent="p1_subB">
+          <mxGeometry x="15" y="40" width="260" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_auth" value="auth.py · dependencies.py&#xa;whitelist | JWT Bearer | X-API-Key" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontSize=10;" vertex="1" parent="p1_subB">
+          <mxGeometry x="15" y="100" width="260" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_sys" value="/health · /health/ready (non authentifiée)&#xa;/metrics · POST /login (rate-limited)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontSize=10;" vertex="1" parent="p1_subB">
+          <mxGeometry x="15" y="160" width="260" height="50" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="p1_L3" value="Moteur MemGraphRAG" style="swimlane;whiteSpace=wrap;html=1;startSize=30;fillColor=#D5E8D4;strokeColor=#82B366;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="0" y="500" width="1180" height="210" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_pipeline" value="&lt;b&gt;pipeline.py&lt;/b&gt;&lt;br&gt;Ingestion asynchrone&lt;br&gt;pending → parsing → processing&lt;br&gt;→ processed | failed&lt;br&gt;&lt;i&gt;séquentielle par document&lt;/i&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#82B366;fontSize=11;" vertex="1" parent="p1_L3">
+          <mxGeometry x="30" y="50" width="250" height="130" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_memory" value="&lt;b&gt;memory.py&lt;/b&gt; — ThreeLayerMemory&lt;br&gt;SchemaNode / FactNode / PassageNode&lt;br&gt;listes parallèles liées par index&lt;br&gt;préfixes de nœuds : passage- fact-&lt;br&gt;entity- schema-" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#82B366;fontSize=11;" vertex="1" parent="p1_L3">
+          <mxGeometry x="305" y="50" width="250" height="130" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_core" value="&lt;b&gt;core.py&lt;/b&gt; — MemGraphRAG&lt;br&gt;ainsert · aretrieve · aquery&lt;br&gt;prepare_retrieval()&lt;br&gt;9 handles de stockage namespacés&lt;br&gt;(memory_kv, openie_kv, chunks_kv,&lt;br&gt;chunks/entities/facts/schemas_vdb,&lt;br&gt;graph, doc_status)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#82B366;fontSize=10;" vertex="1" parent="p1_L3">
+          <mxGeometry x="580" y="50" width="250" height="130" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="p1_LS" value="Sous-systèmes de traitement" style="swimlane;whiteSpace=wrap;html=1;startSize=30;fillColor=#FFF2CC;strokeColor=#D6B656;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1240" y="500" width="560" height="390" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_parser" value="&lt;b&gt;parser/&lt;/b&gt; — registre&lt;br&gt;legacy (~28 ext.) | docling" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D6B656;fontSize=10;" vertex="1" parent="p1_LS">
+          <mxGeometry x="20" y="45" width="250" height="55" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_ppr" value="&lt;b&gt;ppr/&lt;/b&gt; — PPR_ENGINE&lt;br&gt;IgraphPPREngine (défaut) | neo4j_gds" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D6B656;fontSize=10;" vertex="1" parent="p1_LS">
+          <mxGeometry x="290" y="45" width="250" height="55" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_chunker" value="&lt;b&gt;chunker/&lt;/b&gt; — F | R | P&lt;br&gt;CHUNK_SIZE · CHUNK_OVERLAP_SIZE" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D6B656;fontSize=10;" vertex="1" parent="p1_LS">
+          <mxGeometry x="20" y="110" width="250" height="55" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_rerank" value="&lt;b&gt;rerank.py&lt;/b&gt; — FactFilter&lt;br&gt;threshold_filter | allm_filter" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D6B656;fontSize=10;" vertex="1" parent="p1_LS">
+          <mxGeometry x="290" y="110" width="250" height="55" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_openie" value="&lt;b&gt;openie/&lt;/b&gt; + &lt;b&gt;prompts/&lt;/b&gt;&lt;br&gt;ner · triple_extraction · MAX_ASYNC_LLM" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D6B656;fontSize=10;" vertex="1" parent="p1_LS">
+          <mxGeometry x="20" y="175" width="250" height="55" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_sidecar" value="&lt;b&gt;sidecar/&lt;/b&gt; — writer.py&lt;br&gt;blocks_path lu par le chunker P" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D6B656;fontSize=10;" vertex="1" parent="p1_LS">
+          <mxGeometry x="290" y="175" width="250" height="55" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_obs" value="&lt;b&gt;observability/&lt;/b&gt;&lt;br&gt;langfuse_trace.py (no-op si désactivé)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D6B656;fontSize=10;" vertex="1" parent="p1_LS">
+          <mxGeometry x="20" y="240" width="250" height="55" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_llm" value="&lt;b&gt;llm/&lt;/b&gt; — openai_compatible.py&lt;br&gt;openai_complete · openai_embed" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D6B656;fontSize=10;" vertex="1" parent="p1_LS">
+          <mxGeometry x="290" y="240" width="250" height="55" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="p1_L4" value="Abstraction de stockage — base.py (ABC) + storage/factory.py" style="swimlane;whiteSpace=wrap;html=1;startSize=30;fillColor=#E1D5E7;strokeColor=#9673A6;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="0" y="740" width="1180" height="150" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_ds" value="DocStatusStorage" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#9673A6;" vertex="1" parent="p1_L4">
+          <mxGeometry x="30" y="50" width="260" height="70" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_kv" value="BaseKVStorage" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#9673A6;" vertex="1" parent="p1_L4">
+          <mxGeometry x="320" y="50" width="260" height="70" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_vec" value="BaseVectorStorage" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#9673A6;" vertex="1" parent="p1_L4">
+          <mxGeometry x="610" y="50" width="260" height="70" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_gr" value="BaseGraphStorage" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#9673A6;" vertex="1" parent="p1_L4">
+          <mxGeometry x="900" y="50" width="260" height="70" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="p1_L5" value="Implémentations — storage/*_impl.py (sélection par MEMGRAPHRAG_{KV,VECTOR,GRAPH,DOC_STATUS}_STORAGE)" style="swimlane;whiteSpace=wrap;html=1;startSize=30;fillColor=#FFE6CC;strokeColor=#D79B00;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="0" y="920" width="1180" height="290" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_subFile" value="Adossé fichier — impose WORKERS=1 (verrous asyncio intra-processus)" style="swimlane;whiteSpace=wrap;html=1;startSize=30;fillColor=#FFFFFF;strokeColor=#D79B00;fontSize=11;" vertex="1" parent="p1_L5">
+          <mxGeometry x="30" y="50" width="540" height="210" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_jkv" value="JsonKVStorage" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6CC;strokeColor=#D79B00;fontSize=11;" vertex="1" parent="p1_subFile">
+          <mxGeometry x="20" y="40" width="250" height="55" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_nano" value="NanoVectorDBStorage" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6CC;strokeColor=#D79B00;fontSize=11;" vertex="1" parent="p1_subFile">
+          <mxGeometry x="290" y="40" width="250" height="55" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_ig" value="IgraphStorage" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6CC;strokeColor=#D79B00;fontSize=11;" vertex="1" parent="p1_subFile">
+          <mxGeometry x="20" y="105" width="250" height="55" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_jds" value="JsonDocStatusStorage" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6CC;strokeColor=#D79B00;fontSize=11;" vertex="1" parent="p1_subFile">
+          <mxGeometry x="290" y="105" width="250" height="55" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_subSrv" value="Adossé serveur — multi-worker possible (jeu retenu par docker-compose)" style="swimlane;whiteSpace=wrap;html=1;startSize=30;fillColor=#FFFFFF;strokeColor=#D79B00;fontSize=11;" vertex="1" parent="p1_L5">
+          <mxGeometry x="610" y="50" width="540" height="210" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_pgkv" value="PGKVStorage" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6CC;strokeColor=#D79B00;fontSize=11;" vertex="1" parent="p1_subSrv">
+          <mxGeometry x="20" y="40" width="250" height="55" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_pgvec" value="PGVectorStorage" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6CC;strokeColor=#D79B00;fontSize=11;" vertex="1" parent="p1_subSrv">
+          <mxGeometry x="290" y="40" width="250" height="55" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_pgds" value="PGDocStatusStorage" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6CC;strokeColor=#D79B00;fontSize=11;" vertex="1" parent="p1_subSrv">
+          <mxGeometry x="20" y="105" width="250" height="55" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_neo" value="Neo4JStorage&#xa;batch() → UNWIND par lots de 1 000" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6CC;strokeColor=#D79B00;fontSize=11;" vertex="1" parent="p1_subSrv">
+          <mxGeometry x="290" y="105" width="250" height="55" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="p1_LX" value="Services externes — bindings OpenAI-compatibles uniquement" style="swimlane;whiteSpace=wrap;html=1;startSize=30;fillColor=#E6D0DE;strokeColor=#996185;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1240" y="920" width="560" height="200" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_lf" value="&lt;b&gt;Langfuse&lt;/b&gt;&lt;br&gt;(optionnel)&lt;br&gt;LANGFUSE_ENABLE_TRACE&lt;br&gt;LANGFUSE_HOST" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#996185;dashed=1;fontSize=10;" vertex="1" parent="p1_LX">
+          <mxGeometry x="20" y="45" width="170" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_xllm" value="&lt;b&gt;Endpoint LLM&lt;/b&gt;&lt;br&gt;LLM_BINDING_HOST&lt;br&gt;LLM_BINDING_API_KEY&lt;br&gt;LLM_MODEL" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#996185;fontSize=10;" vertex="1" parent="p1_LX">
+          <mxGeometry x="210" y="45" width="170" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_xemb" value="&lt;b&gt;Embeddings&lt;/b&gt;&lt;br&gt;EMBEDDING_BINDING_HOST&lt;br&gt;EMBEDDING_MODEL&lt;br&gt;EMBEDDING_DIM" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#996185;fontSize=10;" vertex="1" parent="p1_LX">
+          <mxGeometry x="400" y="45" width="140" height="120" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="p1_L6" value="Infrastructure (docker-compose)" style="swimlane;whiteSpace=wrap;html=1;startSize=30;fillColor=#F8CECC;strokeColor=#B85450;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="0" y="1240" width="1180" height="200" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_wd" value="WORKING_DIR&#xa;./data/rag_storage&#xa;./data/inputs" style="shape=folder;whiteSpace=wrap;html=1;tabWidth=60;tabHeight=16;tabPosition=left;fillColor=#FFFFFF;strokeColor=#B85450;fontSize=11;verticalAlign=middle;" vertex="1" parent="p1_L6">
+          <mxGeometry x="30" y="55" width="260" height="110" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_docling" value="docling-serve&#xa;127.0.0.1:5001&#xa;profil « docling » (désactivé par défaut)&#xa;appelé par parser/external/docling" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#B85450;dashed=1;fontSize=10;" vertex="1" parent="p1_L6">
+          <mxGeometry x="320" y="55" width="260" height="110" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_pg" value="PostgreSQL 16&#xa;pgvector/pgvector:pg16&#xa;127.0.0.1:5432" style="shape=cylinder3;boundedLbl=1;backgroundOutline=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#B85450;fontSize=11;" vertex="1" parent="p1_L6">
+          <mxGeometry x="610" y="55" width="260" height="110" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_neodb" value="Neo4j 5 community + GDS&#xa;127.0.0.1:7474 · :7687" style="shape=cylinder3;boundedLbl=1;backgroundOutline=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#B85450;fontSize=11;" vertex="1" parent="p1_L6">
+          <mxGeometry x="900" y="55" width="260" height="110" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="p1_LG" value="Points de substitution — stack interne" style="swimlane;whiteSpace=wrap;html=1;startSize=30;fillColor=#F5F5F5;strokeColor=#666666;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1240" y="1240" width="560" height="200" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_LGtext" value="• &lt;b&gt;LLM / embeddings&lt;/b&gt; : LLM_BINDING_HOST et EMBEDDING_BINDING_HOST — tout endpoint OpenAI-compatible (vLLM, passerelle interne).&lt;br&gt;• &lt;b&gt;Stockage&lt;/b&gt; : PG* / Neo4JStorage → instances gérées en interne.&lt;br&gt;• &lt;b&gt;Auth&lt;/b&gt; : AUTH_ACCOUNTS + JWT → SSO / IdP interne.&lt;br&gt;• &lt;b&gt;Image&lt;/b&gt; : exeio-memgraphrag → registry interne.&lt;br&gt;• &lt;b&gt;CI&lt;/b&gt; : GitHub Actions → TeamCity (.teamcity/).&lt;br&gt;• &lt;b&gt;Observabilité&lt;/b&gt; : Langfuse → APM interne." style="text;html=1;align=left;verticalAlign=top;whiteSpace=wrap;fontSize=11;" vertex="1" parent="p1_LG">
+          <mxGeometry x="20" y="40" width="520" height="150" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="p1_e1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#666666;" edge="1" parent="1" source="p1_c_cli" target="p1_r_doc">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_e2" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#666666;" edge="1" parent="1" source="p1_c_st" target="p1_r_q">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_e3" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#666666;" edge="1" parent="1" source="p1_c_ol" target="p1_r_ol">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_e4" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#666666;" edge="1" parent="1" source="p1_c_http" target="p1_r_g">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="p1_e5" value="ingestion" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#6C8EBF;fontSize=10;" edge="1" parent="1" source="p1_r_doc" target="p1_pipeline">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_e6" value="aquery" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#6C8EBF;fontSize=10;" edge="1" parent="1" source="p1_r_q" target="p1_core">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_e7" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#6C8EBF;" edge="1" parent="1" source="p1_r_ol" target="p1_core">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_e8" value="lecture du graphe" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#6C8EBF;fontSize=10;" edge="1" parent="1" source="p1_r_g" target="p1_memory">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="p1_e9" value="utilise" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#82B366;fontSize=10;" edge="1" parent="1" source="p1_core" target="p1_LS">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="p1_e10" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#9673A6;" edge="1" parent="1" source="p1_pipeline" target="p1_ds">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_e11" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#9673A6;" edge="1" parent="1" source="p1_core" target="p1_kv">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_e12" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#9673A6;" edge="1" parent="1" source="p1_core" target="p1_vec">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_e13" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#9673A6;" edge="1" parent="1" source="p1_memory" target="p1_gr">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="p1_e14" value="défaut" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;dashed=1;strokeColor=#D79B00;fontSize=10;" edge="1" parent="1" source="p1_kv" target="p1_subFile">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_e15" value="production" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;dashed=1;strokeColor=#D79B00;fontSize=10;" edge="1" parent="1" source="p1_gr" target="p1_subSrv">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="p1_e16" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#B85450;" edge="1" parent="1" source="p1_ig" target="p1_wd">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_e17" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#B85450;" edge="1" parent="1" source="p1_jds" target="p1_wd">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_e18" value="asyncpg" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#B85450;fontSize=10;" edge="1" parent="1" source="p1_pgds" target="p1_pg">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_e19" value="Bolt" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#B85450;fontSize=10;" edge="1" parent="1" source="p1_neo" target="p1_neodb">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="p1_e20" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;dashed=1;strokeColor=#996185;" edge="1" parent="1" source="p1_obs" target="p1_lf">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_e21" value="HTTPS" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#996185;fontSize=10;" edge="1" parent="1" source="p1_llm" target="p1_xllm">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p1_e22" value="HTTPS" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#996185;fontSize=10;" edge="1" parent="1" source="p1_llm" target="p1_xemb">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+
+  <diagram id="page-ingestion" name="2 · Ingestion">
+    <mxGraphModel dx="1400" dy="900" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1200" math="0" shadow="0" adaptiveColors="auto">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <mxCell id="p2_title" value="Pipeline d&apos;ingestion — pipeline.py + core.ainsert()" style="text;html=1;fontSize=24;fontStyle=1;align=left;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="40" y="-95" width="1200" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="p2_subtitle" value="Statuts DocStatus en jaune/vert/rouge. Ingestion séquentielle par document ; seul MAX_ASYNC_LLM borne la concurrence sortante." style="text;html=1;fontSize=13;fontStyle=2;align=left;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="40" y="-55" width="1200" height="30" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="p2_a1" value="POST /documents/upload&#xa;/documents/text · /documents/scan" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;" vertex="1" parent="1">
+          <mxGeometry x="40" y="40" width="320" height="70" as="geometry"/>
+        </mxCell>
+        <mxCell id="p2_a2" value="enqueue_document()&#xa;résout le parser (MEMGRAPHRAG_PARSER)&#xa;content_summary ≤ 200 caractères" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="400" y="40" width="320" height="70" as="geometry"/>
+        </mxCell>
+        <mxCell id="p2_a3" value="reset_interrupted_documents()&#xa;au démarrage : parsing/processing → pending&#xa;stampe metadata.recovered_from" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#6C8EBF;dashed=1;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="760" y="40" width="340" height="70" as="geometry"/>
+        </mxCell>
+        <mxCell id="p2_a4" value="POST /documents/{doc_id}/requeue&#xa;depuis failed · processing · parsing · pending" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#6C8EBF;dashed=1;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1140" y="40" width="320" height="70" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="p2_pending" value="&lt;b&gt;PENDING&lt;/b&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="400" y="170" width="320" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="p2_C" value="PARSING — process_pending()" style="swimlane;whiteSpace=wrap;html=1;startSize=30;fillColor=#FFF2CC;strokeColor=#D6B656;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="280" width="1420" height="195" as="geometry"/>
+        </mxCell>
+        <mxCell id="p2_c1" value="resolve_parser_directives()&#xa;MEMGRAPHRAG_PARSER&#xa;ex. pdf:docling-P;*:legacy-F" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D6B656;fontSize=11;" vertex="1" parent="p2_C">
+          <mxGeometry x="20" y="45" width="320" height="55" as="geometry"/>
+        </mxCell>
+        <mxCell id="p2_c2" value="get_parser(engine).parse(ParseContext)&#xa;→ ParseResult(content, parse_format, blocks_path)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D6B656;fontSize=11;" vertex="1" parent="p2_C">
+          <mxGeometry x="360" y="45" width="320" height="55" as="geometry"/>
+        </mxCell>
+        <mxCell id="p2_c3" value="LegacyParser&#xa;~28 extensions" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D6B656;fontSize=11;" vertex="1" parent="p2_C">
+          <mxGeometry x="700" y="45" width="220" height="55" as="geometry"/>
+        </mxCell>
+        <mxCell id="p2_c4" value="DoclingParser&#xa;DOCLING_ENDPOINT (profil optionnel)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D6B656;dashed=1;fontSize=11;" vertex="1" parent="p2_C">
+          <mxGeometry x="940" y="45" width="240" height="55" as="geometry"/>
+        </mxCell>
+        <mxCell id="p2_c5" value="sidecar/writer.py&#xa;→ blocks_path (JSON)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D6B656;dashed=1;fontSize=11;" vertex="1" parent="p2_C">
+          <mxGeometry x="1200" y="45" width="200" height="55" as="geometry"/>
+        </mxCell>
+        <mxCell id="p2_c6" value="parse_chunking_strategy() → get_chunker(F | R | P) — TiktokenTokenizer(TIKTOKEN_MODEL), CHUNK_SIZE, CHUNK_OVERLAP_SIZE   ·   P consomme blocks_path et retombe sur R" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D6B656;fontSize=11;" vertex="1" parent="p2_C">
+          <mxGeometry x="20" y="115" width="1160" height="50" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="p2_D" value="PROCESSING — _index_chunks() → core.ainsert()" style="swimlane;whiteSpace=wrap;html=1;startSize=30;fillColor=#D5E8D4;strokeColor=#82B366;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="525" width="1420" height="350" as="geometry"/>
+        </mxCell>
+        <mxCell id="p2_d1" value="_assign_chunk_ids()&#xa;id de contenu « chunk-… »" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#82B366;fontSize=11;" vertex="1" parent="p2_D">
+          <mxGeometry x="20" y="45" width="300" height="55" as="geometry"/>
+        </mxCell>
+        <mxCell id="p2_d2" value="Cache openie_kv&#xa;seuls les nouveaux chunks appellent le LLM" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#82B366;fontSize=11;" vertex="1" parent="p2_D">
+          <mxGeometry x="340" y="45" width="320" height="55" as="geometry"/>
+        </mxCell>
+        <mxCell id="p2_d3" value="_extract_openie_checkpointed()&#xa;OPENIE_CHECKPOINT_SIZE — écrit chaque sous-lot&#xa;avant le suivant, 1 réessai des chunks en échec" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#82B366;fontSize=11;" vertex="1" parent="p2_D">
+          <mxGeometry x="680" y="45" width="340" height="55" as="geometry"/>
+        </mxCell>
+        <mxCell id="p2_d4" value="_load_corpus_openie_docs()&#xa;mémoire reconstruite depuis tous&#xa;les documents PROCESSED" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#82B366;fontSize=11;" vertex="1" parent="p2_D">
+          <mxGeometry x="1040" y="45" width="340" height="55" as="geometry"/>
+        </mxCell>
+        <mxCell id="p2_mem" value="_rebuild_memory_from_openie()" style="swimlane;whiteSpace=wrap;html=1;startSize=30;fillColor=#FFFFFF;strokeColor=#82B366;fontSize=11;" vertex="1" parent="p2_D">
+          <mxGeometry x="20" y="125" width="1000" height="185" as="geometry"/>
+        </mxCell>
+        <mxCell id="p2_m1" value="build_from_raw_openie_results()&#xa;faits + passages" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D5E8D4;strokeColor=#82B366;fontSize=10;" vertex="1" parent="p2_mem">
+          <mxGeometry x="15" y="40" width="225" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="p2_m2" value="extract_schema()&#xa;couche schéma (LLM)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D5E8D4;strokeColor=#82B366;fontSize=10;" vertex="1" parent="p2_mem">
+          <mxGeometry x="255" y="40" width="225" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="p2_m3" value="filter_ontology()&#xa;ONTOLOGY_MIN_FREQUENCY&#xa;ONTOLOGY_MAX_DEACTIVATION_RATIO" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D5E8D4;strokeColor=#82B366;fontSize=10;" vertex="1" parent="p2_mem">
+          <mxGeometry x="495" y="40" width="245" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="p2_m4" value="detect_conflicts()&#xa;CONFLICT_MAX_GROUPS" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D5E8D4;strokeColor=#82B366;fontSize=10;" vertex="1" parent="p2_mem">
+          <mxGeometry x="755" y="40" width="225" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="p2_m5" value="resolve_conflicts()   —   les deux étapes de conflit sautent si CONFLICT_ENABLED=false" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D5E8D4;strokeColor=#82B366;fontSize=10;" vertex="1" parent="p2_mem">
+          <mxGeometry x="15" y="105" width="600" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="p2_d5" value="_embed_and_store_memory()&#xa;facts_vdb · schemas_vdb&#xa;entities_vdb · chunks_vdb" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#82B366;fontSize=11;" vertex="1" parent="p2_D">
+          <mxGeometry x="1040" y="125" width="340" height="85" as="geometry"/>
+        </mxCell>
+        <mxCell id="p2_d6" value="_install_memory_graph()&#xa;sous Neo4JStorage.batch() — UNWIND, 1 000 lignes&#xa;préfixes passage- fact- entity- schema-&#xa;puis memory_kv.upsert({&quot;memory&quot;: …})" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#82B366;fontSize=11;" vertex="1" parent="p2_D">
+          <mxGeometry x="1040" y="225" width="340" height="85" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="p2_warn" value="&lt;b&gt;⚠ memory_sub_stage n&apos;est pas un indicateur de progression&lt;/b&gt;&lt;br&gt;&lt;br&gt;Les sept libellés — openie → memory_build → schema_extraction → ontology_filter → conflict_detection → conflict_resolution → graph_install — sont écrits dans une boucle serrée &lt;i&gt;avant&lt;/i&gt; l&apos;appel d&apos;indexation.&lt;br&gt;&lt;br&gt;Un sondage de statut renvoie donc graph_install pendant quasiment toute la durée du traitement." style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;fillColor=#F8CECC;strokeColor=#B85450;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="40" y="925" width="320" height="185" as="geometry"/>
+        </mxCell>
+        <mxCell id="p2_processed" value="&lt;b&gt;PROCESSED&lt;/b&gt;&lt;br&gt;memory_sub_stage = done&lt;br&gt;chunk_ids enregistrés" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D5E8D4;strokeColor=#82B366;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="400" y="925" width="340" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="p2_failed" value="&lt;b&gt;FAILED&lt;/b&gt;&lt;br&gt;metadata.error&lt;br&gt;memory_sub_stage = None" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F8CECC;strokeColor=#B85450;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="790" y="925" width="300" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="p2_lock" value="&lt;b&gt;Concurrence&lt;/b&gt;&lt;br&gt;&lt;br&gt;pipeline_lock est un verrou &lt;i&gt;par processus&lt;/i&gt; : il ne protège rien entre workers.&lt;br&gt;&lt;br&gt;Le contrôle « occupé » est lecture-puis-acquisition : une requête qui perd la course attend le verrou au lieu de renvoyer 409. Le 409 est l&apos;usage courant, pas une garantie." style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;fillColor=#FFF2CC;strokeColor=#D6B656;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1140" y="925" width="320" height="185" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="p2_e1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#6C8EBF;" edge="1" parent="1" source="p2_a1" target="p2_a2">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p2_e2" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#6C8EBF;" edge="1" parent="1" source="p2_a2" target="p2_pending">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p2_e3" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;dashed=1;strokeColor=#6C8EBF;" edge="1" parent="1" source="p2_a3" target="p2_pending">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p2_e4" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;dashed=1;strokeColor=#6C8EBF;" edge="1" parent="1" source="p2_a4" target="p2_pending">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p2_e5" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#D6B656;" edge="1" parent="1" source="p2_pending" target="p2_C">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p2_e6" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#D6B656;" edge="1" parent="1" source="p2_c1" target="p2_c2">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p2_e7" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#D6B656;" edge="1" parent="1" source="p2_c2" target="p2_c3">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p2_e8" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;dashed=1;strokeColor=#D6B656;" edge="1" parent="1" source="p2_c3" target="p2_c4">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p2_e9" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;dashed=1;strokeColor=#D6B656;" edge="1" parent="1" source="p2_c4" target="p2_c5">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p2_e10" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#82B366;" edge="1" parent="1" source="p2_C" target="p2_D">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p2_e11" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#82B366;" edge="1" parent="1" source="p2_d1" target="p2_d2">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p2_e12" value="absent du cache" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#82B366;fontSize=10;" edge="1" parent="1" source="p2_d2" target="p2_d3">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p2_e13" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#82B366;" edge="1" parent="1" source="p2_d3" target="p2_d4">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p2_e14" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#82B366;" edge="1" parent="1" source="p2_d4" target="p2_mem">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p2_e15" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#82B366;" edge="1" parent="1" source="p2_m1" target="p2_m2">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p2_e16" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#82B366;" edge="1" parent="1" source="p2_m2" target="p2_m3">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p2_e17" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#82B366;" edge="1" parent="1" source="p2_m3" target="p2_m4">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p2_e18" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#82B366;" edge="1" parent="1" source="p2_m4" target="p2_m5">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p2_e19" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#82B366;" edge="1" parent="1" source="p2_mem" target="p2_d5">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p2_e20" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#82B366;" edge="1" parent="1" source="p2_d5" target="p2_d6">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p2_e21" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#82B366;" edge="1" parent="1" source="p2_D" target="p2_processed">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p2_e22" value="exception" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;dashed=1;strokeColor=#B85450;fontSize=10;" edge="1" parent="1" source="p2_D" target="p2_failed">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+
+  <diagram id="page-query" name="3 · Requête">
+    <mxGraphModel dx="1400" dy="900" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1100" math="0" shadow="0" adaptiveColors="auto">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <mxCell id="p3_title" value="Chemin de requête — core.aquery() / _retrieve_one()" style="text;html=1;fontSize=24;fontStyle=1;align=left;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="40" y="-95" width="1200" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="p3_subtitle" value="Quatre modes : ppr (défaut) · naive · context · bypass. Sur /api/*, le mode est décodé depuis un préfixe dans le texte de la requête." style="text;html=1;fontSize=13;fontStyle=2;align=left;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="40" y="-55" width="1200" height="30" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="p3_q1" value="POST /query&#xa;/query/data (contexte seul)&#xa;/query/stream" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;" vertex="1" parent="1">
+          <mxGeometry x="40" y="40" width="300" height="70" as="geometry"/>
+        </mxCell>
+        <mxCell id="p3_q2" value="POST /api/generate · /api/chat&#xa;parse_query_mode() décode&#xa;/ppr /naive /context /bypass" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="380" y="40" width="340" height="70" as="geometry"/>
+        </mxCell>
+        <mxCell id="p3_q3" value="combined_auth&#xa;whitelist | JWT Bearer | X-API-Key&#xa;⚠ ne jamais whitelister /api/* (LLM facturé)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="760" y="40" width="340" height="70" as="geometry"/>
+        </mxCell>
+        <mxCell id="p3_ready" value="&lt;b&gt;Disponibilité&lt;/b&gt;&lt;br&gt;GET /health/ready renvoie 503&lt;br&gt;tant que prepare_retrieval() n&apos;a pas abouti&lt;br&gt;(route non authentifiée)" style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;fillColor=#F5F5F5;strokeColor=#666666;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1140" y="40" width="300" height="70" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="p3_mode" value="mode de requête ?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;" vertex="1" parent="1">
+          <mxGeometry x="380" y="170" width="340" height="80" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="p3_bypass" value="&lt;b&gt;bypass&lt;/b&gt;&lt;br&gt;LLM direct&lt;br&gt;aucune récupération" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E1D5E7;strokeColor=#9673A6;" vertex="1" parent="1">
+          <mxGeometry x="40" y="300" width="280" height="70" as="geometry"/>
+        </mxCell>
+        <mxCell id="p3_naive" value="&lt;b&gt;naive&lt;/b&gt;&lt;br&gt;passages denses seuls&lt;br&gt;(chunks_vdb)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E1D5E7;strokeColor=#9673A6;" vertex="1" parent="1">
+          <mxGeometry x="360" y="300" width="280" height="70" as="geometry"/>
+        </mxCell>
+        <mxCell id="p3_ppr" value="&lt;b&gt;ppr&lt;/b&gt; (défaut)&lt;br&gt;récupération + génération" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E1D5E7;strokeColor=#9673A6;" vertex="1" parent="1">
+          <mxGeometry x="680" y="300" width="280" height="70" as="geometry"/>
+        </mxCell>
+        <mxCell id="p3_context" value="&lt;b&gt;context&lt;/b&gt;&lt;br&gt;contexte seul&lt;br&gt;sans génération" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E1D5E7;strokeColor=#9673A6;" vertex="1" parent="1">
+          <mxGeometry x="1000" y="300" width="280" height="70" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="p3_R" value="core._retrieve_one() — chaîne de récupération" style="swimlane;whiteSpace=wrap;html=1;startSize=30;fillColor=#D5E8D4;strokeColor=#82B366;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="340" y="420" width="1100" height="250" as="geometry"/>
+        </mxCell>
+        <mxCell id="p3_r1" value="Embedding de la requête&#xa;get_query_instruction(&quot;query_to_fact&quot;)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#82B366;fontSize=11;" vertex="1" parent="p3_R">
+          <mxGeometry x="20" y="45" width="240" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="p3_r2" value="facts_vdb.query()&#xa;top_k = LINKING_TOP_K" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#82B366;fontSize=11;" vertex="1" parent="p3_R">
+          <mxGeometry x="280" y="45" width="250" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="p3_r3" value="FactFilter (rerank.py)&#xa;threshold_filter si SKIP_FACT_RERANK&#xa;sinon allm_filter (LLM)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#82B366;fontSize=11;" vertex="1" parent="p3_R">
+          <mxGeometry x="550" y="45" width="250" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="p3_r4" value="schemas_vdb.query(SCHEMA_TOP_K)&#xa;liaison de schéma → poids d&apos;amorçage&#xa;SCHEMA_NODE_WEIGHT · PASSAGE_NODE_WEIGHT" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#82B366;fontSize=10;" vertex="1" parent="p3_R">
+          <mxGeometry x="820" y="45" width="250" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="p3_r5" value="_run_ppr(seed_weights, DAMPING)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#82B366;fontSize=11;" vertex="1" parent="p3_R">
+          <mxGeometry x="20" y="125" width="240" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="p3_r6" value="ppr/ — PPR_ENGINE&#xa;IgraphPPREngine (défaut)&#xa;Neo4jGDSPPREngine (repli sur igraph)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#82B366;fontSize=11;" vertex="1" parent="p3_R">
+          <mxGeometry x="280" y="125" width="250" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="p3_r7" value="Classement des passages&#xa;→ assemblage du contexte" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#82B366;fontSize=11;" vertex="1" parent="p3_R">
+          <mxGeometry x="550" y="125" width="250" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="p3_r8" value="_dense_passage_retrieve()&#xa;repli si le PPR ne rend rien" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#82B366;dashed=1;fontSize=11;" vertex="1" parent="p3_R">
+          <mxGeometry x="820" y="125" width="250" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="p3_g1" value="llm/ + prompts/&#xa;render_rag_qa() → openai_complete()&#xa;LLM_BINDING_HOST · LLM_MODEL" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6D0DE;strokeColor=#996185;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="40" y="720" width="340" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="p3_g2" value="QueryResponse&#xa;{ response, references }" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="420" y="720" width="340" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="p3_g3" value="observability/langfuse_trace.py&#xa;trace aquery · _retrieve_one · _run_ppr&#xa;no-op si LANGFUSE_ENABLE_TRACE désactivé" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6D0DE;strokeColor=#996185;dashed=1;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="800" y="720" width="340" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="p3_params" value="&lt;b&gt;QueryRequest → QueryParam&lt;/b&gt;&lt;br&gt;top_k · linking_top_k · passage_node_weight&lt;br&gt;damping · fact_similarity_threshold&lt;br&gt;skip_fact_rerank · schema_top_k&lt;br&gt;schema_node_weight · only_need_context&lt;br&gt;conversation_history · user_prompt · stream" style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;fillColor=#F5F5F5;strokeColor=#666666;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1180" y="720" width="300" height="130" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="p3_e1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#6C8EBF;" edge="1" parent="1" source="p3_q1" target="p3_q3">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p3_e2" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#6C8EBF;" edge="1" parent="1" source="p3_q2" target="p3_q3">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p3_e3" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#6C8EBF;" edge="1" parent="1" source="p3_q3" target="p3_mode">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p3_e4" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#D6B656;" edge="1" parent="1" source="p3_mode" target="p3_bypass">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p3_e5" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#D6B656;" edge="1" parent="1" source="p3_mode" target="p3_naive">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p3_e6" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#D6B656;" edge="1" parent="1" source="p3_mode" target="p3_ppr">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p3_e7" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#D6B656;" edge="1" parent="1" source="p3_mode" target="p3_context">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p3_e8" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#82B366;" edge="1" parent="1" source="p3_naive" target="p3_R">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p3_e9" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#82B366;" edge="1" parent="1" source="p3_ppr" target="p3_R">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p3_e10" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#82B366;" edge="1" parent="1" source="p3_context" target="p3_R">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p3_e11" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#82B366;" edge="1" parent="1" source="p3_r1" target="p3_r2">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p3_e12" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#82B366;" edge="1" parent="1" source="p3_r2" target="p3_r3">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p3_e13" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#82B366;" edge="1" parent="1" source="p3_r3" target="p3_r4">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p3_e14" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#82B366;" edge="1" parent="1" source="p3_r4" target="p3_r5">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p3_e15" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#82B366;" edge="1" parent="1" source="p3_r5" target="p3_r6">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p3_e16" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#82B366;" edge="1" parent="1" source="p3_r6" target="p3_r7">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p3_e17" value="vide" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;dashed=1;strokeColor=#82B366;fontSize=10;" edge="1" parent="1" source="p3_r7" target="p3_r8">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p3_e18" value="court-circuite la récupération" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;dashed=1;strokeColor=#9673A6;fontSize=10;" edge="1" parent="1" source="p3_bypass" target="p3_g1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p3_e19" value="contexte" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#996185;fontSize=10;" edge="1" parent="1" source="p3_R" target="p3_g1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p3_e20" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#6C8EBF;" edge="1" parent="1" source="p3_g1" target="p3_g2">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p3_e21" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;dashed=1;strokeColor=#996185;" edge="1" parent="1" source="p3_R" target="p3_g3">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+
+  <diagram id="page-deploiement" name="4 · Déploiement">
+    <mxGraphModel dx="1400" dy="900" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1750" pageHeight="900" math="0" shadow="0" adaptiveColors="auto">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <mxCell id="p4_title" value="Déploiement — docker-compose.yml" style="text;html=1;fontSize=24;fontStyle=1;align=left;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="40" y="-95" width="1200" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="p4_subtitle" value="Postgres, Neo4j et Docling ne sont publiés que sur la loopback. Remplacer ces trois services par les instances gérées en interne est la principale adaptation." style="text;html=1;fontSize=13;fontStyle=2;align=left;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="40" y="-55" width="1200" height="30" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="p4_host" value="Hôte Docker — docker compose up -d" style="swimlane;whiteSpace=wrap;html=1;startSize=30;fillColor=#F5F5F5;strokeColor=#666666;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="40" width="1200" height="670" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="p4_pg" value="service : postgres" style="swimlane;whiteSpace=wrap;html=1;startSize=30;fillColor=#FFFFFF;strokeColor=#B85450;fontSize=11;" vertex="1" parent="p4_host">
+          <mxGeometry x="30" y="50" width="590" height="110" as="geometry"/>
+        </mxCell>
+        <mxCell id="p4_pg1" value="pgvector/pgvector:pg16&#xa;healthcheck : pg_isready" style="shape=cylinder3;boundedLbl=1;backgroundOutline=1;whiteSpace=wrap;html=1;fillColor=#F8CECC;strokeColor=#B85450;fontSize=11;" vertex="1" parent="p4_pg">
+          <mxGeometry x="15" y="35" width="280" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="p4_pg2" value="127.0.0.1:5432 (loopback)&#xa;volume nommé postgres_data&#xa;POSTGRES_PASSWORD obligatoire" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F8CECC;strokeColor=#B85450;fontSize=11;" vertex="1" parent="p4_pg">
+          <mxGeometry x="310" y="35" width="265" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="p4_neo" value="service : neo4j" style="swimlane;whiteSpace=wrap;html=1;startSize=30;fillColor=#FFFFFF;strokeColor=#B85450;fontSize=11;" vertex="1" parent="p4_host">
+          <mxGeometry x="30" y="180" width="590" height="110" as="geometry"/>
+        </mxCell>
+        <mxCell id="p4_neo1" value="neo4j:5-community&#xa;NEO4J_PLUGINS=[graph-data-science]" style="shape=cylinder3;boundedLbl=1;backgroundOutline=1;whiteSpace=wrap;html=1;fillColor=#F8CECC;strokeColor=#B85450;fontSize=11;" vertex="1" parent="p4_neo">
+          <mxGeometry x="15" y="35" width="280" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="p4_neo2" value="127.0.0.1:7474 (HTTP) · :7687 (Bolt)&#xa;volume nommé neo4j_data&#xa;NEO4J_PASSWORD obligatoire" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F8CECC;strokeColor=#B85450;fontSize=11;" vertex="1" parent="p4_neo">
+          <mxGeometry x="310" y="35" width="265" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="p4_doc" value="service : docling — profil « docling », désactivé par défaut" style="swimlane;whiteSpace=wrap;html=1;startSize=30;fillColor=#FFFFFF;strokeColor=#B85450;dashed=1;fontSize=11;" vertex="1" parent="p4_host">
+          <mxGeometry x="30" y="310" width="590" height="110" as="geometry"/>
+        </mxCell>
+        <mxCell id="p4_doc1" value="ghcr.io/docling-project/docling-serve:latest — 127.0.0.1:5001&#xa;activation : docker compose --profile docling up -d&#xa;DoclingParser lève une erreur si DOCLING_ENDPOINT n&apos;est pas défini" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F8CECC;strokeColor=#B85450;dashed=1;fontSize=11;" vertex="1" parent="p4_doc">
+          <mxGeometry x="15" y="35" width="560" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="p4_app" value="service : memgraphrag" style="swimlane;whiteSpace=wrap;html=1;startSize=30;fillColor=#FFFFFF;strokeColor=#6C8EBF;fontStyle=1;fontSize=12;" vertex="1" parent="p4_host">
+          <mxGeometry x="650" y="50" width="520" height="370" as="geometry"/>
+        </mxCell>
+        <mxCell id="p4_app1" value="image : exeio-memgraphrag:${MEMGRAPHRAG_VERSION:-0.1.0}   +   :latest" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontSize=11;" vertex="1" parent="p4_app">
+          <mxGeometry x="15" y="40" width="485" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="p4_app2" value="FastAPI + Uvicorn&#xa;api.server:main" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontSize=11;" vertex="1" parent="p4_app">
+          <mxGeometry x="15" y="100" width="235" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="p4_app3" value="port 9621&#xa;${HOST}:${PORT} → 9621" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontSize=11;" vertex="1" parent="p4_app">
+          <mxGeometry x="265" y="100" width="235" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="p4_app4" value="WORKERS=1&#xa;forcé par compose" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontSize=11;" vertex="1" parent="p4_app">
+          <mxGeometry x="15" y="160" width="235" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="p4_app5" value="Backends imposés&#xa;PG* + Neo4JStorage" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontSize=11;" vertex="1" parent="p4_app">
+          <mxGeometry x="265" y="160" width="235" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="p4_app6" value="docker-entrypoint.sh — fusionne la CA d&apos;entreprise montée dans SSL_CERT_FILE" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontSize=11;" vertex="1" parent="p4_app">
+          <mxGeometry x="15" y="220" width="485" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="p4_app7" value="depends_on : postgres + neo4j en service_healthy" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontSize=11;" vertex="1" parent="p4_app">
+          <mxGeometry x="15" y="290" width="485" height="50" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="p4_vol" value="Montages (bind) et volumes nommés" style="swimlane;whiteSpace=wrap;html=1;startSize=30;fillColor=#FFFFFF;strokeColor=#666666;fontSize=11;" vertex="1" parent="p4_host">
+          <mxGeometry x="30" y="440" width="1140" height="110" as="geometry"/>
+        </mxCell>
+        <mxCell id="p4_v1" value="./data/rag_storage&#xa;→ /app/data/rag_storage" style="shape=folder;whiteSpace=wrap;html=1;tabWidth=50;tabHeight=14;tabPosition=left;fillColor=#F5F5F5;strokeColor=#666666;fontSize=11;verticalAlign=middle;" vertex="1" parent="p4_vol">
+          <mxGeometry x="15" y="35" width="270" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="p4_v2" value="./data/inputs&#xa;→ /app/data/inputs" style="shape=folder;whiteSpace=wrap;html=1;tabWidth=50;tabHeight=14;tabPosition=left;fillColor=#F5F5F5;strokeColor=#666666;fontSize=11;verticalAlign=middle;" vertex="1" parent="p4_vol">
+          <mxGeometry x="300" y="35" width="270" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="p4_v3" value="./.env → /app/.env (lecture seule)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#666666;fontSize=11;" vertex="1" parent="p4_vol">
+          <mxGeometry x="585" y="35" width="260" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="p4_v4" value="${MEMGRAPHRAG_HOST_CA_FILE}&#xa;→ /app/certs/corporate-ca.crt (ro)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#666666;fontSize=11;" vertex="1" parent="p4_vol">
+          <mxGeometry x="860" y="35" width="265" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="p4_note" value="Compose n&apos;a aucun mot de passe par défaut : POSTGRES_PASSWORD et NEO4J_PASSWORD sont déclarés « :? » et l&apos;empilement refuse de démarrer sans eux. Healthchecks : pg_isready et wget localhost:7474.   ·   CI : .github/workflows/ (lint, tests 3.12 / 3.13, couverture) — squelette TeamCity Kotlin DSL dans .teamcity/, voir docs/TeamCityCI.md." style="text;html=1;align=left;verticalAlign=top;whiteSpace=wrap;fontSize=11;fontStyle=2;" vertex="1" parent="p4_host">
+          <mxGeometry x="30" y="570" width="1140" height="70" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="p4_ext" value="Hors compose — à fournir" style="swimlane;whiteSpace=wrap;html=1;startSize=30;fillColor=#E6D0DE;strokeColor=#996185;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1280" y="40" width="340" height="380" as="geometry"/>
+        </mxCell>
+        <mxCell id="p4_x1" value="&lt;b&gt;Endpoint LLM OpenAI-compatible&lt;/b&gt;&lt;br&gt;LLM_BINDING_HOST&lt;br&gt;LLM_BINDING_API_KEY · LLM_MODEL&lt;br&gt;&lt;i&gt;timeout httpx codé en dur : 150 s&lt;/i&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#996185;fontSize=11;" vertex="1" parent="p4_ext">
+          <mxGeometry x="20" y="45" width="300" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="p4_x2" value="&lt;b&gt;Endpoint embeddings&lt;/b&gt;&lt;br&gt;EMBEDDING_BINDING_HOST&lt;br&gt;EMBEDDING_MODEL · EMBEDDING_DIM&lt;br&gt;&lt;i&gt;retombe sur le binding LLM&lt;/i&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#996185;fontSize=11;" vertex="1" parent="p4_ext">
+          <mxGeometry x="20" y="145" width="300" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="p4_x3" value="&lt;b&gt;Langfuse&lt;/b&gt; (optionnel)&lt;br&gt;LANGFUSE_ENABLE_TRACE&lt;br&gt;LANGFUSE_HOST + clés" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#996185;dashed=1;fontSize=11;" vertex="1" parent="p4_ext">
+          <mxGeometry x="20" y="245" width="300" height="80" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="p4_cli" value="Clients — hors image du service" style="swimlane;whiteSpace=wrap;html=1;startSize=30;fillColor=#F5F5F5;strokeColor=#666666;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1280" y="440" width="340" height="210" as="geometry"/>
+        </mxCell>
+        <mxCell id="p4_cli1" value="memgraphrag-cli (Typer + Rich)&#xa;MEMGRAPHRAG_SERVER_URL" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#666666;fontSize=11;" vertex="1" parent="p4_cli">
+          <mxGeometry x="20" y="45" width="300" height="55" as="geometry"/>
+        </mxCell>
+        <mxCell id="p4_cli2" value="Playground Streamlit&#xa;streamlit run memgraphrag/client/app.py" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#666666;fontSize=11;" vertex="1" parent="p4_cli">
+          <mxGeometry x="20" y="110" width="300" height="55" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="p4_e1" value="asyncpg" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#B85450;fontSize=10;" edge="1" parent="1" source="p4_app" target="p4_pg">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p4_e2" value="Bolt 7687" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#B85450;fontSize=10;" edge="1" parent="1" source="p4_app" target="p4_neo">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p4_e3" value="DOCLING_ENDPOINT" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;dashed=1;strokeColor=#B85450;fontSize=10;" edge="1" parent="1" source="p4_app" target="p4_doc">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p4_e4" value="HTTPS" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#996185;fontSize=10;" edge="1" parent="1" source="p4_app" target="p4_x1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p4_e5" value="HTTPS" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#996185;fontSize=10;" edge="1" parent="1" source="p4_app" target="p4_x2">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p4_e6" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;dashed=1;strokeColor=#996185;" edge="1" parent="1" source="p4_app" target="p4_x3">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p4_e7" value="HTTP :9621" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#666666;fontSize=10;" edge="1" parent="1" source="p4_cli1" target="p4_app">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="p4_e8" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#666666;" edge="1" parent="1" source="p4_cli2" target="p4_app">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

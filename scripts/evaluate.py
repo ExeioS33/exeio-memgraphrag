@@ -174,7 +174,13 @@ async def _build_engine(args: argparse.Namespace, meter: CallMeter) -> tuple[Mem
     working_dir.mkdir(parents=True, exist_ok=True)
 
     async def llm_model_func(prompt: str, **kwargs: Any) -> str:
-        return str(await openai_complete(prompt, model=os.getenv("LLM_MODEL"), **kwargs))
+        # `model` and `provider` now arrive from the engine on any query path;
+        # binding the default unconditionally raised "TypeError: got multiple
+        # values for keyword argument 'model'". Scripts run on the server binding,
+        # so a per-request provider is accepted and ignored.
+        model = kwargs.pop("model", None) or os.getenv("LLM_MODEL")
+        kwargs.pop("provider", None)
+        return str(await openai_complete(prompt, model=model, **kwargs))
 
     async def embedding_func(texts: Any, **kwargs: Any) -> Any:
         return await openai_embed(

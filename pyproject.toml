@@ -87,7 +87,10 @@ memgraphrag-cli = "memgraphrag.client.cli:main"
 include = ["memgraphrag*"]
 
 [tool.setuptools.package-data]
-memgraphrag = ["py.typed", "prompts/**/*"]
+# Anything not listed here is absent from the wheel, silently. `chat/*.sql` is the
+# DDL the chat store applies at startup, and `api/static/**` is the built web UI —
+# both are data files that would otherwise ship only in an editable install.
+memgraphrag = ["py.typed", "prompts/**/*", "chat/*.sql", "api/static/**"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
