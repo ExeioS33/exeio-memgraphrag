@@ -29,6 +29,7 @@ from typing import Any, AsyncIterator, Callable
 
 from memgraphrag.agent.budget import context_budget, enforce
 from memgraphrag.agent.capabilities import precheck_model, unsupported_after_forced_call
+from memgraphrag.agent.harmony import HarmonyFilter
 from memgraphrag.agent.prompts import render_agent_system
 from memgraphrag.agent.tools import ToolBox, tool_specs
 from memgraphrag.observability.langfuse_trace import observation, update_observation
@@ -374,6 +375,10 @@ async def _decide(
         accumulator: dict[int, dict[str, Any]] = {}
         parts: list[str] = []
         committed_to_text = False
+        # A tool-enabled request makes a harmony-format model tag its output with
+        # channel markers, and the gateway forwards them verbatim. Unfiltered, the
+        # user reads the model's private reasoning instead of its answer.
+        harmony = HarmonyFilter()
         async for chunk in produced:
             if _fold_tool_call_deltas(chunk, accumulator) and not committed_to_text:
                 continue
@@ -382,9 +387,17 @@ async def _decide(
                 continue
             if not accumulator:
                 committed_to_text = True
-            parts.append(text)
-            if committed_to_text:
-                yield {"token": text}
+            if not committed_to_text:
+                continue
+            visible = harmony.feed(text)
+            if visible:
+                parts.append(visible)
+                yield {"token": visible}
+        if committed_to_text:
+            visible = harmony.flush()
+            if visible:
+                parts.append(visible)
+                yield {"token": visible}
 
         if committed_to_text and accumulator:
             # A provider that emits prose and *then* a tool call. Keeping the prose
