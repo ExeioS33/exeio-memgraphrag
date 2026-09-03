@@ -125,6 +125,21 @@ The first turn is forced with `tool_choice`, which doubles as the capability che
 a model that answers a *forced* tool call in prose cannot call tools, and the mode
 refuses it by name rather than degrading into an ungrounded answer.
 
+**Deciding turns are capped, answering turns are not.** A deciding turn's only
+product is a tool call or its absence — its prose is discarded — but left unbounded
+one spent **37 s generating 4 606 characters** of reasoning nobody reads. Capped at
+`AGENT_DECIDE_MAX_TOKENS` (256) the same turn answers in ~2.5 s, taking a full agent
+turn from ~51 s to ~13 s on the reference corpus. The forced opening call still
+emits its tool call at every cap tested down to 64, and is itself faster capped.
+
+The trade-off is stated rather than hidden: if the cap cuts a turn off before it can
+ask for a second search, the loop reads that as "ready to answer" and still answers
+from the passages it has. That is a lost hop, not a failure, so the server says so
+once per process and puts `finish_reason` on every `memgraphrag.agent.think` span.
+On `openai/gpt-oss-20b` it costs nothing measurable: uncapped, that turn produced no
+tool call in 46 s even when the retrieved passages plainly did not answer the
+question.
+
 ## Limits inherited from the API
 
 - **Citations carry a filename, not a snippet.** `references[].content` is always

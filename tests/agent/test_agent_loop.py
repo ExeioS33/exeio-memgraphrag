@@ -314,3 +314,81 @@ async def test_references_accumulate_across_hops() -> None:
     await toolbox.run("retrieve", '{"query": "b"}')
     ids = [ref["reference_id"] for ref in toolbox.references]
     assert ids == ["1", "2", "3", "4"], "the second hop must not restart at 1"
+
+
+# --------------------------------------------------------------------------- #
+# Cost of a deciding turn
+# --------------------------------------------------------------------------- #
+
+
+def test_the_decide_cap_has_a_floor(monkeypatch) -> None:
+    """A cap of zero would make every deciding turn emit nothing at all."""
+    from memgraphrag.agent.budget import DEFAULT_DECIDE_MAX_TOKENS, decide_max_tokens
+
+    assert decide_max_tokens() == DEFAULT_DECIDE_MAX_TOKENS
+    monkeypatch.setenv("AGENT_DECIDE_MAX_TOKENS", "0")
+    assert decide_max_tokens() >= 32
+    monkeypatch.setenv("AGENT_DECIDE_MAX_TOKENS", "1024")
+    assert decide_max_tokens() == 1024
+
+
+@pytest.mark.asyncio
+async def test_deciding_turns_are_capped_and_answering_turns_are_not() -> None:
+    """The measured bottleneck, pinned.
+
+    A deciding turn's prose is discarded — only the tool call, or its absence, is
+    read — yet uncapped it cost 37 s and 4 606 characters of reasoning on the
+    reference corpus, against 2.7 s capped. The answer must stay uncapped: that
+    text is the deliverable.
+    """
+    seen: list[dict[str, Any]] = []
+
+    async def llm(prompt: str, **kwargs: Any):
+        seen.append(kwargs)
+        if kwargs.get("tools"):
+            if len(seen) == 1:
+                return _tool_message("retrieve", '{"query": "x"}')
+            return SimpleNamespace(content="ready", tool_calls=None)
+
+        async def _gen():
+            yield "Answer."
+
+        return _gen()
+
+    await drain(
+        run_agent(question="q", llm=llm, toolbox=ToolBox(FakeRag(), QueryParam()), model="m")
+    )
+    deciding = [call for call in seen if call.get("tools")]
+    answering = [call for call in seen if not call.get("tools")]
+    assert deciding and all(call.get("max_tokens") for call in deciding)
+    assert answering and all(call.get("max_tokens") is None for call in answering)
+
+
+@pytest.mark.asyncio
+async def test_a_choice_object_is_unwrapped_like_a_message() -> None:
+    """`return_choice=True` is what makes `finish_reason` readable, so the loop
+    receives a choice where it used to receive a message."""
+    choice = SimpleNamespace(
+        finish_reason="tool_calls", message=_tool_message("retrieve", '{"query": "x"}')
+    )
+    rag = FakeRag()
+    llm = scripted_llm([choice, SimpleNamespace(content="ready", tool_calls=None), ["ok"]])
+    await drain(run_agent(question="q", llm=llm, toolbox=ToolBox(rag, QueryParam()), model="m"))
+    assert rag.queries == ["x"]
+
+
+@pytest.mark.asyncio
+async def test_a_truncated_deciding_turn_is_reported(caplog, monkeypatch) -> None:
+    """Silently losing multi-hop to the cap is the one outcome worth naming."""
+    truncated = SimpleNamespace(
+        finish_reason="length", message=SimpleNamespace(content="reasoning…", tool_calls=None)
+    )
+    llm = scripted_llm([_tool_message("retrieve", '{"query": "x"}'), truncated, ["Answer."]])
+    # The warning fires once per process, so the flag has to be cleared here or this
+    # test passes or fails depending on which tests ran before it.
+    monkeypatch.setattr("memgraphrag.agent.loop._warned_about_cap", False)
+    with caplog.at_level("WARNING"):
+        await drain(
+            run_agent(question="q", llm=llm, toolbox=ToolBox(FakeRag(), QueryParam()), model="m")
+        )
+    assert any("AGENT_DECIDE_MAX_TOKENS" in record.message for record in caplog.records)

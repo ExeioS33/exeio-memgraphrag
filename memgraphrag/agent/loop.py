@@ -40,7 +40,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Callable
 
-from memgraphrag.agent.budget import context_budget, enforce
+from memgraphrag.agent.budget import context_budget, decide_max_tokens, enforce
 from memgraphrag.agent.capabilities import precheck_model, unsupported_after_forced_call
 from memgraphrag.agent.harmony import HarmonyFilter
 from memgraphrag.agent.prompts import render_agent_system
@@ -54,6 +54,12 @@ logger = logging.getLogger(__name__)
 #: Hard ceiling on tool calls executed in one assistant turn. A model may return
 #: several; retrieval takes the engine's corpus lock, so they serialise anyway.
 MAX_CALLS_PER_TURN = 3
+
+#: The cap warning is worth saying once and then never again. On a model that
+#: reasons at length before answering — which is the common case, and the reason the
+#: cap exists — it would otherwise fire on every single turn, and a warning that
+#: always fires is one nobody reads.
+_warned_about_cap = False
 
 
 @dataclass
@@ -74,7 +80,10 @@ def _tool_call_key(call: dict[str, Any]) -> str:
 
 
 def _as_turn(message: Any) -> dict[str, Any]:
-    """Normalise a provider message object into a plain assistant turn."""
+    """Normalise a provider message (or choice) into a plain assistant turn."""
+    inner = getattr(message, "message", None)
+    if inner is not None and not isinstance(message, dict):
+        message = inner
     if isinstance(message, dict):
         content = message.get("content")
         raw_calls = message.get("tool_calls") or []
@@ -304,18 +313,44 @@ async def _decide(
             # Forcing the opening call is also the capability check: a model that
             # answers a forced call with prose cannot call tools at all.
             tool_choice = {"type": "function", "function": {"name": "retrieve"}}
-        message = await llm(
+        cap = decide_max_tokens()
+        choice = await llm(
             "",
             messages=messages,
             tools=specs,
             tool_choice=tool_choice,
+            # The turn's prose is discarded either way — only the tool call, or its
+            # absence, is read. Uncapped, this model spends half a minute writing
+            # reasoning nobody sees.
+            max_tokens=cap,
+            return_choice=True,
             model=model,
             provider=provider,
             agent="qa.agent",
             llm_action="decide",
         )
-        turn = _as_turn(message)
-        update_observation(span, output=_think_output(turn))
+        turn = _as_turn(choice)
+        finish_reason = getattr(choice, "finish_reason", None)
+        global _warned_about_cap
+        if finish_reason == "length" and not turn.get("tool_calls") and not _warned_about_cap:
+            # The cap cut the turn off before it could ask for a tool. The loop reads
+            # that as "ready to answer" and still produces a grounded answer from the
+            # passages it already has, so this is a quiet loss of a possible second
+            # hop rather than a failure — which is exactly why it is said out loud,
+            # once. Every turn's finish_reason is on its span regardless.
+            _warned_about_cap = True
+            logger.warning(
+                "agent: a deciding turn hit AGENT_DECIDE_MAX_TOKENS=%d before emitting a "
+                "tool call, so this turn made no second search. Raise it if this model "
+                "needs room to reason first. Said once per process; per-turn detail is "
+                "on the memgraphrag.agent.think spans.",
+                cap,
+            )
+        update_observation(
+            span,
+            output=_think_output(turn),
+            metadata={"max_tokens": cap, "finish_reason": finish_reason},
+        )
         return turn
 
 

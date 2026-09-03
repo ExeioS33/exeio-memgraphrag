@@ -78,9 +78,7 @@ def test_markers_split_across_deltas_are_still_recognised() -> None:
 
 
 def test_a_trailing_tag_after_the_final_channel_is_cut() -> None:
-    assert run(["<|channel|>final<|message|>Voici la réponse.<|return|>"]) == (
-        "Voici la réponse."
-    )
+    assert run(["<|channel|>final<|message|>Voici la réponse.<|return|>"]) == ("Voici la réponse.")
 
 
 def test_a_channel_that_never_closes_falls_back_to_stripped_text() -> None:

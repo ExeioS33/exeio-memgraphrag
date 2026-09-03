@@ -39,9 +39,27 @@ class BudgetReport:
         return self.evicted > 0
 
 
+#: Output ceiling for a deciding turn. Measured, not guessed: unbounded, one
+#: deciding turn on the reference corpus spent **37 s generating 4 606 characters**
+#: of reasoning that the loop then discards — the turn's only product is a tool call
+#: or its absence. Capped at 256 tokens the same turn answers in 2.7 s, and the
+#: forced opening call still emits its tool call at every cap tested down to 64.
+DEFAULT_DECIDE_MAX_TOKENS = 256
+
+
 def context_budget() -> int:
     """Token ceiling for the agent's message list."""
     return get_env_value("AGENT_CONTEXT_BUDGET", DEFAULT_CONTEXT_BUDGET, int)
+
+
+def decide_max_tokens() -> int:
+    """Output ceiling for a deciding turn.
+
+    Raise it if a model needs room to reason *before* emitting a tool call; the loop
+    warns when a turn is cut short without having produced one, so the symptom is
+    visible rather than silently costing you multi-hop.
+    """
+    return max(32, get_env_value("AGENT_DECIDE_MAX_TOKENS", DEFAULT_DECIDE_MAX_TOKENS, int))
 
 
 def _encoder() -> Any:

@@ -169,7 +169,7 @@ def _build_rag(args: Any) -> MemGraphRAG:
         # turn is the same trap with a different shape: it comes back as a message
         # object whose `content` is None, and str() would flatten it to a repr the
         # agent loop cannot read the tool calls out of.
-        if kwargs.get("stream") or kwargs.get("tools"):
+        if kwargs.get("stream") or kwargs.get("tools") or kwargs.get("return_choice"):
             return result
         return str(result)
 

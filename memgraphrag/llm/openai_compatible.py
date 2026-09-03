@@ -221,6 +221,7 @@ async def openai_complete(
     tools: list[dict[str, Any]] | None = None,
     tool_choice: Any | None = None,
     raw_stream: bool = False,
+    return_choice: bool = False,
     **kwargs: Any,
 ) -> str | AsyncIterator[Any]:
     """Chat-complete via an OpenAI-compatible endpoint.
@@ -246,6 +247,10 @@ async def openai_complete(
       nothing to indicate that tool calling never happened.
     - ``raw_stream`` yields the provider's chunk objects instead of content strings,
       because tool calls arrive as deltas that carry no content at all.
+    - ``return_choice`` returns the whole choice rather than its message, so a
+      caller can read ``finish_reason``. Without it, a completion cut short by
+      ``max_tokens`` is indistinguishable from one the model chose to end — and for
+      a tool-calling turn those mean opposite things.
     """
     history_messages = history_messages or []
     agent = kwargs.pop("agent", None)
@@ -320,6 +325,8 @@ async def openai_complete(
         return _gen()
 
     response = await client.chat.completions.create(**params)
+    if return_choice:
+        return response.choices[0]
     if tools:
         # A tool turn has `content=None`; the caller needs the message object, not
         # the empty string that coercing it would produce.
