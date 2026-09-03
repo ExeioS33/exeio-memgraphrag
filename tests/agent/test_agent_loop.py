@@ -40,23 +40,6 @@ def _tool_message(name: str, arguments: str, call_id: str = "call_1") -> SimpleN
     )
 
 
-def _text_chunk(text: str) -> SimpleNamespace:
-    return SimpleNamespace(
-        choices=[SimpleNamespace(delta=SimpleNamespace(content=text, tool_calls=None))]
-    )
-
-
-def _tool_chunk(index: int, *, call_id=None, name=None, arguments=None) -> SimpleNamespace:
-    piece = SimpleNamespace(
-        index=index,
-        id=call_id,
-        function=SimpleNamespace(name=name, arguments=arguments),
-    )
-    return SimpleNamespace(
-        choices=[SimpleNamespace(delta=SimpleNamespace(content=None, tool_calls=[piece]))]
-    )
-
-
 class FakeRag:
     """An engine whose retrieval always answers, so the loop is what is under test."""
 
@@ -152,8 +135,8 @@ async def test_a_repeated_identical_call_does_not_run_twice() -> None:
     llm = scripted_llm(
         [
             _tool_message("retrieve", args),
-            [_tool_chunk(0, call_id="c2", name="retrieve", arguments=args)],
-            [_text_chunk("Final answer [1].")],
+            _tool_message("retrieve", args, call_id="c2"),
+            ["Final answer [1]."],
         ]
     )
     frames = await drain(
@@ -193,20 +176,15 @@ async def test_hitting_the_step_ceiling_answers_instead_of_erroring() -> None:
 
 
 @pytest.mark.asyncio
-async def test_tool_call_deltas_are_accumulated_before_execution() -> None:
-    """Arguments arrive a few characters at a time; nothing is executable until the
-    stream ends."""
+async def test_a_second_hop_reaches_retrieval() -> None:
+    """Multi-hop: the loop keeps deciding until a turn asks for no more tools."""
     rag = FakeRag()
     llm = scripted_llm(
         [
             _tool_message("retrieve", '{"query": "first"}'),
-            [
-                _tool_chunk(0, call_id="c2", name="retr"),
-                _tool_chunk(0, name="ieve", arguments='{"que'),
-                _tool_chunk(0, arguments='ry": "sec'),
-                _tool_chunk(0, arguments='ond hop"}'),
-            ],
-            [_text_chunk("Done.")],
+            _tool_message("retrieve", '{"query": "second hop"}', call_id="c2"),
+            SimpleNamespace(content="ready", tool_calls=None),
+            ["Done."],
         ]
     )
     await drain(
@@ -216,17 +194,19 @@ async def test_tool_call_deltas_are_accumulated_before_execution() -> None:
 
 
 @pytest.mark.asyncio
-async def test_no_token_is_emitted_for_a_turn_that_turns_out_to_be_a_tool_call() -> None:
-    """Text shown and then retracted is the one outcome worth ruling out."""
+async def test_a_decision_turn_never_reaches_the_user() -> None:
+    """Only the closing tools-free call is streamed.
+
+    A decision turn's prose is harmony scaffolding on the models this ships with —
+    measured, not assumed: streaming one made `openai/gpt-oss-20b` write a fake
+    tool transcript with invented `<<<PASSAGE n>>>` blocks and answer from them.
+    """
     rag = FakeRag()
     llm = scripted_llm(
         [
             _tool_message("retrieve", '{"query": "first"}'),
-            [
-                _tool_chunk(0, call_id="c2", name="retrieve", arguments='{"query": "again"}'),
-                _text_chunk("thinking out loud"),
-            ],
-            [_text_chunk("Answer.")],
+            SimpleNamespace(content="analysis: scaffolding nobody should read", tool_calls=None),
+            ["Answer."],
         ]
     )
     frames = await drain(
@@ -234,13 +214,36 @@ async def test_no_token_is_emitted_for_a_turn_that_turns_out_to_be_a_tool_call()
     )
     tokens = "".join(f["token"] for f in frames if "token" in f)
     assert tokens == "Answer."
-    assert "thinking out loud" not in tokens
+    assert "scaffolding" not in tokens
+
+
+@pytest.mark.asyncio
+async def test_the_closing_call_withholds_the_tools() -> None:
+    """Withholding them is what keeps a harmony model in plain prose."""
+    seen: list[bool] = []
+
+    async def llm(prompt: str, **kwargs: Any):
+        seen.append(bool(kwargs.get("tools")))
+        if kwargs.get("tools"):
+            if len(seen) == 1:
+                return _tool_message("retrieve", '{"query": "x"}')
+            return SimpleNamespace(content="ready", tool_calls=None)
+
+        async def _gen():
+            yield "Answer."
+
+        return _gen()
+
+    await drain(
+        run_agent(question="q", llm=llm, toolbox=ToolBox(FakeRag(), QueryParam()), model="m")
+    )
+    assert seen[-1] is False, "the answering call must carry no tools"
 
 
 @pytest.mark.asyncio
 async def test_tool_call_frames_report_progress() -> None:
     rag = FakeRag()
-    llm = scripted_llm([_tool_message("retrieve", '{"query": "x"}'), [_text_chunk("ok")]])
+    llm = scripted_llm([_tool_message("retrieve", '{"query": "x"}'), ["ok"]])
     frames = await drain(
         run_agent(question="q", llm=llm, toolbox=ToolBox(rag, QueryParam()), model="m")
     )

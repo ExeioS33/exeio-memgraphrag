@@ -9,11 +9,16 @@ framework is a tool loop, and that is this file.
 
 Two decisions shape everything below.
 
-**Decision turns commit before they stream.** Until a turn has emitted its first
-delta we do not know whether it will produce an answer or a tool call, and text
-shown then retracted is worse than a spinner. Content is forwarded only once the
-turn has committed to being prose; a turn that emitted a tool-call delta forwards
-nothing at all.
+**Decision turns are never streamed.** Two reasons, and the second was measured
+rather than reasoned. First, until a turn ends we do not know whether it produced an
+answer or a tool call, and text shown then retracted is worse than a spinner.
+Second, and decisively: asked to stream a tool-enabled turn, this repo's default
+model (`openai/gpt-oss-20b` through Together) does not emit structured `tool_calls`
+deltas at all — it writes the harmony transcript as plain text, invents its own
+`<<<PASSAGE n>>>` blocks, and answers from them. The *same* model on the *same*
+request answers with a real tool call when the turn is buffered. A fabricated
+passage is the exact failure this mode exists to prevent, so decision turns are
+buffered and the closing answer is streamed with tools withheld.
 
 **The first turn is forced.** ``tool_choice`` names ``retrieve`` on the opening
 call, for two reasons: a question about the corpus should always be grounded, and a
@@ -92,46 +97,6 @@ def _as_turn(message: Any) -> dict[str, Any]:
     return turn
 
 
-def _fold_tool_call_deltas(chunk: Any, accumulator: dict[int, dict[str, Any]]) -> bool:
-    """Fold one streaming chunk's tool-call deltas into ``accumulator``.
-
-    Tool calls arrive in pieces: an index and an id first, then the function name,
-    then the arguments a few characters at a time. Nothing is executable until the
-    stream ends, which is the mechanical reason a decision turn cannot be streamed
-    straight through to the browser.
-    """
-    choices = getattr(chunk, "choices", None) or []
-    if not choices:
-        return False
-    delta = getattr(choices[0], "delta", None)
-    deltas = getattr(delta, "tool_calls", None) if delta is not None else None
-    if not deltas:
-        return False
-    for piece in deltas:
-        index = getattr(piece, "index", 0) or 0
-        slot = accumulator.setdefault(
-            index,
-            {"id": None, "type": "function", "function": {"name": "", "arguments": ""}},
-        )
-        if getattr(piece, "id", None):
-            slot["id"] = piece.id
-        function = getattr(piece, "function", None)
-        if function is not None:
-            if getattr(function, "name", None):
-                slot["function"]["name"] += function.name
-            if getattr(function, "arguments", None):
-                slot["function"]["arguments"] += function.arguments
-    return True
-
-
-def _chunk_text(chunk: Any) -> str:
-    choices = getattr(chunk, "choices", None) or []
-    if not choices:
-        return ""
-    delta = getattr(choices[0], "delta", None)
-    return (getattr(delta, "content", None) if delta is not None else None) or ""
-
-
 async def run_agent(
     *,
     question: str,
@@ -177,7 +142,6 @@ async def run_agent(
             "max_steps": max_steps,
         },
     ) as root_span:
-        answered = False
         for step in range(max_steps):
             stop.steps = step + 1
             report = enforce(messages, context_budget())
@@ -191,9 +155,7 @@ async def run_agent(
                 )
 
             force_tool = step == 0
-            turn: dict[str, Any] = {}
-            streamed = False
-            async for event in _decide(
+            turn = await _decide(
                 llm=llm,
                 messages=messages,
                 specs=specs,
@@ -202,14 +164,7 @@ async def run_agent(
                 step=step,
                 force_tool=force_tool,
                 tokens_in=report.tokens_after,
-            ):
-                if "token" in event:
-                    answer_parts.append(event["token"])
-                    yield event
-                else:
-                    turn = event["turn"]
-                    streamed = event["streamed"]
-
+            )
             calls = turn.get("tool_calls") or []
 
             if force_tool and not calls:
@@ -218,13 +173,9 @@ async def run_agent(
                 raise unsupported_after_forced_call(model)
 
             if not calls:
-                if not streamed:
-                    text = str(turn.get("content") or "")
-                    if text:
-                        answer_parts.append(text)
-                        yield {"token": text}
+                # Ready to answer. The turn's own content is discarded: on a
+                # harmony-format model it is scaffolding, not prose.
                 stop.reason = "answered"
-                answered = True
                 break
 
             messages.append(turn)
@@ -276,10 +227,13 @@ async def run_agent(
                 references_sent = True
                 yield {"references": list(toolbox.references)}
 
-        if not answered:
-            # Iteration ceiling: answer with what we have rather than erroring. A
+        # The answer is always a separate, tools-free, streamed call. Withholding
+        # the tools is what keeps the model in plain-prose mode, and it is the only
+        # turn whose tokens the user should see.
+        enforce(messages, context_budget())
+        if stop.reason == "max_steps":
+            # Ceiling reached: answer with what we have rather than erroring. A
             # partial answer that says it is partial beats a failed request.
-            enforce(messages, context_budget())
             messages.append(
                 {
                     "role": "user",
@@ -289,12 +243,11 @@ async def run_agent(
                     ),
                 }
             )
-            async for token in _final_answer(
-                llm=llm, messages=messages, model=model, provider=provider
-            ):
-                answer_parts.append(token)
-                yield {"token": token}
-            stop.reason = "max_steps"
+        async for token in _final_answer(
+            llm=llm, messages=messages, model=model, provider=provider
+        ):
+            answer_parts.append(token)
+            yield {"token": token}
 
         if toolbox.references and not references_sent:
             references_sent = True
@@ -321,12 +274,13 @@ async def _decide(
     step: int,
     force_tool: bool,
     tokens_in: int | None,
-) -> AsyncIterator[dict[str, Any]]:
-    """One thinking turn.
+) -> dict[str, Any]:
+    """One thinking turn, buffered, returning the assistant turn it produced.
 
-    Yields ``{"token": …}`` for text the turn has committed to, then exactly one
-    ``{"turn": …, "streamed": …}``. The forced opening turn is buffered — it is a
-    tool call by construction, so there is nothing to stream.
+    Buffered because a streamed tool-enabled turn is where this model stops
+    emitting structured tool calls — see the module docstring. The turn's content is
+    never shown to the user: whatever prose a decision turn contains is harmony
+    scaffolding, and the answer comes from the tools-free call that follows.
     """
     with observation(
         "memgraphrag.agent.think",
@@ -335,99 +289,30 @@ async def _decide(
         model=model,
         metadata={"step": step, "forced": force_tool, "tokens_in": tokens_in},
     ) as span:
+        tool_choice: Any = "auto"
         if force_tool:
-            message = await llm(
-                "",
-                messages=messages,
-                tools=specs,
-                tool_choice={"type": "function", "function": {"name": "retrieve"}},
-                model=model,
-                provider=provider,
-                agent="qa.agent",
-                llm_action="decide",
-            )
-            turn = _as_turn(message)
-            update_observation(span, output=_think_output(turn, streamed=False))
-            yield {"turn": turn, "streamed": False}
-            return
-
-        produced = await llm(
+            # Forcing the opening call is also the capability check: a model that
+            # answers a forced call with prose cannot call tools at all.
+            tool_choice = {"type": "function", "function": {"name": "retrieve"}}
+        message = await llm(
             "",
             messages=messages,
             tools=specs,
-            tool_choice="auto",
+            tool_choice=tool_choice,
             model=model,
             provider=provider,
-            stream=True,
-            raw_stream=True,
             agent="qa.agent",
             llm_action="decide",
         )
-
-        if not hasattr(produced, "__aiter__"):
-            # An llm_model_func that ignores `stream` (a test double, or a binding
-            # without streaming) still works; it just arrives in one piece.
-            turn = _as_turn(produced)
-            update_observation(span, output=_think_output(turn, streamed=False))
-            yield {"turn": turn, "streamed": False}
-            return
-
-        accumulator: dict[int, dict[str, Any]] = {}
-        parts: list[str] = []
-        committed_to_text = False
-        # A tool-enabled request makes a harmony-format model tag its output with
-        # channel markers, and the gateway forwards them verbatim. Unfiltered, the
-        # user reads the model's private reasoning instead of its answer.
-        harmony = HarmonyFilter()
-        async for chunk in produced:
-            if _fold_tool_call_deltas(chunk, accumulator) and not committed_to_text:
-                continue
-            text = _chunk_text(chunk)
-            if not text:
-                continue
-            if not accumulator:
-                committed_to_text = True
-            if not committed_to_text:
-                continue
-            visible = harmony.feed(text)
-            if visible:
-                parts.append(visible)
-                yield {"token": visible}
-        if committed_to_text:
-            visible = harmony.flush()
-            if visible:
-                parts.append(visible)
-                yield {"token": visible}
-
-        if committed_to_text and accumulator:
-            # A provider that emits prose and *then* a tool call. Keeping the prose
-            # and dropping the call is the only outcome that never shows the user
-            # text and then takes it back.
-            logger.warning("agent: dropped %d late tool call(s) after text", len(accumulator))
-            accumulator = {}
-
-        turn = {"role": "assistant", "content": "".join(parts)}
-        if accumulator:
-            turn["tool_calls"] = [
-                {
-                    "id": slot["id"] or f"call_{index}",
-                    "type": "function",
-                    "function": {
-                        "name": slot["function"]["name"],
-                        "arguments": slot["function"]["arguments"],
-                    },
-                }
-                for index, slot in sorted(accumulator.items())
-            ]
-        update_observation(span, output=_think_output(turn, streamed=committed_to_text))
-        yield {"turn": turn, "streamed": committed_to_text}
+        turn = _as_turn(message)
+        update_observation(span, output=_think_output(turn))
+        return turn
 
 
-def _think_output(turn: dict[str, Any], *, streamed: bool) -> dict[str, Any]:
+def _think_output(turn: dict[str, Any]) -> dict[str, Any]:
     return {
         "tool_calls": [c["function"]["name"] for c in turn.get("tool_calls") or []],
         "content": truncate(turn.get("content") or "", 500),
-        "streamed": streamed,
     }
 
 
@@ -455,15 +340,23 @@ async def _final_answer(
             llm_action="answer",
         )
         parts: list[str] = []
+        # A tools-free call keeps this model in plain prose — the `ppr` path proves
+        # it — but the filter costs nothing on a clean stream and saves the answer
+        # if a future model or gateway leaks its channels here too.
+        harmony = HarmonyFilter()
         if hasattr(produced, "__aiter__"):
             async for token in produced:
-                text = str(token)
-                if text:
-                    parts.append(text)
-                    yield text
+                visible = harmony.feed(str(token))
+                if visible:
+                    parts.append(visible)
+                    yield visible
         else:
-            text = str(produced)
-            if text:
-                parts.append(text)
-                yield text
+            visible = harmony.feed(str(produced))
+            if visible:
+                parts.append(visible)
+                yield visible
+        trailing = harmony.flush()
+        if trailing:
+            parts.append(trailing)
+            yield trailing
         update_observation(span, output={"answer": truncate("".join(parts), 2000)})
