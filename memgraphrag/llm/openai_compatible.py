@@ -217,8 +217,13 @@ async def openai_complete(
     stream: bool = False,
     base_url: str | None = None,
     api_key: str | None = None,
+    messages: list[dict[str, Any]] | None = None,
+    tools: list[dict[str, Any]] | None = None,
+    tool_choice: Any | None = None,
+    raw_stream: bool = False,
+    return_choice: bool = False,
     **kwargs: Any,
-) -> str | AsyncIterator[str]:
+) -> str | AsyncIterator[Any]:
     """Chat-complete via an OpenAI-compatible endpoint.
 
     Reads ``LLM_BINDING_HOST``, ``LLM_BINDING_API_KEY``, ``LLM_MODEL`` from the
@@ -229,15 +234,34 @@ async def openai_complete(
     - ``agent``: multi-agent role id (e.g. ``openie.ner``, ``schema.extract``,
       ``conflict.detect``, ``qa.reading``)
     - ``llm_action`` / ``action``: short verb (default ``complete``)
+
+    Tool calling needs three things this signature would otherwise not express:
+
+    - ``messages`` replaces the ``(system_prompt, history_messages, prompt)`` triple
+      built below. A tool round-trip needs an ``assistant`` turn carrying
+      ``tool_calls`` and a ``role="tool"`` turn answering it, and neither can be
+      expressed as a prompt string. When given, it is sent verbatim.
+    - ``tools`` / ``tool_choice`` are declared parameters rather than pass-through
+      kwargs. The whitelist below silently drops what it does not recognise, so a
+      smuggled ``tools`` would be swallowed and the model would answer in prose with
+      nothing to indicate that tool calling never happened.
+    - ``raw_stream`` yields the provider's chunk objects instead of content strings,
+      because tool calls arrive as deltas that carry no content at all.
+    - ``return_choice`` returns the whole choice rather than its message, so a
+      caller can read ``finish_reason``. Without it, a completion cut short by
+      ``max_tokens`` is indistinguishable from one the model chose to end — and for
+      a tool-calling turn those mean opposite things.
     """
     history_messages = history_messages or []
     agent = kwargs.pop("agent", None)
     llm_action = kwargs.pop("llm_action", None) or kwargs.pop("action", None)
-    messages: list[dict[str, str]] = []
-    if system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
-    messages.extend(history_messages)
-    messages.append({"role": "user", "content": prompt})
+    if messages is None:
+        built: list[dict[str, Any]] = []
+        if system_prompt:
+            built.append({"role": "system", "content": system_prompt})
+        built.extend(history_messages)
+        built.append({"role": "user", "content": prompt})
+        messages = built
 
     params: dict[str, Any] = {
         "model": _llm_model(model),
@@ -247,6 +271,10 @@ async def openai_complete(
     }
     if max_tokens is not None:
         params["max_tokens"] = max_tokens
+    if tools:
+        params["tools"] = tools
+        if tool_choice is not None:
+            params["tool_choice"] = tool_choice
     # Allow callers to pass through extra OpenAI kwargs (seed, response_format, …)
     for key in ("seed", "response_format", "n", "top_p", "stop"):
         if key in kwargs and kwargs[key] is not None:
@@ -280,6 +308,14 @@ async def openai_complete(
     if stream:
         response = await client.chat.completions.create(**params)
 
+        if raw_stream:
+
+            async def _raw() -> AsyncIterator[Any]:
+                async for chunk in response:
+                    yield chunk
+
+            return _raw()
+
         async def _gen() -> AsyncIterator[str]:
             async for chunk in response:
                 delta = chunk.choices[0].delta.content if chunk.choices else None
@@ -289,6 +325,12 @@ async def openai_complete(
         return _gen()
 
     response = await client.chat.completions.create(**params)
+    if return_choice:
+        return response.choices[0]
+    if tools:
+        # A tool turn has `content=None`; the caller needs the message object, not
+        # the empty string that coercing it would produce.
+        return response.choices[0].message
     content = response.choices[0].message.content or ""
     if agent or llm_action:
         llm_call(

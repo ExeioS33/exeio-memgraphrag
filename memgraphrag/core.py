@@ -19,6 +19,8 @@ from typing import Any, AsyncIterator, Awaitable, Callable, Mapping, Sequence, U
 
 import numpy as np
 
+from memgraphrag.agent.loop import run_agent
+from memgraphrag.agent.tools import ToolBox
 from memgraphrag.base import (
     BaseGraphStorage,
     BaseKVStorage,
@@ -2067,6 +2069,10 @@ class MemGraphRAG:
         self._passage_id_to_content = {}
         self._passage_ids = []
         self._passage_id_to_source: dict[str, str] = {}
+        # Basenames are what answers cite; the full path is what the library
+        # needs to open the file. Kept side by side rather than replacing the
+        # basename map, whose shape several callers already depend on.
+        self._passage_id_to_path: dict[str, str] = {}
         self._fact_ids = []
         self._schema_ids = []
         self._entity_ids = []
@@ -2128,6 +2134,8 @@ class MemGraphRAG:
                 for cid in (record or {}).get("chunk_ids") or []:
                     if cid:
                         self._passage_id_to_source[str(cid)] = label
+                        if fp and not fp.startswith("inline:"):
+                            self._passage_id_to_path[str(cid)] = fp
         except Exception as exc:
             fail_step(logger, "retrieve.prepare.sources", exc=exc)
 
@@ -2557,12 +2565,14 @@ class MemGraphRAG:
                         or "unknown"
                     )
                     sources.append(src)
+            path_map = getattr(self, "_passage_id_to_path", {}) or {}
             sol = QuerySolution(
                 question=query,
                 docs=docs,
                 doc_scores=doc_scores,
                 sources=sources,
                 passage_ids=passage_ids,
+                source_paths=[str(path_map.get(pid) or "") for pid in passage_ids],
             )
             sol.ensure_references()
             update_observation(
@@ -2618,12 +2628,14 @@ class MemGraphRAG:
                         or "unknown"
                     )
                 )
+            path_map = getattr(self, "_passage_id_to_path", {}) or {}
             sol = QuerySolution(
                 question=query,
                 docs=docs,
                 doc_scores=scores,
                 sources=sources,
                 passage_ids=passage_ids,
+                source_paths=[str(path_map.get(pid) or "") for pid in passage_ids],
             )
             sol.ensure_references()
             update_observation(
@@ -2692,6 +2704,26 @@ class MemGraphRAG:
             metadata={"workspace": self.workspace or ""},
         ) as root_span:
             try:
+                if mode == "agent":
+                    # The loop is written as a generator because streaming is its
+                    # normal home; a buffered caller (the CLI, a script, /query)
+                    # drains it here rather than being told the mode is unavailable.
+                    answer_parts: list[str] = []
+                    references: list[dict[str, Any]] = []
+                    async for frame in self.astream_agent_qa(query, param=param):
+                        if "token" in frame:
+                            answer_parts.append(str(frame["token"]))
+                        elif "references" in frame:
+                            references = list(frame["references"] or [])
+                    sol = QuerySolution(
+                        question=query,
+                        docs=[],
+                        answer="".join(answer_parts),
+                        sources=[],
+                        references=references,
+                    )
+                    update_observation(root_span, output={"mode": mode, "n_docs": len(references)})
+                    return sol
                 if mode == "bypass":
                     if not self.llm_model_func:
                         raise PipelineError("bypass mode requires llm_model_func")
@@ -2707,6 +2739,10 @@ class MemGraphRAG:
                         answer = await self.llm_model_func(
                             query,
                             system_prompt=param.user_prompt,
+                            # Streaming bypass has always passed the history; the
+                            # buffered one did not, so the same mode remembered the
+                            # conversation over SSE and forgot it over JSON.
+                            history_messages=param.conversation_history or None,
                             model=param.model,
                             provider=param.provider,
                             agent="qa.bypass",
@@ -2859,72 +2895,157 @@ class MemGraphRAG:
 
         phase(logger, RETRIEVE_PHASE, mode=mode, query=truncate(query), stream=True)
         try:
-            if mode == "bypass":
-                stage(logger, "mode=bypass (stream)")
-                sol = QuerySolution(question=query, docs=[], answer=None, sources=[])
-                system: str | None = param.user_prompt
-                user = query
-                agent = "qa.bypass"
-            else:
-                if mode == "naive":
-                    stage(logger, "mode=naive (stream)")
-                    if not self.ready_to_retrieve or not getattr(
-                        self, "_passage_id_to_source", None
-                    ):
-                        await self.prepare_retrieval()
-                    sol = await self._dense_passage_retrieve(query, param)
+            with observation(
+                "memgraphrag.query",
+                as_type="span",
+                input={"query": query, "mode": mode},
+                metadata={"workspace": self.workspace or "", "stream": True},
+            ) as root_span:
+                if mode == "bypass":
+                    stage(logger, "mode=bypass (stream)")
+                    sol = QuerySolution(question=query, docs=[], answer=None, sources=[])
+                    system: str | None = param.user_prompt
+                    user = query
+                    agent = "qa.bypass"
                 else:
-                    stage(logger, f"mode={mode} (stream)")
-                    sols = await self.aretrieve(query, param=param)
-                    sol = sols[0]
-                sol.ensure_references()
-                system, user = render_rag_qa(query, sol.docs, sol.sources)
-                if param.user_prompt:
-                    user = f"{user}\n\n{param.user_prompt}"
-                agent = "qa.reading"
+                    if mode == "naive":
+                        stage(logger, "mode=naive (stream)")
+                        if not self.ready_to_retrieve or not getattr(
+                            self, "_passage_id_to_source", None
+                        ):
+                            await self.prepare_retrieval()
+                        sol = await self._dense_passage_retrieve(query, param)
+                    else:
+                        stage(logger, f"mode={mode} (stream)")
+                        sols = await self.aretrieve(query, param=param)
+                        sol = sols[0]
+                    sol.ensure_references()
+                    system, user = render_rag_qa(query, sol.docs, sol.sources)
+                    if param.user_prompt:
+                        user = f"{user}\n\n{param.user_prompt}"
+                    agent = "qa.reading"
 
-            # References go out before the first token so the UI can render its
-            # sources panel while the answer is still being written.
-            yield {"references": list(getattr(sol, "references", None) or [])}
+                # References go out before the first token so the UI can render its
+                # sources panel while the answer is still being written.
+                yield {"references": list(getattr(sol, "references", None) or [])}
 
-            stage(logger, "QA Reading (stream)", docs=len(sol.docs), agent=agent)
-            produced = await self.llm_model_func(
-                user,
-                system_prompt=system,
-                history_messages=param.conversation_history or None,
+                stage(logger, "QA Reading (stream)", docs=len(sol.docs), agent=agent)
+                # The generation span is what `aquery` has always had and this path
+                # never did: without it the retrieval spans below arrive orphaned,
+                # and the answer — its model, its output, its token usage — is not
+                # traced at all. Since the web UI streams exclusively, that meant
+                # tracing was dark on the only path users take.
+                with observation(
+                    "memgraphrag.rag_qa" if mode != "bypass" else "memgraphrag.llm_bypass",
+                    as_type="generation",
+                    input={"query": query, "n_docs": len(sol.docs)},
+                    model=param.model or os.getenv("LLM_MODEL"),
+                    metadata={"mode": mode, "stream": True, "provider": param.provider},
+                ) as gen_span:
+                    produced = await self.llm_model_func(
+                        user,
+                        system_prompt=system,
+                        history_messages=param.conversation_history or None,
+                        model=param.model,
+                        provider=param.provider,
+                        stream=True,
+                        agent=agent,
+                        llm_action="stream",
+                    )
+
+                    parts: list[str] = []
+                    if hasattr(produced, "__aiter__"):
+                        async for chunk in produced:
+                            text = str(chunk)
+                            if not text:
+                                continue
+                            parts.append(text)
+                            yield {"token": text}
+                    else:
+                        # An llm_model_func that ignores `stream` (a test double, or a
+                        # binding without streaming support) still works: it just
+                        # arrives in one frame.
+                        text = str(produced)
+                        if text:
+                            parts.append(text)
+                            yield {"token": text}
+
+                    sol.answer = "".join(parts)
+                    update_observation(gen_span, output={"answer": (sol.answer or "")[:2000]})
+
+                update_observation(
+                    root_span,
+                    output={
+                        "mode": mode,
+                        "n_docs": len(sol.docs),
+                        "answer_chars": len(sol.answer or ""),
+                    },
+                )
+                done_step(
+                    logger,
+                    RETRIEVE_PHASE,
+                    mode=mode,
+                    docs=len(sol.docs),
+                    answer_chars=len(sol.answer or ""),
+                    stream=True,
+                )
+                yield {"done": True, "answer": sol.answer}
+        finally:
+            flush_langfuse()
+
+    async def astream_agent_qa(
+        self,
+        query: str,
+        param: QueryParam | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Answer through the agent loop, yielding the same frame shapes plus tool steps.
+
+        A sibling of ``astream_qa`` rather than a branch inside it: the buffered and
+        streamed paths are what every existing caller depends on, and the loop's
+        control flow — decide, call a tool, decide again — has no useful overlap with
+        a single retrieval followed by a single generation.
+
+        What it fixes is the follow-up. ``conversation_history`` reaches the model on
+        every mode, but the retrieval query is the user's literal text, so "and the
+        second one?" searches the corpus for that phrase. Here the model reads the
+        history and writes its own search string, which is the reformulation the
+        other modes have no place to perform.
+        """
+        param = param or QueryParam()
+        if not self.llm_model_func:
+            raise PipelineError("agent mode requires llm_model_func")
+
+        # The loop only ever calls `retrieve`, which needs the same warm engine the
+        # PPR path does; paying for it here keeps the first tool call from taking
+        # the whole retrieval-preparation cost inside a tool span.
+        if not self.ready_to_retrieve or not getattr(self, "_passage_id_to_source", None):
+            await self.prepare_retrieval()
+
+        phase(logger, RETRIEVE_PHASE, mode="agent", query=truncate(query), stream=True)
+        toolbox = ToolBox(self, param)
+        answer = ""
+        try:
+            async for frame in run_agent(
+                question=query,
+                llm=self.llm_model_func,
+                toolbox=toolbox,
                 model=param.model,
                 provider=param.provider,
-                stream=True,
-                agent=agent,
-                llm_action="stream",
-            )
-
-            parts: list[str] = []
-            if hasattr(produced, "__aiter__"):
-                async for chunk in produced:
-                    text = str(chunk)
-                    if not text:
-                        continue
-                    parts.append(text)
-                    yield {"token": text}
-            else:
-                # An llm_model_func that ignores `stream` (a test double, or a binding
-                # without streaming support) still works: it just arrives in one frame.
-                text = str(produced)
-                if text:
-                    parts.append(text)
-                    yield {"token": text}
-
-            sol.answer = "".join(parts)
+                history=list(param.conversation_history or []),
+                max_steps=max(1, int(getattr(param, "max_agent_steps", 4) or 4)),
+                language=os.getenv("MEMGRAPHRAG_LANGUAGE") or None,
+            ):
+                if frame.get("done"):
+                    answer = str(frame.get("answer") or "")
+                yield frame
             done_step(
                 logger,
                 RETRIEVE_PHASE,
-                mode=mode,
-                docs=len(sol.docs),
-                answer_chars=len(sol.answer or ""),
+                mode="agent",
+                docs=len(toolbox.references),
+                answer_chars=len(answer),
                 stream=True,
             )
-            yield {"done": True, "answer": sol.answer}
         finally:
             flush_langfuse()
 

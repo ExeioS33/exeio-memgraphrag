@@ -2,7 +2,7 @@
 
 Adapted from LightRAG ``lightrag/base.py`` (StorageNameSpace, BaseKVStorage,
 BaseVectorStorage, BaseGraphStorage, DocStatus, DocStatusStorage, QueryParam).
-Query fields and modes are MemGraphRAG-native (PPR / naive / context / bypass).
+Query fields and modes are MemGraphRAG-native (PPR / naive / context / bypass / agent).
 """
 
 from __future__ import annotations
@@ -30,8 +30,16 @@ from .utils.env import get_env_value
 class QueryParam:
     """Configuration for a MemGraphRAG query."""
 
-    mode: Literal["ppr", "naive", "context", "bypass"] = "ppr"
-    """Retrieval mode: PPR+QA, dense passages, context-only, or direct LLM."""
+    mode: Literal["ppr", "naive", "context", "bypass", "agent"] = "ppr"
+    """Retrieval mode: PPR+QA, dense passages, context-only, direct LLM, or an
+    agentic loop that decides for itself when and what to retrieve.
+
+    ``agent`` sits beside the others rather than replacing ``ppr``: it costs at
+    least one extra LLM round trip per answer, and keeping both selectable is what
+    makes the two comparable on the same question."""
+
+    max_agent_steps: int = 4
+    """Ceiling on agent tool-calling rounds before the loop must answer."""
 
     only_need_context: bool = False
     """If True, return retrieved context without generating an answer."""

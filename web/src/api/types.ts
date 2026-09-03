@@ -1,11 +1,32 @@
 /** Shapes returned by the MemGraphRAG API, as it actually answers today. */
 
 export interface Reference {
+  /** The number the answer cites inline. One reference per retrieved passage, in
+   *  the order the prompt fenced them, so `[3]` in the prose is `reference_id` 3.
+   *  References used to be collapsed per document, which made the two disagree. */
   reference_id: string
+  /** Basename, which is what the citation pill shows. */
   file_path: string
+  /** Full path when doc-status knew one — what the library needs to open the file. */
+  source_path?: string | null
+  /** The passage this citation points at, so a click can scroll to it. */
+  chunk_id?: string | null
   /** Always null from /query — the server never puts passage text in a reference.
    *  Snippets come from /query/data or /documents/{id}/chunks instead. */
   content: string | null
+}
+
+/** Agent-mode progress. Emitted while the loop works; absent in every other mode. */
+export interface ToolCall {
+  name: string
+  arguments: string
+  step: number
+}
+
+/** Where a citation click lands: a file, and optionally a passage inside it. */
+export interface LibraryTarget {
+  path: string
+  chunkId?: string | null
 }
 
 export type Role = 'user' | 'assistant'
@@ -270,5 +291,6 @@ export interface QuerySettings {
 export type StreamFrame =
   | { kind: 'references'; references: Reference[] }
   | { kind: 'token'; text: string }
+  | { kind: 'tool_call'; call: ToolCall }
   | { kind: 'error'; message: string }
   | { kind: 'done' }

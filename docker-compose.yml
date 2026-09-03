@@ -61,6 +61,13 @@ services:
       APP_DATABASE_URL: "postgresql://${APP_POSTGRES_USER:-app}:${APP_POSTGRES_PASSWORD:?set APP_POSTGRES_PASSWORD in .env}@postgres-app:5432/${APP_POSTGRES_DATABASE:-memgraphrag_app}"
       # Allow-list for the web UI's model picker; empty means LLM_MODEL only.
       LLM_MODELS: "${LLM_MODELS:-}"
+      # MCP lives in this container, on the port already published — a separate
+      # service would double the in-memory graph to serve the same bytes.
+      MCP_ENABLED: "${MCP_ENABLED:-false}"
+      # Must list the public hostname, with and without the port, or a remote MCP
+      # client is refused with 421 Invalid Host header and no usable diagnostic.
+      MCP_ALLOWED_HOSTS: "${MCP_ALLOWED_HOSTS:-}"
+      MCP_ISSUER_URL: "${MCP_ISSUER_URL:-}"
       POSTGRES_HOST: "postgres"
       POSTGRES_PORT: "5432"
       POSTGRES_USER: "${POSTGRES_USER:-rag}"

@@ -10,17 +10,55 @@ from memgraphrag.utils.misc import QuerySolution
 pytestmark = pytest.mark.offline
 
 
-def test_ensure_references_unique_by_file_path() -> None:
+def test_one_reference_per_passage_numbered_like_the_fences() -> None:
+    """The numbering has to line up with what the model was told to cite.
+
+    `fence_passages` labels passages [1..n] in the order of `docs`, and the QA
+    system prompt asks for those numbers. References used to be collapsed per
+    document, so three passages from two files produced two references and an
+    answer citing [3] pointed at nothing. One entry per passage is what makes a
+    citation resolvable — and what lets a click open the exact chunk.
+    """
     sol = QuerySolution(
         question="q",
         docs=["a", "b", "c"],
         sources=["paper.pdf", "guide.md", "paper.pdf"],
+        passage_ids=["chunk-1", "chunk-2", "chunk-3"],
+        source_paths=["/corpus/paper.pdf", "/corpus/sub/guide.md", "/corpus/paper.pdf"],
     )
     refs = sol.ensure_references()
-    assert refs == [
-        {"reference_id": "1", "file_path": "paper.pdf", "content": None},
-        {"reference_id": "2", "file_path": "guide.md", "content": None},
-    ]
+    assert [r["reference_id"] for r in refs] == ["1", "2", "3"]
+    assert [r["file_path"] for r in refs] == ["paper.pdf", "guide.md", "paper.pdf"]
+    assert [r["chunk_id"] for r in refs] == ["chunk-1", "chunk-2", "chunk-3"]
+    assert refs[1]["source_path"] == "/corpus/sub/guide.md"
+
+
+def test_reference_numbering_can_continue_a_multi_hop_turn() -> None:
+    """A second retrieval in one turn must not restart the numbering at 1.
+
+    Two hops each renumbering from 1 put two different `[1]` markers in the same
+    answer, and the list under it no longer matched the prose.
+    """
+    second_hop = QuerySolution(
+        question="q",
+        docs=["d", "e"],
+        sources=["other.pdf", "other.pdf"],
+        passage_ids=["chunk-9", "chunk-10"],
+    )
+    refs = second_hop.ensure_references(start=4)
+    assert [r["reference_id"] for r in refs] == ["4", "5"]
+
+
+def test_missing_provenance_degrades_to_unknown_without_dropping_the_slot() -> None:
+    """A passage with no doc-status record still needs its number.
+
+    Skipping it would shift every later reference by one and misattribute them.
+    """
+    sol = QuerySolution(question="q", docs=["a", "b"], sources=["", "guide.md"])
+    refs = sol.ensure_references()
+    assert [r["reference_id"] for r in refs] == ["1", "2"]
+    assert refs[0]["file_path"] == "unknown"
+    assert refs[0]["chunk_id"] is None
 
 
 def test_solution_payload_lightrag_shape() -> None:

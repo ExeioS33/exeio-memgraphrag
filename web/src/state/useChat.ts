@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 import * as api from '../api/client'
 import { ApiError } from '../api/client'
-import type { ChatMessage, ChatThread, QuerySettings, Reference } from '../api/types'
+import type { ChatMessage, ChatThread, QuerySettings, Reference, ToolCall } from '../api/types'
 
 /** Turns kept in `conversation_history`. The server neither validates nor caps it,
  *  and an unbounded history walks straight into the model's context limit. */
@@ -35,9 +35,25 @@ export interface ChatState {
   streaming: boolean
   pendingAnswer: string
   pendingRefs: Reference[]
+  /** Agent-mode steps for the turn in flight; empty in every other mode. */
+  pendingSteps: ToolCall[]
   error: string | null
   /** False when the server has no chat database; threads then live only in this tab. */
   persistent: boolean
+}
+
+/** Union of two reference lists, keyed by the citation number the answer uses.
+ *
+ *  A hop cannot renumber another hop's passages — the server continues the count
+ *  across a turn — so `reference_id` is a stable key here. Later frames win on a
+ *  collision, which only happens if a server ever restarts the numbering.
+ */
+function mergeReferences(current: Reference[], incoming: Reference[]): Reference[] {
+  const byId = new Map<string, Reference>()
+  for (const ref of [...current, ...incoming]) byId.set(ref.reference_id, ref)
+  return [...byId.values()].sort(
+    (a, b) => Number(a.reference_id) - Number(b.reference_id),
+  )
 }
 
 export function useChat(settings: QuerySettings) {
@@ -47,6 +63,7 @@ export function useChat(settings: QuerySettings) {
   const [streaming, setStreaming] = useState(false)
   const [pendingAnswer, setPendingAnswer] = useState('')
   const [pendingRefs, setPendingRefs] = useState<Reference[]>([])
+  const [pendingSteps, setPendingSteps] = useState<ToolCall[]>([])
   const [error, setError] = useState<string | null>(null)
   const [persistent, setPersistent] = useState(true)
   const abortRef = useRef<AbortController | null>(null)
@@ -94,6 +111,7 @@ export function useChat(settings: QuerySettings) {
       setActiveId(id)
       setPendingAnswer('')
       setPendingRefs([])
+      setPendingSteps([])
       const known = threads.find((t) => t.id === id)
       if (!persistent) {
         setMessages(known?.messages ?? [])
@@ -118,6 +136,7 @@ export function useChat(settings: QuerySettings) {
     setMessages([])
     setPendingAnswer('')
     setPendingRefs([])
+    setPendingSteps([])
     setError(null)
   }, [])
 
@@ -190,6 +209,7 @@ export function useChat(settings: QuerySettings) {
       setMessages(history)
       setPendingAnswer('')
       setPendingRefs([])
+      setPendingSteps([])
       setStreaming(true)
 
       if (persistent) {
@@ -218,8 +238,14 @@ export function useChat(settings: QuerySettings) {
             answer += frame.text
             setPendingAnswer(answer)
           } else if (frame.kind === 'references') {
-            refs = frame.references
+            // Merged, not replaced. Agent mode can retrieve more than once in a
+            // turn, and each frame carries only that hop's passages — overwriting
+            // dropped every source but the last one's, while the answer went on
+            // citing all of them.
+            refs = mergeReferences(refs, frame.references)
             setPendingRefs(refs)
+          } else if (frame.kind === 'tool_call') {
+            setPendingSteps((prev) => [...prev, frame.call])
           } else if (frame.kind === 'error') {
             throw new Error(frame.message)
           }
@@ -257,6 +283,7 @@ export function useChat(settings: QuerySettings) {
       }
       setPendingAnswer('')
       setPendingRefs([])
+      setPendingSteps([])
     },
     [activeId, describe, handleChatError, messages, persistent, streaming],
   )
@@ -270,6 +297,7 @@ export function useChat(settings: QuerySettings) {
     streaming,
     pendingAnswer,
     pendingRefs,
+    pendingSteps,
     error,
     persistent,
     setError,

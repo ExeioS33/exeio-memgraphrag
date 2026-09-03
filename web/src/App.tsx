@@ -5,6 +5,7 @@ import { ApiError } from './api/client'
 import type {
   GraphSuggestion,
   HealthResponse,
+  LibraryTarget,
   ProviderInfo,
   QuerySettings,
 } from './api/types'
@@ -35,6 +36,9 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false)
   const [collapsed, setCollapsed] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
+  // Where a citation click should land. The library panel is mounted lazily and
+  // unmounted on close, so it reads this once at mount — no imperative ref needed.
+  const [libraryTarget, setLibraryTarget] = useState<LibraryTarget | null>(null)
 
   const chat = useChat(settings)
 
@@ -166,6 +170,14 @@ export default function App() {
                     streaming={chat.streaming}
                     pendingAnswer={chat.pendingAnswer}
                     pendingRefs={chat.pendingRefs}
+                    pendingSteps={chat.pendingSteps}
+                    onCitationClick={(ref) => {
+                      setLibraryTarget({
+                        path: ref.source_path || ref.file_path,
+                        chunkId: ref.chunk_id ?? null,
+                      })
+                      setNav('library')
+                    }}
                   />
                 </div>
               )}
@@ -216,7 +228,17 @@ export default function App() {
       </main>
 
       <Suspense fallback={null}>
-        {nav === 'library' && <LibraryPanel onClose={() => setNav('chat')} />}
+        {nav === 'library' && (
+          <LibraryPanel
+            target={libraryTarget}
+            onClose={() => {
+              // Cleared on close, or the next plain "Bibliothèque" click would jump
+              // straight back to the last cited file.
+              setLibraryTarget(null)
+              setNav('chat')
+            }}
+          />
+        )}
         {nav === 'graph' && <GraphPanel onClose={() => setNav('chat')} />}
         {showSettings && (
           <SettingsPanel

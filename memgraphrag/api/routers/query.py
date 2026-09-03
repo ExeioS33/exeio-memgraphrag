@@ -37,7 +37,7 @@ except ImportError:  # pragma: no cover
 
 class QueryRequest(BaseModel):
     query: str = Field(..., min_length=1, description="User query")
-    mode: Literal["ppr", "naive", "context", "bypass"] = Field(default="ppr")
+    mode: Literal["ppr", "naive", "context", "bypass", "agent"] = Field(default="ppr")
     top_k: Optional[int] = Field(default=None, ge=1)
     linking_top_k: Optional[int] = Field(default=None, ge=1)
     # Bounded: unbounded values reached igraph, which raised, and the broad except in
@@ -190,7 +190,12 @@ async def _iter_stream_frames(rag: Any, query: str, param: QueryParam) -> AsyncI
     — a test double, or an older engine object — instead of raising mid-response
     once the 200 has already been committed.
     """
-    stream_fn = getattr(rag, "astream_qa", None)
+    # `agent` is a mode, not a route: adding /query/agent would break the two
+    # OpenAPI operation-count guards in tests/api/test_route_surface.py, and a
+    # caller would have to know which endpoint to hit before knowing which mode
+    # they want.
+    name = "astream_agent_qa" if param.mode == "agent" else "astream_qa"
+    stream_fn = getattr(rag, name, None)
     agen = None
     if stream_fn is not None:
         try:
@@ -238,6 +243,24 @@ def _query_data_payload(sol: QuerySolution | str) -> dict[str, Any]:
     return base
 
 
+def check_agent_mode(body: Any) -> None:
+    """Refuse an agent request whose model cannot call tools, before the 200.
+
+    Only the name-based half of the check runs here. The decisive one — forcing a
+    tool call and seeing whether the model answers with one — happens inside the
+    loop, by which point the response has already started and the refusal has to
+    travel as an in-band error frame.
+    """
+    if getattr(body, "mode", None) != "agent":
+        return
+    from memgraphrag.agent.capabilities import AgentUnsupportedModelError, precheck_model
+
+    try:
+        precheck_model(getattr(body, "model", None))
+    except AgentUnsupportedModelError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 def create_query_router(api_key: Optional[str] = None) -> Any:
     if APIRouter is None:
         raise RuntimeError("fastapi is required; install memgraphrag[api]")
@@ -255,6 +278,7 @@ def create_query_router(api_key: Optional[str] = None) -> Any:
     async def query(request: Request, body: QueryRequest):
         rag = request.app.state.rag
         await validate_selection(request, body.provider, body.model)
+        check_agent_mode(body)
         param = _build_param(body, rag)
         if body.only_need_context or body.mode == "context":
             param.only_need_context = True
@@ -329,7 +353,7 @@ def create_query_router(api_key: Optional[str] = None) -> Any:
         rag = request.app.state.rag
         param = _build_param(body, rag)
         param.only_need_context = True
-        if param.mode == "bypass":
+        if param.mode in ("bypass", "agent"):
             param.mode = "ppr"
         main_step(
             logger,
@@ -366,6 +390,7 @@ def create_query_router(api_key: Optional[str] = None) -> Any:
     async def query_stream(request: Request, body: QueryRequest):
         rag = request.app.state.rag
         await validate_selection(request, body.provider, body.model)
+        check_agent_mode(body)
         param = _build_param(body, rag)
         param.stream = True
         main_step(
@@ -396,6 +421,14 @@ def create_query_router(api_key: Optional[str] = None) -> Any:
                         refs = frame.get("references") or []
                         refs_count = len(refs)
                         payload = json.dumps({"references": refs}, ensure_ascii=False)
+                        yield f"data: {payload}\n\n"
+                    elif "tool_call" in frame:
+                        # Agent-mode progress. Clients that predate this frame drop
+                        # it: the shape is unknown to them and both the HTTP client
+                        # and the Streamlit playground return None on one.
+                        payload = json.dumps(
+                            {"tool_call": frame.get("tool_call") or {}}, ensure_ascii=False
+                        )
                         yield f"data: {payload}\n\n"
                 done_step(
                     logger,

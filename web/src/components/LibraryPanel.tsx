@@ -23,7 +23,13 @@ import {
   libraryPreview,
   libraryTree,
 } from '../api/client'
-import type { LibraryEntry, LibraryPassages, LibraryPreview, LibraryTree } from '../api/types'
+import type {
+  LibraryEntry,
+  LibraryPassages,
+  LibraryPreview,
+  LibraryTarget,
+  LibraryTree,
+} from '../api/types'
 import {
   BookIcon,
   ChevronDownIcon,
@@ -131,6 +137,30 @@ function firstFile(entries: LibraryEntry[]): LibraryEntry | null {
   return null
 }
 
+/** Find the entry a citation points at.
+ *
+ *  Matched on the basename as well as the full path, because `LIBRARY_ROOT` and
+ *  the path recorded in doc-status are independent settings: a corpus ingested
+ *  from `INPUT_DIR` can be browsed from a library root it is not under, and the
+ *  citation then carries a path this tree never uses.
+ */
+function findByPath(entries: LibraryEntry[], wanted: string): LibraryEntry | null {
+  const target = wanted.replace(/\\/g, '/')
+  const name = target.split('/').pop() ?? target
+  for (const entry of entries) {
+    if (entry.is_dir) {
+      const nested = findByPath(entry.children ?? [], wanted)
+      if (nested) return nested
+      continue
+    }
+    const path = entry.path.replace(/\\/g, '/')
+    if (path === target || target.endsWith('/' + path) || path.endsWith('/' + name) || path === name) {
+      return entry
+    }
+  }
+  return null
+}
+
 type TreeNodeProps = {
   entry: LibraryEntry
   depth: number
@@ -225,7 +255,14 @@ function TreeNode({
 
 /* ------------------------------------------------------------------- panel --- */
 
-export default function LibraryPanel({ onClose }: { onClose: () => void }) {
+export default function LibraryPanel({
+  onClose,
+  target = null,
+}: {
+  onClose: () => void
+  /** Where a citation click wants the panel to open. Read once, at mount. */
+  target?: LibraryTarget | null
+}) {
   const [tree, setTree] = useState<LibraryTree | null>(null)
   const [treeLoading, setTreeLoading] = useState(true)
   const [treeError, setTreeError] = useState<string | null>(null)
@@ -243,6 +280,10 @@ export default function LibraryPanel({ onClose }: { onClose: () => void }) {
   const [passages, setPassages] = useState<LibraryPassages | null>(null)
   const [passagesLoading, setPassagesLoading] = useState(false)
   const [passagesError, setPassagesError] = useState<string | null>(null)
+  const [highlightChunkId, setHighlightChunkId] = useState<string | null>(
+    target?.chunkId ?? null,
+  )
+  const [targetMissed, setTargetMissed] = useState(false)
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -263,9 +304,13 @@ export default function LibraryPanel({ onClose }: { onClose: () => void }) {
         setTree(data)
         setTreeError(null)
         setOpenDirs(collectDirs(data.entries, new Set<string>()))
-        // Opening on an empty centre pane would read as a broken panel; the first
-        // file is as good a default as any and the corpus is small.
-        setSelected((current) => current ?? firstFile(data.entries))
+        // A citation click names the file to open; otherwise, opening on an empty
+        // centre pane would read as a broken panel, and the first file is as good a
+        // default as any.
+        const wanted = target ? findByPath(data.entries, target.path) : null
+        if (target && !wanted) setTargetMissed(true)
+        setSelected((current) => current ?? wanted ?? firstFile(data.entries))
+        if (wanted) setShowText(false)
       })
       .catch((error: unknown) => {
         if (!cancelled) setTreeError(describeError(error))
@@ -279,6 +324,16 @@ export default function LibraryPanel({ onClose }: { onClose: () => void }) {
   }, [reloadToken])
 
   const selectedPath = selected?.path ?? null
+
+  // A highlight belongs to the document it was requested for. Left in place, it
+  // would light up an unrelated chunk that happened to share an id prefix.
+  const targetPath = target?.path ?? null
+  useEffect(() => {
+    if (!selectedPath) return
+    if (!targetPath) return
+    const name = targetPath.replace(/\\/g, '/').split('/').pop() ?? targetPath
+    if (!selectedPath.endsWith(name)) setHighlightChunkId(null)
+  }, [selectedPath, targetPath])
 
   // One page at a time: the window exists to bound the JSON body, and the reader
   // moves page by page.
@@ -621,6 +676,31 @@ export default function LibraryPanel({ onClose }: { onClose: () => void }) {
             </div>
 
             <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+              {/* Two ways a citation click can miss, both worth naming rather than
+                  leaving as an apparently empty panel: the file is not under
+                  LIBRARY_ROOT (an independent setting from INPUT_DIR), or the cited
+                  chunk falls outside the 200-passage window this endpoint returns. */}
+              {targetMissed && (
+                <p
+                  className="mb-2 rounded-card border border-amber-200 bg-amber-50 px-3 py-2
+                    text-[11.5px] leading-relaxed text-amber-800"
+                >
+                  Le document cité est introuvable sous <code>LIBRARY_ROOT</code>. La
+                  bibliothèque et le dossier d&apos;ingestion sont deux réglages distincts.
+                </p>
+              )}
+              {highlightChunkId &&
+                passages &&
+                passages.passages.length > 0 &&
+                !passages.passages.some((p) => p.chunk_id === highlightChunkId) && (
+                  <p
+                    className="mb-2 rounded-card border border-amber-200 bg-amber-50 px-3 py-2
+                      text-[11.5px] leading-relaxed text-amber-800"
+                  >
+                    Le passage cité est hors de la fenêtre affichée ({passages.passages.length}{' '}
+                    sur {passages.total}). Le document est bien le bon.
+                  </p>
+                )}
               {!selected ? (
                 <p className="py-8 text-center text-xs text-ink-faint">
                   Aucun document sélectionné.
@@ -641,7 +721,18 @@ export default function LibraryPanel({ onClose }: { onClose: () => void }) {
                   {passages.passages.map((passage) => (
                     <li
                       key={passage.chunk_id}
-                      className="rounded-card border border-edge bg-white px-3 py-2"
+                      ref={
+                        passage.chunk_id === highlightChunkId
+                          ? (node) =>
+                              node?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+                          : undefined
+                      }
+                      className={`rounded-card border px-3 py-2 transition-colors
+                        motion-reduce:transition-none ${
+                          passage.chunk_id === highlightChunkId
+                            ? 'border-violet-400 bg-violet-50'
+                            : 'border-edge bg-white'
+                        }`}
                     >
                       <p className="mb-1 truncate font-mono text-[11px] text-ink-faint">
                         {passage.chunk_id}

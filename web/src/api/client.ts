@@ -17,6 +17,7 @@ import type {
   Reference,
   StreamFrame,
   ThreadListResponse,
+  ToolCall,
 } from './types'
 
 const TOKEN_KEY = 'memgraphrag.token'
@@ -249,6 +250,9 @@ function parseFrame(raw: string): StreamFrame | null {
       return { kind: 'references', references: data.references as Reference[] }
     }
     if (typeof data.response === 'string') return { kind: 'token', text: data.response }
+    if (data.tool_call && typeof data.tool_call === 'object') {
+      return { kind: 'tool_call', call: data.tool_call as ToolCall }
+    }
   } catch {
     /* a malformed frame is skipped rather than aborting the stream */
   }
