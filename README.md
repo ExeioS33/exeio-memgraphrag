@@ -195,34 +195,39 @@ flowchart TB
   end
 
   subgraph FP["File processing"]
-    PAR["Parsers: legacy / Docling"]
-    CHK["Chunkers: F / R / P"]
+    PAR["Parsers<br/>legacy / Docling"]
+    CHK["Chunkers<br/>F / R / P"]
+    PAR --> CHK
   end
 
   subgraph ENG["MemGraphRAG engine"]
     MEM["Three-layer memory<br/>schema · fact · passage"]
-    PPR["PPR retrieval<br/>igraph / neo4j_gds"]
     AGT["Agent loop<br/>tool calling"]
+    PPR["PPR retrieval<br/>igraph / neo4j_gds"]
+    MEM --> PPR
+    AGT --> PPR
   end
 
-  subgraph STOR["Pluggable storage"]
-    PG["Postgres + pgvector"]
-    NEO["Neo4j + GDS"]
+  subgraph STOR["Pluggable storage (one backend per concern)"]
+    PG["Postgres<br/>+ pgvector"]
+    NEO["Neo4j<br/>+ GDS"]
     FILE["File defaults<br/>JSON / GraphML / nano-vectordb"]
   end
 
   LLM["OpenAI-compatible<br/>LLM + embeddings"]
 
-  DOC --> FP
-  FP --> ENG
-  QRY --> ENG
-  GRPH --> ENG
-  OLL --> ENG
-  MCP --> ENG
-  ENG --> STOR
-  ENG --> LLM
-  MEM --> PPR
-  AGT --> PPR
+  DOC --> PAR
+  CHK --> MEM
+  QRY --> PPR
+  QRY --> AGT
+  GRPH --> MEM
+  OLL --> PPR
+  MCP --> PPR
+  MEM --> PG
+  MEM --> NEO
+  MEM --> FILE
+  MEM --> LLM
+  PPR --> LLM
 ```
 
 ### 🧠 Three-layer memory
