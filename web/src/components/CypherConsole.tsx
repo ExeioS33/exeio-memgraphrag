@@ -17,7 +17,8 @@ import type { ReactNode } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { ApiError, graphNeighborhood, graphSchema, runCypher } from '../api/client'
-import type { CypherEdge, CypherNode, CypherResponse, GraphSchema } from '../api/types'
+import GraphCanvas, { type DrawnEdge, type Placed } from './GraphCanvas'
+import type { CypherNode, CypherResponse, GraphSchema } from '../api/types'
 import { CloseIcon, FileIcon, GraphIcon, LayersIcon, RefreshIcon, SendIcon } from './icons'
 
 const VIEW_W = 960
@@ -97,16 +98,6 @@ const PRESETS: { label: string; query: string }[] = [
 
 type Tab = 'graph' | 'table' | 'raw'
 
-type Placed = { node: CypherNode; x: number; y: number; group: string }
-
-type DrawnEdge = {
-  edge: CypherEdge
-  x1: number
-  y1: number
-  x2: number
-  y2: number
-  loop: boolean
-}
 
 const numberFormat = new Intl.NumberFormat('fr-FR')
 
@@ -710,114 +701,27 @@ export default function CypherConsole() {
                     </p>
                   ) : null}
 
-                  <div className="relative min-h-0 flex-1 rounded-panel border border-edge bg-white">
+                  <div className="relative min-h-0 flex-1 overflow-hidden rounded-panel border border-edge bg-white">
                     {placed.length === 0 ? (
                       <p className="flex h-full items-center justify-center px-6 text-center text-sm text-ink-faint">
                         Cette requête ne renvoie aucun nœud — regardez l&apos;onglet Table.
                       </p>
                     ) : (
-                      <svg
-                        viewBox={`0 0 ${VIEW_W} ${VIEW_H}`}
-                        preserveAspectRatio="xMidYMid meet"
-                        className="h-full w-full"
-                        aria-label="Résultat sous forme de graphe"
-                      >
-                        <defs>
-                          <marker
-                            id="cypher-arrow"
-                            viewBox="0 0 10 10"
-                            refX="9"
-                            refY="5"
-                            markerWidth="5"
-                            markerHeight="5"
-                            orient="auto"
-                          >
-                            <path d="M0 0 L10 5 L0 10 z" fill="#D4D4D4" />
-                          </marker>
-                        </defs>
-
-                        <g stroke="#DDDDDD" strokeWidth={1} fill="none">
-                          {drawnEdges.map((item) =>
-                            item.loop ? (
-                              <path
-                                key={item.edge.id}
-                                d={`M${item.x1 - 6},${item.y1 - 4} a 9,9 0 1,1 12,0`}
-                              />
-                            ) : (
-                              <line
-                                key={item.edge.id}
-                                x1={item.x1}
-                                y1={item.y1}
-                                x2={item.x2}
-                                y2={item.y2}
-                                markerEnd="url(#cypher-arrow)"
-                              />
-                            ),
-                          )}
-                        </g>
-
-                        {showEdgeCaptions ? (
-                          <g
-                            fontSize={8}
-                            textAnchor="middle"
-                            fill="#9A9A9A"
-                            stroke="#FFFFFF"
-                            strokeWidth={2.5}
-                            paintOrder="stroke"
-                            className="pointer-events-none"
-                          >
-                            {drawnEdges.map((item) => (
-                              <text
-                                key={`${item.edge.id}-caption`}
-                                x={(item.x1 + item.x2) / 2}
-                                y={(item.y1 + item.y2) / 2 - 3}
-                              >
-                                {item.edge.type}
-                              </text>
-                            ))}
-                          </g>
-                        ) : null}
-
-                        <g>
-                          {placed.map((item) => {
-                            const active = selected?.id === item.node.id
-                            return (
-                              <g key={item.node.id}>
-                                <circle
-                                  cx={item.x}
-                                  cy={item.y}
-                                  r={active ? NODE_RADIUS + 3.5 : NODE_RADIUS}
-                                  fill={colorForGroup(item.group)}
-                                  stroke={active ? '#111111' : '#FFFFFF'}
-                                  strokeWidth={active ? 2.5 : 1.5}
-                                  className="cursor-pointer"
-                                  onClick={() => setSelected(item.node)}
-                                  onDoubleClick={() => void expand(item.node)}
-                                >
-                                  <title>
-                                    {`${item.group} · ${clip(captionOf(item.node), 120)}`}
-                                  </title>
-                                </circle>
-                                {showNodeCaptions ? (
-                                  <text
-                                    x={item.x}
-                                    y={item.y + 20}
-                                    fontSize={9}
-                                    textAnchor="middle"
-                                    fill="#6B6B6B"
-                                    stroke="#FFFFFF"
-                                    strokeWidth={2.5}
-                                    paintOrder="stroke"
-                                    className="pointer-events-none"
-                                  >
-                                    {clip(captionOf(item.node), 22)}
-                                  </text>
-                                ) : null}
-                              </g>
-                            )
-                          })}
-                        </g>
-                      </svg>
+                      <GraphCanvas
+                        placed={placed}
+                        edges={drawnEdges}
+                        width={VIEW_W}
+                        height={VIEW_H}
+                        radius={NODE_RADIUS}
+                        selected={selected}
+                        showNodeCaptions={showNodeCaptions}
+                        showEdgeCaptions={showEdgeCaptions}
+                        colorForGroup={colorForGroup}
+                        captionOf={captionOf}
+                        clip={clip}
+                        onSelect={setSelected}
+                        onExpand={expand}
+                      />
                     )}
 
                     {selected ? (
