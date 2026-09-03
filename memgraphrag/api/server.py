@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
 from typing import Any, Optional
 
@@ -165,8 +165,11 @@ def _build_rag(args: Any) -> MemGraphRAG:
             prompt, model=model, base_url=base_url, api_key=api_key, **kwargs
         )
         # A streaming call returns an async iterator of tokens; str() on it would
-        # yield the generator's repr, so only the buffered result is coerced.
-        if kwargs.get("stream"):
+        # yield the generator's repr, so only the buffered result is coerced. A tool
+        # turn is the same trap with a different shape: it comes back as a message
+        # object whose `content` is None, and str() would flatten it to a repr the
+        # agent loop cannot read the tool calls out of.
+        if kwargs.get("stream") or kwargs.get("tools"):
             return result
         return str(result)
 
@@ -320,6 +323,9 @@ def create_app(
     from memgraphrag.api.routers.ollama import create_ollama_router
     from memgraphrag.api.routers.query import create_query_router, models_for
     from memgraphrag.chat import InMemoryChatStore, create_chat_store
+    from memgraphrag.mcp.server import MOUNT_PATH as MCP_MOUNT_PATH
+    from memgraphrag.mcp.server import allowed_hosts as mcp_allowed_hosts
+    from memgraphrag.mcp.server import build_mcp_server, mcp_enabled
 
     cfg = args or global_args
     api_key = os.getenv("MEMGRAPHRAG_API_KEY") or getattr(cfg, "key", None) or None
@@ -333,9 +339,26 @@ def create_app(
 
     engine = rag if rag is not None else _build_rag(cfg)
 
+    # Built here, before the lifespan closure that has to enter it: calling
+    # `streamable_http_app()` is what creates `session_manager`, and that object is
+    # single-use, so the construction order is not free.
+    mcp_server = None
+    mcp_app = None
+    if mcp_enabled(cfg):
+        mcp_server = build_mcp_server(engine, auth_handler=auth_handler, api_key=api_key, args=cfg)
+        if mcp_server is not None:
+            mcp_app = mcp_server.streamable_http_app()
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.background_tasks = set()
+        # Starlette does not run a mounted sub-app's lifespan. Without this the
+        # *first* MCP request dies on "RuntimeError: Task group is not initialized"
+        # while start-up looks perfectly healthy — which is why the MCP check in
+        # docs/MCP.md exercises a real request rather than a successful boot.
+        mcp_stack = AsyncExitStack()
+        if mcp_server is not None:
+            await mcp_stack.enter_async_context(mcp_server.session_manager.run())
         try:
             if not testing:
                 await app.state.rag.initialize_storages()
@@ -365,6 +388,7 @@ def create_app(
                 logger.info("MemGraphRAG server ready")
             yield
         finally:
+            await mcp_stack.aclose()
             await drain_background_tasks(app, shutdown_drain_timeout(cfg))
             if not testing and hasattr(app.state.rag, "finalize_storages"):
                 try:
@@ -455,6 +479,18 @@ def create_app(
             model_tag=getattr(cfg, "ollama_model_tag", DEFAULT_OLLAMA_MODEL_TAG),
         )
     )
+
+    if mcp_app is not None:
+        # Before the SPA, which is mounted on "/" and would otherwise swallow this.
+        # A Mount contributes no OpenAPI operation, so the two route-surface guards
+        # in tests/api/test_route_surface.py stay green — same mechanics as the
+        # static bundle.
+        app.mount(MCP_MOUNT_PATH, mcp_app, name="mcp")
+        logger.info(
+            "MCP server mounted at %s (allowed hosts: %s)",
+            MCP_MOUNT_PATH,
+            ", ".join(mcp_allowed_hosts(cfg)) or "localhost only",
+        )
 
     def _retrieval_state() -> tuple[bool, str, str | None]:
         """(ready, state, error) for the retrieval engine."""

@@ -261,9 +261,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     # Root of the on-disk document library browsed by the web UI. Read-only: the
     # library serves and previews what is already there, it never writes. Every
     # request path is resolved and checked for containment under this root.
-    args.library_root = get_env_value(
-        "LIBRARY_ROOT", "~/Desktop/project/lightrag/cf_lightrag/data/rfe-igor"
-    )
+    args.library_root = get_env_value("LIBRARY_ROOT", "./data/library")
+
+    # MCP: a second read-only way into the same corpus, for third-party clients.
+    # Off by default — mounting it is a deployment decision, not a default.
+    args.mcp_enabled = get_env_value("MCP_ENABLED", False, bool)
+    # Exact-match host allow-list for the transport's DNS-rebinding protection.
+    # Empty means localhost only, and a remote client then gets 421 with no clue
+    # why, so any deployment behind a real hostname has to fill this in — with an
+    # entry for the bare host *and* one for host:port.
+    args.mcp_allowed_hosts = get_env_value("MCP_ALLOWED_HOSTS", "")
 
     # Query / PPR knobs
     args.top_k = get_env_value("TOP_K", TOP_K, int)

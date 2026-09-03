@@ -26,27 +26,47 @@ class QuerySolution:
     """Document source label per retrieved passage (basename / file_path)."""
     passage_ids: Optional[List[str]] = None
     """Chunk ids aligned with ``docs``."""
+    source_paths: Optional[List[str]] = None
+    """Full document paths aligned with ``docs`` (``sources`` holds basenames)."""
     references: Optional[List[dict[str, Any]]] = None
     """API-facing source references (``reference_id``, ``file_path``, …)."""
     gold_answers: Optional[List[str]] = None
     gold_docs: Optional[List[str]] = None
 
-    def ensure_references(self) -> list[dict[str, Any]]:
-        """Build unique ``references`` from retrieved passage sources (LightRAG-style)."""
+    def ensure_references(self, *, start: int = 1) -> list[dict[str, Any]]:
+        """One reference per retrieved passage, numbered like the prompt's fences.
+
+        The numbering is the whole point. ``fence_passages`` labels passages
+        ``[1..n]`` in the order of ``docs`` and the QA system prompt tells the model
+        to cite those numbers, so a reference list collapsed per document — which is
+        what this used to build — left ``[7]`` in an answer pointing at nothing
+        whenever ten passages came from three files. Keeping one entry per passage
+        makes a citation resolvable, and carrying ``chunk_id`` lets the UI open the
+        exact passage rather than the top of a PDF.
+
+        ``start`` offsets the numbering for a multi-hop turn, where a second
+        retrieval must continue the first one's sequence instead of restarting at 1.
+        """
         if self.references is not None:
             return list(self.references)
-        seen: dict[str, str] = {}
+        sources = list(self.sources or [])
+        chunk_ids = list(self.passage_ids or [])
+        paths = list(self.source_paths or [])
         refs: list[dict[str, Any]] = []
-        for src in list(self.sources or []):
-            label = str(src or "").strip() or "unknown"
-            if label in seen:
-                continue
-            rid = str(len(refs) + 1)
-            seen[label] = rid
+        for index in range(len(self.docs or [])):
+            label = str(sources[index] if index < len(sources) else "").strip() or "unknown"
+            chunk_id = (
+                str(chunk_ids[index]) if index < len(chunk_ids) and chunk_ids[index] else None
+            )
+            path = str(paths[index]) if index < len(paths) and paths[index] else None
             refs.append(
                 {
-                    "reference_id": rid,
+                    "reference_id": str(start + index),
                     "file_path": label,
+                    # The full path when doc-status knew one; `file_path` stays the
+                    # basename because that is what every existing client renders.
+                    "source_path": path,
+                    "chunk_id": chunk_id,
                     "content": None,
                 }
             )

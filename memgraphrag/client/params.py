@@ -35,9 +35,12 @@ QUERY_PARAMS: tuple[ParamSpec, ...] = (
         name="mode",
         kind="choice",
         emoji="🎛️",
-        help="Retrieval mode: ppr (graph), naive (dense), context, bypass (LLM only)",
+        help=(
+            "Retrieval mode: ppr (graph), naive (dense), context, bypass (LLM only), "
+            "agent (the model searches for itself — one extra LLM round trip or more)"
+        ),
         default="ppr",
-        choices=("ppr", "naive", "context", "bypass"),
+        choices=("ppr", "naive", "context", "bypass", "agent"),
         grid=("ppr", "naive"),
     ),
     ParamSpec(
