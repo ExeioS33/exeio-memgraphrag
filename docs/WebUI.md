@@ -136,9 +136,40 @@ The trade-off is stated rather than hidden: if the cap cuts a turn off before it
 ask for a second search, the loop reads that as "ready to answer" and still answers
 from the passages it has. That is a lost hop, not a failure, so the server says so
 once per process and puts `finish_reason` on every `memgraphrag.agent.think` span.
-On `openai/gpt-oss-20b` it costs nothing measurable: uncapped, that turn produced no
-tool call in 46 s even when the retrieved passages plainly did not answer the
-question.
+
+## Agent mode is only as good as the model
+
+Whether the loop ever performs a *second* search is a property of the model, not of
+the code, and the difference is large enough to decide whether the mode is worth its
+cost. Probed with a question about sanctions and passages about the French flag —
+where a competent agent must search again:
+
+| Model | Re-searched? | Deciding turn |
+|---|---|---|
+| `meta-llama/Llama-3.3-70B-Instruct-Turbo` | yes, reformulated | 5.5 s |
+| `moonshotai/Kimi-K3` | yes, reformulated | 3.7 s |
+| `openai/gpt-oss-20b` | **no**, even uncapped | 18.5 s |
+| `openai/gpt-oss-120b` | **no**, even uncapped | 64.4 s |
+
+Neither gpt-oss variant re-called the tool even when given all the time in the
+world, so on those models the agent mode is one search plus overhead. Pin a
+tool-capable model with `AGENT_TOOL_MODELS`, or expect `mode=agent` to behave like
+`mode=ppr` with an extra round trip.
+
+What multi-hop buys, on a two-part question whose halves live in different
+documents ("how many platforms are in the benchmark, and separately, which business
+cases are covered for transport and logistics"), same model both times:
+
+| | `ppr` | `agent` |
+|---|---|---|
+| latency | 6.4 s | 17.8 s |
+| searches | 1 | 2 |
+| passages / documents | 5 / 1 | 10 / 2 |
+| answer | first half only — says plainly it cannot answer the second | **both halves**, with the three named business cases |
+
+That is the trade the mode offers: roughly 2.8× the latency for an answer a single
+PPR search cannot reach, because one search ranks passages for the whole query and
+serves whichever half scores higher.
 
 ## Limits inherited from the API
 

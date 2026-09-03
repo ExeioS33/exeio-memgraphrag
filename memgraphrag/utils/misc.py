@@ -33,6 +33,18 @@ class QuerySolution:
     gold_answers: Optional[List[str]] = None
     gold_docs: Optional[List[str]] = None
 
+    def build_references(self, *, start: int = 1) -> list[dict[str, Any]]:
+        """Rebuild ``references`` from the aligned lists, numbered from ``start``.
+
+        Unlike :meth:`ensure_references` this never returns a cached list, which is
+        the whole point: by the time a multi-hop caller sees a solution, the engine
+        has already numbered it from 1, so asking politely for an offset got the
+        original list back and the second hop restarted at ``[1]``. The bug is only
+        visible with a model that actually re-calls the tool — most do not.
+        """
+        self.references = None
+        return self.ensure_references(start=start)
+
     def ensure_references(self, *, start: int = 1) -> list[dict[str, Any]]:
         """One reference per retrieved passage, numbered like the prompt's fences.
 
@@ -46,6 +58,8 @@ class QuerySolution:
 
         ``start`` offsets the numbering for a multi-hop turn, where a second
         retrieval must continue the first one's sequence instead of restarting at 1.
+        It is ignored when references are already built — use
+        :meth:`build_references` when the offset has to win.
         """
         if self.references is not None:
             return list(self.references)

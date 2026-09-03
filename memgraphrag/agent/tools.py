@@ -176,8 +176,11 @@ class ToolBox:
                 arguments=arguments,
             )
 
-        # Continue the turn's numbering rather than restarting at 1.
-        refs = solution.ensure_references(start=self.fence_start)
+        # Continue the turn's numbering rather than restarting at 1. `aretrieve`
+        # has already numbered this solution from 1, so the rebuild is required:
+        # `ensure_references` would hand back that original list and the second hop
+        # would cite `[1]` again.
+        refs = solution.build_references(start=self.fence_start)
         body = _fence_from(self.fence_start, solution.docs, solution.sources)
         self.fence_start += len(solution.docs)
         self.references.extend(refs)

@@ -316,6 +316,32 @@ async def test_references_accumulate_across_hops() -> None:
     assert ids == ["1", "2", "3", "4"], "the second hop must not restart at 1"
 
 
+@pytest.mark.asyncio
+async def test_the_offset_wins_over_references_the_engine_already_built() -> None:
+    """The real regression, which a fresh QuerySolution cannot reproduce.
+
+    `aretrieve` numbers every solution from 1 before returning it, so asking
+    `ensure_references` for an offset got the cached list straight back and the
+    second hop cited `[1]` again while its passages were fenced `[3]`, `[4]`. It
+    only shows up with a model that genuinely re-calls the tool — most never do,
+    which is exactly why it survived the first round of tests.
+    """
+
+    class PrenumberedRag(FakeRag):
+        async def aretrieve(self, query: str, param=None):
+            solutions = await super().aretrieve(query, param)
+            for solution in solutions:
+                solution.ensure_references()  # what the engine does today
+            return solutions
+
+    toolbox = ToolBox(PrenumberedRag(docs=["p1", "p2"]), QueryParam())
+    await toolbox.run("retrieve", '{"query": "a"}')
+    await toolbox.run("retrieve", '{"query": "b"}')
+    ids = [ref["reference_id"] for ref in toolbox.references]
+    assert ids == ["1", "2", "3", "4"], "pre-numbered solutions must still be offset"
+    assert len(toolbox.docs) == 4
+
+
 # --------------------------------------------------------------------------- #
 # Cost of a deciding turn
 # --------------------------------------------------------------------------- #
