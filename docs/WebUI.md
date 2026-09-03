@@ -29,6 +29,7 @@ for `docker compose up`.
 | Screen | Endpoints |
 |---|---|
 | Conversation | `POST /query/stream` (answer), `POST /chat/threads/{id}/messages` (persist) |
+| Citation → library | client-side: a citation carries `chunk_id` + `source_path`, the panel opens on that file and scrolls to the passage |
 | Sidebar thread list | `GET /chat/threads`, grouped client-side by age |
 | Provider + model picker | `GET /models`, sent back as `provider` / `model` on the query |
 | Suggestion cards | `GET /graph/highlights` — derived from the corpus, not hardcoded |
@@ -91,6 +92,39 @@ only — it degrades, it does not break.
 `LLM_MODEL` is always included. Anything else is refused with 400 rather than
 forwarded, so a typo cannot bill a model nobody sanctioned.
 
+## Clickable citations
+
+A citation is one retrieved passage, not one document. `references[]` is numbered
+exactly as `fence_passages` numbered the prompt, so the `[3]` the model wrote is
+`reference_id` 3 — they used to disagree, because references were collapsed per
+document and ten passages from three files produced three references.
+
+Each entry carries `chunk_id` and, when doc-status knew one, `source_path`. Clicking
+a pill opens the library on that document and scrolls to the passage. The pills are
+grouped per document in the UI (`[1][4] paper.pdf`) so ten passages do not render as
+ten near-identical chips.
+
+Two ways the jump can miss, both stated rather than shown as an empty panel:
+`LIBRARY_ROOT` and `INPUT_DIR` are independent settings, so a cited file need not be
+under the library root; and `/library/passages` returns at most 200 passages with no
+offset, so a chunk cited from a long document can fall outside the window.
+
+## Agent mode
+
+`mode=agent` gives the model a `retrieve` tool and lets it decide what to search
+for. It is the only mode where a follow-up works: everywhere else the retrieval
+query is the user's literal text, so "et le second ?" searches the corpus for that
+phrase. The loop reads the history and writes a standalone search string instead.
+
+The UI shows each step as it happens — a forty-second turn with no visible progress
+is indistinguishable from a hang — and merges the references from every hop.
+Overwriting them, which is what the earlier code did, kept only the last hop's
+sources while the answer went on citing all of them.
+
+The first turn is forced with `tool_choice`, which doubles as the capability check:
+a model that answers a *forced* tool call in prose cannot call tools, and the mode
+refuses it by name rather than degrading into an ungrounded answer.
+
 ## Limits inherited from the API
 
 - **Citations carry a filename, not a snippet.** `references[].content` is always
@@ -99,16 +133,20 @@ forwarded, so a typo cannot bill a model nobody sanctioned.
 - **Provenance depends on doc-status.** `_passage_id_to_source` is built
   exclusively from doc-status records (`file_path` + `chunk_ids`), so a corpus
   ingested by a script that calls `core.ainsert()` directly cites `"unknown"` and
-  shows an empty library — the two are one missing table, not two bugs.
-  `scripts/backfill_rfe_sources.py` repairs it without re-ingesting: chunk ids are
-  content hashes, so re-running the same chunking over the same sidecars reproduces
-  them exactly. It verifies the overlap against the graph and refuses to write
-  below a threshold, because a misaligned backfill attaches the wrong filename to a
-  passage — worse than no citation at all.
-- **Conversation history is not used for retrieval.** It reaches the LLM, but the
-  PPR query is the literal question, so "et le second ?" retrieves against that text.
-  The UI caps history at 12 turns; the server neither validates nor caps it.
-- **`mode=bypass` ignores history entirely** (`core.py`, bypass branch).
+  shows an empty library — the two are one missing table, not two bugs. It is
+  recoverable without re-ingesting, because a chunk id is a content hash: re-running
+  the same chunking over the same sidecars reproduces the same ids.
+  `scripts/backfill_rfe_sources.py` does that for one specific corpus — it imports
+  `build_chunks` from `scripts/ingest_rfe.py` and works only there, so treat it as a
+  worked example rather than a general tool. Whatever repairs provenance must verify
+  the overlap against the graph before writing: a misaligned backfill attaches the
+  wrong filename to a passage, which is worse than no citation at all.
+- **Conversation history is not used for retrieval, except in agent mode.** It
+  reaches the LLM everywhere, but the PPR query is the literal question. The UI caps
+  history at 12 turns; the server neither validates nor caps it.
+- **`mode=bypass` now passes history on both paths.** It used to reach the model
+  when streaming and not when buffered, so the same mode remembered the conversation
+  over SSE and forgot it over JSON.
 - **Ingestion has no push channel.** The library polls `GET /documents/` every four
   seconds while anything is pending, parsing or processing, and stops when nothing is
   in flight.
