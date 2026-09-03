@@ -124,6 +124,11 @@ class ToolBox:
         self._base = base_param or QueryParam()
         self.fence_start = 1
         self.references: list[dict[str, Any]] = []
+        # The passages themselves, in citation order. The loop decides *what* to
+        # retrieve; the answer is then written from this union by the same RAG-QA
+        # prompt every other mode uses, which is what keeps the two comparable.
+        self.docs: list[str] = []
+        self.sources: list[str] = []
 
     async def run(self, name: str, raw_arguments: str | dict[str, Any] | None) -> ToolResult:
         """Validate arguments, dispatch, and never raise into the loop."""
@@ -176,6 +181,8 @@ class ToolBox:
         body = _fence_from(self.fence_start, solution.docs, solution.sources)
         self.fence_start += len(solution.docs)
         self.references.extend(refs)
+        self.docs.extend(solution.docs)
+        self.sources.extend(list(solution.sources or []))
         return ToolResult(text=body, solution=solution, arguments=arguments)
 
     async def _search_documents(self, arguments: dict[str, Any]) -> ToolResult:

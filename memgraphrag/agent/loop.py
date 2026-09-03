@@ -16,9 +16,17 @@ Second, and decisively: asked to stream a tool-enabled turn, this repo's default
 model (`openai/gpt-oss-20b` through Together) does not emit structured `tool_calls`
 deltas at all — it writes the harmony transcript as plain text, invents its own
 `<<<PASSAGE n>>>` blocks, and answers from them. The *same* model on the *same*
-request answers with a real tool call when the turn is buffered. A fabricated
-passage is the exact failure this mode exists to prevent, so decision turns are
-buffered and the closing answer is streamed with tools withheld.
+request answers with a real tool call when the turn is buffered.
+
+**The answer is not written by the loop.** Once the model stops asking for tools,
+the passages it gathered are handed to ``render_rag_qa`` — the prompt every other
+mode uses — and *that* is what streams. The tool transcript never reaches the
+answering call. This is not tidiness: a conversation carrying ``role="tool"``
+messages keeps a harmony model in channel mode, so its answer arrives wrapped in
+reasoning and, on a bad turn, in passages it made up. Answering from a plain
+question-plus-context prompt is the path `mode=ppr` has always taken, and it
+produces the same clean, cited prose. What the loop contributes is *which*
+passages are in that context — which is the whole point of the mode.
 
 **The first turn is forced.** ``tool_choice`` names ``retrieve`` on the opening
 call, for two reasons: a question about the corpus should always be grounded, and a
@@ -38,6 +46,7 @@ from memgraphrag.agent.harmony import HarmonyFilter
 from memgraphrag.agent.prompts import render_agent_system
 from memgraphrag.agent.tools import ToolBox, tool_specs
 from memgraphrag.observability.langfuse_trace import observation, update_observation
+from memgraphrag.prompts.templates import render_rag_qa
 from memgraphrag.utils.step_log import stage, truncate
 
 logger = logging.getLogger(__name__)
@@ -227,24 +236,25 @@ async def run_agent(
                 references_sent = True
                 yield {"references": list(toolbox.references)}
 
-        # The answer is always a separate, tools-free, streamed call. Withholding
-        # the tools is what keeps the model in plain-prose mode, and it is the only
-        # turn whose tokens the user should see.
-        enforce(messages, context_budget())
+        # The answer is a fresh call built from the gathered passages, with no
+        # tool messages in it. `fence_passages` numbers them from 1 and the
+        # references were numbered the same way as they accumulated, so the [n] the
+        # model writes matches the list the UI renders.
+        system, user = render_rag_qa(question, toolbox.docs, toolbox.sources)
         if stop.reason == "max_steps":
             # Ceiling reached: answer with what we have rather than erroring. A
             # partial answer that says it is partial beats a failed request.
-            messages.append(
-                {
-                    "role": "user",
-                    "content": (
-                        "Answer now with the passages you already retrieved. Say plainly "
-                        "if they are not enough to answer fully."
-                    ),
-                }
+            user += (
+                "\n\nAnswer with these passages only. Say plainly if they are not "
+                "enough to answer fully."
             )
         async for token in _final_answer(
-            llm=llm, messages=messages, model=model, provider=provider
+            llm=llm,
+            system=system,
+            user=user,
+            history=list(history or []),
+            model=model,
+            provider=provider,
         ):
             answer_parts.append(token)
             yield {"token": token}
@@ -319,20 +329,27 @@ def _think_output(turn: dict[str, Any]) -> dict[str, Any]:
 async def _final_answer(
     *,
     llm: Callable[..., Any],
-    messages: list[dict[str, Any]],
+    system: str,
+    user: str,
+    history: list[dict[str, str]],
     model: str | None,
     provider: str | None,
 ) -> AsyncIterator[str]:
-    """Stream a closing answer with tools withheld, so it cannot call one."""
+    """Stream the answer from a plain question-plus-context prompt.
+
+    No ``tools``, and — more importantly — no tool messages: this is an ordinary
+    RAG-QA call, identical in shape to the one ``mode=ppr`` makes.
+    """
     with observation(
         "memgraphrag.agent.answer",
         as_type="generation",
-        input={"messages": len(messages)},
+        input={"question_chars": len(user)},
         model=model,
     ) as span:
         produced = await llm(
-            "",
-            messages=messages,
+            user,
+            system_prompt=system,
+            history_messages=history or None,
             model=model,
             provider=provider,
             stream=True,
@@ -340,9 +357,9 @@ async def _final_answer(
             llm_action="answer",
         )
         parts: list[str] = []
-        # A tools-free call keeps this model in plain prose — the `ppr` path proves
-        # it — but the filter costs nothing on a clean stream and saves the answer
-        # if a future model or gateway leaks its channels here too.
+        # A prompt with no tool messages keeps this model in plain prose — `ppr`
+        # proves it — but the filter costs nothing on a clean stream and saves the
+        # answer if a model ever opens a channel here anyway.
         harmony = HarmonyFilter()
         if hasattr(produced, "__aiter__"):
             async for token in produced:
