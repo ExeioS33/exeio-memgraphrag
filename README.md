@@ -40,6 +40,9 @@ uv run memgraphrag-server                     # http://localhost:9621/docs
 # Full stack: app + PostgreSQL/pgvector + Neo4j/GDS (+ app database)
 docker compose up -d --build
 
+# App + web UI only, against Postgres and Neo4j you already run
+docker compose -f docker-compose.app.yml up -d --build
+
 # Optional CLI and Streamlit playground (talk to a running API)
 uv sync --extra client
 uv run memgraphrag-cli health
@@ -292,7 +295,7 @@ Module conventions, naming rules and architecture decisions live in [`AGENTS.md`
 - [`docs/WebUI.md`](docs/WebUI.md) — web chat UI, provider routing, Cypher console
 - [`docs/MCP.md`](docs/MCP.md) — MCP server: clients, allowed hosts, exposed tools
 - [`docs/Clients.md`](docs/Clients.md) — CLI + Streamlit clients
-- [`docs/DockerDeployment.md`](docs/DockerDeployment.md) — Compose stack
+- [`docs/DockerDeployment.md`](docs/DockerDeployment.md) — both compose files: self-contained, or the app on databases you already run
 - [`docs/FileProcessingPipeline.md`](docs/FileProcessingPipeline.md) — parsers & chunkers
 - [`docs/LangfuseObservability.md`](docs/LangfuseObservability.md) — traces
 - [`docs/ProgramingWithCore.md`](docs/ProgramingWithCore.md) — engine usage
