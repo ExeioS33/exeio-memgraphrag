@@ -124,6 +124,24 @@ image predating the web UI serves `Web UI not built; serving API only` and every
 route still works, which reads as a UI bug rather than a stale build. Use `--build`
 after pulling.
 
+## Why the app used to crash-loop on startup
+
+Seen in the wild, and fixed rather than documented away. `docker-compose.yml` waits
+for Neo4j with `depends_on: condition: service_healthy`, but the healthcheck used to
+be `wget http://localhost:7474`. Neo4j answers on HTTP well before Bolt can serve
+routing, so the container reported healthy, the app started, and the driver failed:
+
+```
+ERROR [neo4j.pool] Unable to retrieve routing information
+ConnectionError: Unable to connect to Neo4j at neo4j://neo4j:7687
+Application startup failed. Exiting.
+```
+
+Five startups in ninety seconds, and only `restart: unless-stopped` eventually caught
+it. The healthcheck now runs `cypher-shell … 'RETURN 1'` over Bolt — it proves the
+thing the app is about to do — with a `start_period` that stops the retries counting
+against a database that is merely still opening its store files.
+
 ## Checks
 
 ```bash

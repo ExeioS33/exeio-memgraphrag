@@ -138,10 +138,20 @@ services:
       - "${NEO4J_PUBLISH_ADDR:-127.0.0.1}:${NEO4J_HTTP_PORT:-7474}:7474"
       - "${NEO4J_PUBLISH_ADDR:-127.0.0.1}:${NEO4J_BOLT_PORT:-7687}:7687"
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:7474 || exit 1"]
+      # Bolt, not HTTP. The HTTP port answers well before Bolt can serve routing,
+      # so `wget http://localhost:7474` reported healthy while the driver still got
+      # "Unable to retrieve routing information" — the app then crash-looped through
+      # five startups before Neo4j caught up, and only `restart: unless-stopped`
+      # saved it. A query proves the thing the app is about to do.
+      test:
+        [
+          "CMD-SHELL",
+          "cypher-shell -a bolt://localhost:7687 -u ${NEO4J_USERNAME:-neo4j} -p ${NEO4J_PASSWORD} 'RETURN 1' >/dev/null 2>&1 || exit 1",
+        ]
       interval: 10s
-      timeout: 5s
-      retries: 12
+      timeout: 10s
+      retries: 18
+      start_period: 30s
     restart: unless-stopped
 
   # Optional Docling parser service:
