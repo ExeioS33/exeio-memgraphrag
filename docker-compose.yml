@@ -16,6 +16,10 @@ services:
       - ./data/rag_storage:/app/data/rag_storage
       - ./data/inputs:/app/data/inputs
       - ./.env:/app/.env:ro
+      # Documents the web UI browses. Read-only: the library serves and previews
+      # what is already there, it never writes. Point LIBRARY_HOST_DIR at your
+      # corpus; the default keeps the stack starting on a fresh clone.
+      - ${LIBRARY_HOST_DIR:-./data/library}:/app/data/library:ro
       # Optional corporate TLS inspection CA (Fortinet, Zscaler, …). Create the
       # file on the host or leave the mount unused when SSL_CERT_FILE is unset.
       - ${MEMGRAPHRAG_HOST_CA_FILE:-/etc/ssl/certs/ca-certificates.crt}:/app/certs/corporate-ca.crt:ro
@@ -29,11 +33,23 @@ services:
     restart: unless-stopped
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    # Everything the app reads comes from .env, so adding a knob no longer means
+    # editing this file. `environment:` below still wins, and only carries values
+    # that must differ inside the container.
+    env_file:
+      - .env
     environment:
+      # --- Bind address and container paths -------------------------------
       HOST: "0.0.0.0"
       PORT: "9621"
       WORKING_DIR: "/app/data/rag_storage"
       INPUT_DIR: "/app/data/inputs"
+      # Read-only document library. LIBRARY_HOST_DIR on the host is mounted here;
+      # without the override the app would look for the host path from .env, which
+      # does not exist inside the container.
+      LIBRARY_ROOT: "/app/data/library"
+
+      # --- Storage backends ------------------------------------------------
       # Shared-database backends: this is what makes the compose stack safe to
       # restart against an existing volume. Switching any of them back to a
       # file-backed default (Json*/Nano*/Igraph*) also caps the process at
@@ -42,67 +58,26 @@ services:
       MEMGRAPHRAG_VECTOR_STORAGE: "PGVectorStorage"
       MEMGRAPHRAG_GRAPH_STORAGE: "Neo4JStorage"
       MEMGRAPHRAG_DOC_STATUS_STORAGE: "PGDocStatusStorage"
-      # The ingest pipeline lock is per-process, so extra workers would break the
-      # "409 while busy" guarantee even on Postgres/Neo4j.
-      WORKERS: "${WORKERS:-1}"
-      # --- Authentication -------------------------------------------------
-      # These were previously not passed through at all, so a compose deployment
-      # published :9621 with no credential regardless of what the host .env set.
-      MEMGRAPHRAG_API_KEY: "${MEMGRAPHRAG_API_KEY:-}"
-      AUTH_ACCOUNTS: "${AUTH_ACCOUNTS:-}"
-      TOKEN_SECRET: "${TOKEN_SECRET:-}"
-      REQUIRE_AUTH: "${REQUIRE_AUTH:-false}"
-      # "*" is the safe default only because it now disables credentialed CORS.
-      CORS_ORIGINS: "${CORS_ORIGINS:-*}"
-      # Do not add /api/* here: it fronts the billed LLM (see api/config.py).
-      WHITELIST_PATHS: "${WHITELIST_PATHS:-/health,/docs,/openapi.json}"
-      # Chat persistence. Points at the dedicated `postgres-app` service over the
-      # compose network, so the host publish port (5433) is irrelevant here.
-      APP_DATABASE_URL: "postgresql://${APP_POSTGRES_USER:-app}:${APP_POSTGRES_PASSWORD:?set APP_POSTGRES_PASSWORD in .env}@postgres-app:5432/${APP_POSTGRES_DATABASE:-memgraphrag_app}"
-      # Allow-list for the web UI's model picker; empty means LLM_MODEL only.
-      LLM_MODELS: "${LLM_MODELS:-}"
-      # MCP lives in this container, on the port already published — a separate
-      # service would double the in-memory graph to serve the same bytes.
-      MCP_ENABLED: "${MCP_ENABLED:-false}"
-      # Must list the public hostname, with and without the port, or a remote MCP
-      # client is refused with 421 Invalid Host header and no usable diagnostic.
-      MCP_ALLOWED_HOSTS: "${MCP_ALLOWED_HOSTS:-}"
-      MCP_ISSUER_URL: "${MCP_ISSUER_URL:-}"
+
+      # --- Service addresses on the compose network -------------------------
+      # These MUST override .env: a host file names the developer's own machine
+      # (192.168.x.x, localhost), which is not what a container should dial.
       POSTGRES_HOST: "postgres"
       POSTGRES_PORT: "5432"
-      POSTGRES_USER: "${POSTGRES_USER:-rag}"
-      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}"
-      POSTGRES_DATABASE: "${POSTGRES_DATABASE:-rag}"
       NEO4J_URI: "neo4j://neo4j:7687"
-      NEO4J_USERNAME: "${NEO4J_USERNAME:-neo4j}"
-      NEO4J_PASSWORD: "${NEO4J_PASSWORD:?set NEO4J_PASSWORD in .env}"
-      PPR_ENGINE: "${PPR_ENGINE:-igraph}"
-      DOCLING_ENDPOINT: "${DOCLING_ENDPOINT:-}"
-      MEMGRAPHRAG_PARSER: "${MEMGRAPHRAG_PARSER:-pdf:docling-P;*:legacy-F}"
-      # Entrypoint merges /app/certs/corporate-ca.crt into SSL_CERT_FILE.
+      # Chat persistence. Points at the dedicated `postgres-app` service over the
+      # compose network, so the host publish port (5433) is irrelevant here. The
+      # `:?` guard is what fails the stack early with a readable message.
+      APP_DATABASE_URL: "postgresql://${APP_POSTGRES_USER:-app}:${APP_POSTGRES_PASSWORD:?set APP_POSTGRES_PASSWORD in .env}@postgres-app:5432/${APP_POSTGRES_DATABASE:-memgraphrag_app}"
+
+      # --- Corporate TLS interception --------------------------------------
+      # Entrypoint merges /app/certs/corporate-ca.crt into SSL_CERT_FILE. All four
+      # names are overridden because .env sets host-relative paths for them.
       MEMGRAPHRAG_CORP_CA_FILE: "/app/certs/corporate-ca.crt"
+      MEMGRAPHRAG_SSL_CERT_FILE: "/app/certs/corporate-ca.crt"
       SSL_CERT_FILE: "/app/certs/corporate-ca.crt"
       REQUESTS_CA_BUNDLE: "/app/certs/corporate-ca.crt"
       CURL_CA_BUNDLE: "/app/certs/corporate-ca.crt"
-      SSL_VERIFY: "${SSL_VERIFY:-true}"
-      CHUNK_SIZE: "${CHUNK_SIZE:-400}"
-      CHUNK_OVERLAP_SIZE: "${CHUNK_OVERLAP_SIZE:-40}"
-      EMBEDDING_MAX_TOKENS: "${EMBEDDING_MAX_TOKENS:-480}"
-      EMBEDDING_SEND_DIMENSIONS: "${EMBEDDING_SEND_DIMENSIONS:-false}"
-      # LLM / embedding bindings from host .env. These are the only names the
-      # app reads; a self-hosted vLLM/Ollama is reached through LLM_BINDING_HOST.
-      LLM_BINDING: "${LLM_BINDING:-openai}"
-      LLM_BINDING_HOST: "${LLM_BINDING_HOST:-}"
-      LLM_BINDING_API_KEY: "${LLM_BINDING_API_KEY:-}"
-      LLM_MODEL: "${LLM_MODEL:-}"
-      # LLM_TIMEOUT was injected here but read nowhere: the HTTP timeout is
-      # hard-coded in llm/openai_compatible.py as httpx.Timeout(150.0, connect=30.0).
-      MAX_ASYNC_LLM: "${MAX_ASYNC_LLM:-4}"
-      EMBEDDING_BINDING: "${EMBEDDING_BINDING:-openai}"
-      EMBEDDING_BINDING_HOST: "${EMBEDDING_BINDING_HOST:-}"
-      EMBEDDING_BINDING_API_KEY: "${EMBEDDING_BINDING_API_KEY:-}"
-      EMBEDDING_MODEL: "${EMBEDDING_MODEL:-}"
-      EMBEDDING_DIM: "${EMBEDDING_DIM:-}"
 
   postgres:
     image: pgvector/pgvector:pg16
