@@ -107,6 +107,16 @@ class BaseChatStore:
     async def list_messages(self, thread_id: str, owner: str) -> list[ChatMessage] | None:
         raise NotImplementedError
 
+    async def reassign_owner(self, old_owner: str, new_owner: str) -> int:
+        """Move every thread of ``old_owner`` to ``new_owner``; return how many.
+
+        Exists for one moment: the first real account. Everything conversed before
+        authentication existed belongs to ``guest``, and the instant a user logs in
+        those threads are nobody's — invisible to everyone. Handing them to the first
+        admin loses nothing and is reversible.
+        """
+        raise NotImplementedError
+
 
 def _check_role(role: str) -> str:
     if role not in VALID_ROLES:
@@ -213,6 +223,14 @@ class InMemoryChatStore(BaseChatStore):
         if thread is None:
             return None
         return list(self._messages.get(thread_id, ()))
+
+    async def reassign_owner(self, old_owner: str, new_owner: str) -> int:
+        moved = 0
+        for thread in self._threads.values():
+            if thread.owner == old_owner:
+                thread.owner = new_owner
+                moved += 1
+        return moved
 
 
 class PostgresChatStore(BaseChatStore):
@@ -465,6 +483,18 @@ class PostgresChatStore(BaseChatStore):
                 thread_id,
             )
         return [self._message_from_row(r) for r in rows]
+
+    async def reassign_owner(self, old_owner: str, new_owner: str) -> int:
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            result = await conn.execute(
+                "UPDATE chat_thread SET owner = $2 WHERE owner = $1", old_owner, new_owner
+            )
+        # asyncpg reports "UPDATE <n>".
+        try:
+            return int(result.rsplit(" ", 1)[-1])
+        except (ValueError, AttributeError):
+            return 0
 
 
 def create_chat_store(dsn: str | None) -> BaseChatStore | None:

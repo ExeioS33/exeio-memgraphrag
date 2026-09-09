@@ -41,10 +41,18 @@ class ApiTokenVerifier:
         handler = self._auth_handler
         if handler is not None:
             try:
-                payload = handler.validate_token(candidate)
+                # Signature and account state, the same check the HTTP routes make.
+                # If MCP only verified the signature, a deactivated user would keep
+                # a working door here until their token expired.
+                checker = getattr(handler, "validate_token_and_account", None)
+                payload = (
+                    await checker(candidate)
+                    if checker is not None
+                    else handler.validate_token(candidate)
+                )
             except Exception:
-                # `validate_token` raises an HTTPException on a bad token; over MCP
-                # that has to become a plain "no", not a leaked FastAPI error.
+                # A bad token raises an HTTPException; over MCP that has to become a
+                # plain "no", not a leaked FastAPI error.
                 return None
             subject = str((payload or {}).get("sub") or "user")
             return AccessToken(token=candidate, client_id=subject, scopes=["read"])

@@ -322,7 +322,10 @@ def create_app(
     from memgraphrag.api.routers.graphs import create_graphs_router
     from memgraphrag.api.routers.ollama import create_ollama_router
     from memgraphrag.api.routers.query import create_query_router, models_for
+    from memgraphrag.api.auth import AccountInactive, AccountPending
+    from memgraphrag.api.routers.auth import create_auth_router
     from memgraphrag.chat import InMemoryChatStore, create_chat_store
+    from memgraphrag.chat.users import InMemoryUserStore, create_user_store
     from memgraphrag.mcp.server import MOUNT_PATH as MCP_MOUNT_PATH
     from memgraphrag.mcp.server import allowed_hosts as mcp_allowed_hosts
     from memgraphrag.mcp.server import build_mcp_server, mcp_enabled
@@ -338,6 +341,23 @@ def create_app(
     combined_auth = get_combined_auth_dependency(api_key, api_key_header_name="X-API-Key")
 
     engine = rag if rag is not None else _build_rag(cfg)
+
+    # Accounts are opt-in (AUTH_SIGNUP_ENABLED). Keying them on APP_DATABASE_URL
+    # alone would have put every existing deployment behind a login wall on the
+    # next restart, with nobody able to sign in until someone signed up.
+    user_store = None
+    if getattr(cfg, "auth_signup_enabled", False):
+        user_store = (
+            InMemoryUserStore()
+            if testing
+            else create_user_store(getattr(cfg, "app_database_url", None))
+        )
+        if user_store is None:
+            logger.warning(
+                "AUTH_SIGNUP_ENABLED is set but APP_DATABASE_URL is not; accounts need "
+                "the application database and stay disabled."
+            )
+    auth_handler.user_store = user_store
 
     # Built here, before the lifespan closure that has to enter it: calling
     # `streamable_http_app()` is what creates `session_manager`, and that object is
@@ -376,6 +396,16 @@ def create_app(
                     app.state.retrieval_ready = False
                     app.state.retrieval_error = str(exc)
                     logger.warning("Retrieval warm-up skipped: %s", exc)
+                if app.state.user_store is not None:
+                    await app.state.user_store.initialize()
+                    if auth_handler.uses_default_secret and await app.state.user_store.count() > 0:
+                        # Sign-up already refuses under the default secret, so this
+                        # only fires when TOKEN_SECRET was removed after accounts
+                        # existed. Serving them would let anyone forge their tokens.
+                        raise RuntimeError(
+                            "TOKEN_SECRET must be set: accounts exist in the application "
+                            "database and their tokens would otherwise be forgeable."
+                        )
                 if app.state.chat_store is not None:
                     try:
                         await app.state.chat_store.initialize()
@@ -400,6 +430,11 @@ def create_app(
                     await app.state.chat_store.close()
                 except Exception as exc:
                     logger.warning("chat_store.close: %s", exc)
+            if getattr(app.state, "user_store", None) is not None:
+                try:
+                    await app.state.user_store.close()
+                except Exception as exc:
+                    logger.warning("user_store.close: %s", exc)
 
     app = FastAPI(
         title="MemGraphRAG API",
@@ -464,6 +499,7 @@ def create_app(
         if testing
         else create_chat_store(getattr(cfg, "app_database_url", None))
     )
+    app.state.user_store = user_store
     os.makedirs(app.state.input_dir, exist_ok=True)
 
     app.include_router(create_documents_router(api_key))
@@ -472,6 +508,7 @@ def create_app(
     app.include_router(create_cypher_router(api_key))
     app.include_router(create_library_router(api_key))
     app.include_router(create_chat_router(api_key))
+    app.include_router(create_auth_router())
     app.include_router(
         create_ollama_router(
             api_key=api_key,
@@ -512,7 +549,8 @@ def create_app(
             "status": "healthy",
             "core_version": core_version,
             "api_version": __api_version__,
-            "auth_mode": "enabled" if auth_handler.accounts else "disabled",
+            "auth_mode": "enabled" if auth_handler.auth_enabled else "disabled",
+            "signup_enabled": app.state.user_store is not None,
             "pipeline_busy": bool(getattr(app.state, "pipeline_busy", False)),
             "ready": ready,
             "retrieval_status": retrieval_status,
@@ -580,7 +618,7 @@ def create_app(
                 headers={"Retry-After": str(max(1, int(retry_after) + 1))},
             )
 
-        if not auth_handler.accounts:
+        if not auth_handler.auth_enabled:
             guest_token = auth_handler.create_token(
                 username="guest",
                 role="guest",
@@ -594,7 +632,21 @@ def create_app(
                 "core_version": core_version,
                 "api_version": __api_version__,
             }
-        if not auth_handler.verify_password(form_data.username, form_data.password):
+        try:
+            identity = await auth_handler.authenticate(form_data.username, form_data.password)
+        except AccountPending:
+            # The password matched, so naming the reason leaks nothing — and a
+            # generic 401 would send them off to reset a password that works.
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Your account is awaiting approval by an administrator.",
+            )
+        except AccountInactive:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Your account has been deactivated.",
+            )
+        if identity is None:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Incorrect credentials",
@@ -603,9 +655,13 @@ def create_app(
         # by their own earlier typos.
         limiter.reset(key)
         user_token = auth_handler.create_token(
-            username=form_data.username,
-            role="user",
-            metadata={"auth_mode": "enabled"},
+            username=identity["sub"],
+            role=identity["role"],
+            metadata={
+                "auth_mode": "enabled",
+                "auth_source": identity["auth_source"],
+                "name": identity.get("name"),
+            },
         )
         return {
             "access_token": user_token,

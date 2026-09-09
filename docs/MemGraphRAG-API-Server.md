@@ -121,7 +121,7 @@ guarantee below only holds within the worker that owns the running ingest.
 | POST | `/documents/scan` | Scan `INPUT_DIR` |
 | POST | `/query` | Retrieve + QA → `{response, references}` |
 | POST | `/query/data` | Retrieval evidence only (`response`/`references` + docs) |
-| POST | `/query/stream` | SSE framing, **not token streaming** — see below |
+| POST | `/query/stream` | SSE: a `references` frame, then one frame per token, then `[DONE]`; `mode=agent` adds `tool_call` frames |
 | GET | `/query/params` | Tunable-parameter registry (bounds + presets) for clients |
 | GET | `/documents/{doc_id}/chunks` | Passages a document was split into (paged) |
 | GET | `/graphs` | Explore memory graph |
@@ -141,9 +141,15 @@ guarantee below only holds within the worker that owns the running ingest.
 | PATCH | `/chat/threads/{thread_id}` | Rename / retarget a conversation |
 | DELETE | `/chat/threads/{thread_id}` | Delete a conversation and its messages |
 | POST | `/chat/threads/{thread_id}/messages` | Append a message |
+| POST | `/auth/signup` | Create an account (`AUTH_SIGNUP_ENABLED`); the first becomes admin, the rest wait for approval. Same 202 whether or not the email exists |
+| GET | `/auth/me` | The caller's identity and current role |
+| GET | `/auth/users` | Admin: every account with its role and `active` flag |
+| POST | `/auth/users/{user_id}/approve` | Admin: promote a `pending` account to `user` |
+| POST | `/auth/users/{user_id}/deactivate` | Admin: revoke access; takes effect on the account's next request, not at token expiry |
+| POST | `/auth/users/{user_id}/reset-password` | Admin: set a new password (there is no self-service reset) |
 | GET/POST | `/api/*` | Ollama emulation (`/api/chat`, `/api/generate`, `/api/tags`, `/api/ps`, `/api/version`) |
 
-That is the whole surface: 40 operations in total.
+That is the whole surface: 46 operations in total.
 
 `POST /graph/cypher` is read-only and enforced in three layers: the backend must be
 `Neo4JStorage`, write keywords are rejected after string literals and comments are

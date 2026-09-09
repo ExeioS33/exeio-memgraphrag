@@ -85,7 +85,10 @@ def resolve_auth_context(request: Any) -> tuple[Any, list[tuple[str, bool]], boo
     patterns = getattr(state, "whitelist_patterns", None)
     if patterns is None:
         patterns = whitelist_patterns
-    return handler, patterns, bool(getattr(handler, "accounts", None))
+    enabled = getattr(handler, "auth_enabled", None)
+    if enabled is None:  # a bare double without the property
+        enabled = bool(getattr(handler, "accounts", None))
+    return handler, patterns, bool(enabled)
 
 
 def get_combined_auth_dependency(
@@ -126,7 +129,9 @@ def get_combined_auth_dependency(
 
         if token:
             try:
-                token_info = handler.validate_token(token)
+                # Signature *and* current account state: a token issued to a user
+                # who has since been deactivated must stop working now, not at expiry.
+                token_info = await _validate(handler, token)
                 if not request_auth_configured and token_info.get("role") == "guest":
                     if not api_key_configured:
                         return
@@ -172,3 +177,40 @@ def get_combined_auth_dependency(
         )
 
     return combined_dependency
+
+
+async def _validate(handler: Any, token: str) -> dict[str, Any]:
+    checker = getattr(handler, "validate_token_and_account", None)
+    if checker is None:
+        return handler.validate_token(token)
+    return await checker(token)
+
+
+async def current_user(request: Request) -> dict[str, Any]:
+    """The authenticated identity, or 401.
+
+    Whitelisting does not apply here: a route that asks who is calling has no
+    anonymous answer to give.
+    """
+    handler, _patterns, _enabled = resolve_auth_context(request)
+    header = request.headers.get("Authorization") or ""
+    if not header.lower().startswith("bearer "):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    token = header[7:].strip()
+    try:
+        return await _validate(handler, token)
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token. Please login again.",
+        )
+
+
+async def require_admin(request: Request) -> dict[str, Any]:
+    """Like :func:`current_user`, but only an ``admin`` gets through."""
+    info = await current_user(request)
+    if info.get("role") != "admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin only")
+    return info

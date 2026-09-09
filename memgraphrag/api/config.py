@@ -285,6 +285,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     # Auth
     args.auth_accounts = get_env_value("AUTH_ACCOUNTS", "")
+    # Database accounts with self-service sign-up and admin approval. Off by
+    # default: turning it on puts the web UI behind a login screen, and the
+    # first person to sign up becomes the administrator.
+    args.auth_signup_enabled = get_env_value("AUTH_SIGNUP_ENABLED", False, bool)
     args.token_secret = get_env_value("TOKEN_SECRET", None)
     args.token_expire_hours = get_env_value("TOKEN_EXPIRE_HOURS", 48, float)
     args.guest_token_expire_hours = get_env_value("GUEST_TOKEN_EXPIRE_HOURS", 24, float)
