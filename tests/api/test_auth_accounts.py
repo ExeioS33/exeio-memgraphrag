@@ -284,3 +284,42 @@ def test_env_accounts_still_work_without_the_database() -> None:
             client.post("/auth/signup", json={"email": "x@y.z", "password": PASSWORD}).status_code
             == 503
         )
+
+
+def test_a_bootstrapped_admin_exists_before_anyone_signs_up() -> None:
+    """On an exposed port the admin must not be whoever signs up first."""
+    with _client(auth_bootstrap_admin="Root@Example.com:root-password") as client:
+        # The admin is there, with the admin role, and owns the guest threads.
+        root = _login(client, "root@example.com", "root-password")
+        assert root.status_code == 200, root.text
+        me = client.get("/auth/me", headers=_bearer(root.json()["access_token"])).json()
+        assert me["role"] == "admin"
+
+        # So the very first sign-up is already pending, not admin.
+        assert _signup(client, "alice@example.com")["status"] == "pending"
+        assert _login(client, "alice@example.com").status_code == 403
+
+
+def test_bootstrap_admin_is_ignored_once_accounts_exist() -> None:
+    args = namespace_from_dict(
+        {
+            "auth_signup_enabled": True,
+            "token_secret": SECRET,
+            "auth_bootstrap_admin": "a@b.c:12345678",
+        }
+    )
+    app = create_app(args, testing=True, rag=_mock_rag())
+    from memgraphrag.api.auth import hash_password
+
+    # An account exists before the lifespan runs: the bootstrap must stand down.
+    store = app.state.user_store
+    asyncio.run(store.create("first@example.com", "First", hash_password(PASSWORD)))
+    with TestClient(app) as client:
+        assert _login(client, "a@b.c", "12345678").status_code == 401
+        assert _login(client, "first@example.com").status_code == 200
+
+
+def test_bootstrap_admin_refuses_a_malformed_value() -> None:
+    with pytest.raises(RuntimeError, match="email:password"):
+        with _client(auth_bootstrap_admin="no-colon-here"):
+            pass

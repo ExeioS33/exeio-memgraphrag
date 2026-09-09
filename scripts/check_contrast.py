@@ -82,7 +82,9 @@ def main() -> int:
             ok = ratio + 0.05 >= allowed
             failures += not ok
             note = "  (mockup value, pinned)" if (theme, fg, bg) in KNOWN_EXCEPTIONS else ""
-            print(f"  {'OK  ' if ok else 'FAIL'} {fg:<12} on {bg:<15} {ratio:5.2f}:1  floor {allowed}{note}")
+            print(
+                f"  {'OK  ' if ok else 'FAIL'} {fg:<12} on {bg:<15} {ratio:5.2f}:1  floor {allowed}{note}"
+            )
     return 1 if failures else 0
 
 

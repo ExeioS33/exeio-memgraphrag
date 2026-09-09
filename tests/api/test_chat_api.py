@@ -85,7 +85,9 @@ def test_delete_message_removes_only_that_message() -> None:
         assert [m["role"] for m in remaining] == ["user"]
 
         # Gone is gone: a second delete is a 404, as is an id from nowhere.
-        assert client.delete(f"/chat/threads/{thread_id}/messages/{answer['id']}").status_code == 404
+        assert (
+            client.delete(f"/chat/threads/{thread_id}/messages/{answer['id']}").status_code == 404
+        )
         assert client.delete(f"/chat/threads/{thread_id}/messages/nope").status_code == 404
 
 

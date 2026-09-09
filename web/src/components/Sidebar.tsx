@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import type { AuthUser, ChatThread } from '../api/types'
+import { groupThreads } from '../lib/threads'
 import AccountMenu from './AccountMenu'
 import {
   BookIcon,
@@ -14,19 +15,6 @@ import {
 } from './icons'
 
 export type NavKey = 'chat' | 'library' | 'graph' | 'admin'
-
-const DAY = 86_400
-
-function bucketFor(updatedAt: number, now: number): string {
-  const age = now - updatedAt
-  if (age < DAY) return "Aujourd'hui"
-  if (age < 2 * DAY) return 'Hier'
-  if (age < 7 * DAY) return '7 derniers jours'
-  if (age < 30 * DAY) return '30 derniers jours'
-  return 'Plus ancien'
-}
-
-const BUCKET_ORDER = ["Aujourd'hui", 'Hier', '7 derniers jours', '30 derniers jours', 'Plus ancien']
 
 interface Props {
   threads: ChatThread[]
@@ -164,19 +152,7 @@ export default function Sidebar({
     else setFilter('')
   }, [searching])
 
-  const grouped = useMemo(() => {
-    const now = Math.floor(Date.now() / 1000)
-    const needle = filter.trim().toLowerCase()
-    const buckets = new Map<string, ChatThread[]>()
-    for (const thread of threads) {
-      if (needle && !thread.title.toLowerCase().includes(needle)) continue
-      const key = bucketFor(thread.updated_at, now)
-      const list = buckets.get(key)
-      if (list) list.push(thread)
-      else buckets.set(key, [thread])
-    }
-    return BUCKET_ORDER.filter((k) => buckets.has(k)).map((k) => [k, buckets.get(k)!] as const)
-  }, [filter, threads])
+  const grouped = useMemo(() => groupThreads(threads, filter), [filter, threads])
 
   if (collapsed) {
     return (

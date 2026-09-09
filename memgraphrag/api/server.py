@@ -294,6 +294,43 @@ def mount_web_ui(app: Any, directory: Path | None = None) -> bool:
     return True
 
 
+async def _bootstrap_admin(app: Any, spec: str) -> None:
+    """Create the administrator from ``AUTH_BOOTSTRAP_ADMIN`` on an empty account table.
+
+    The alternative — the first sign-up becomes admin — is a race on an exposed
+    port: whoever reaches the instance first wins it. With the admin provisioned
+    before the port opens, sign-ups start as ``pending`` from the first one.
+    Ignored, and said so, once any account exists: a value left in ``.env`` must
+    not silently re-create or reset anything later.
+    """
+    spec = (spec or "").strip()
+    if not spec:
+        return
+    from memgraphrag.api.auth import hash_password
+    from memgraphrag.chat.users import EmailTaken, normalize_email
+    from memgraphrag.utils.step_log import main_step
+
+    if ":" not in spec:
+        raise RuntimeError("AUTH_BOOTSTRAP_ADMIN must be email:password")
+    raw_email, password = spec.split(":", 1)
+    if len(password) < 8:
+        raise RuntimeError("AUTH_BOOTSTRAP_ADMIN password must be at least 8 characters")
+    store = app.state.user_store
+    if await store.count() > 0:
+        logger.info("AUTH_BOOTSTRAP_ADMIN ignored: accounts already exist")
+        return
+    email = normalize_email(raw_email)
+    try:
+        user = await store.create(email, raw_email.split("@", 1)[0], hash_password(password))
+    except EmailTaken:  # a concurrent worker got there first
+        return
+    moved = 0
+    chat_store = getattr(app.state, "chat_store", None)
+    if chat_store is not None and hasattr(chat_store, "reassign_owner"):
+        moved = await chat_store.reassign_owner("guest", user.id)
+    main_step(logger, "api.auth.bootstrap_admin", user=user.id, threads_adopted=moved)
+
+
 def create_app(
     args: Any | None = None,
     *,
@@ -416,6 +453,10 @@ def create_app(
                         app.state.chat_store = None
                         logger.warning("Chat persistence unavailable: %s", exc)
                 logger.info("MemGraphRAG server ready")
+            # Outside the testing guard: the in-memory stores need no I/O, and the
+            # bootstrap rule is exactly what the tests have to exercise.
+            if app.state.user_store is not None:
+                await _bootstrap_admin(app, getattr(cfg, "auth_bootstrap_admin", ""))
             yield
         finally:
             await mcp_stack.aclose()

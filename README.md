@@ -8,7 +8,7 @@ This repository packages the research engine as a LightRAG-style production serv
 
 ![MemGraphRAG chat UI](docs/images/memgraphrag_chat_ui.png)
 
-A React chat interface **served by the API itself** — one process, one port, no CORS. Answers stream token by token, each citation is a button that opens the exact passage in the library, and the model can be switched per message across any OpenAI-compatible provider.
+A React chat interface **served by the API itself** — one process, one port, no CORS. Answers stream token by token, the model's reasoning folds into a *Réflexion* block the moment the answer starts, each citation is a button that opens the exact passage in the library, and the model can be switched per message across any OpenAI-compatible provider. Dark by default, light behind a toggle, both on contrast-checked tokens.
 
 ```bash
 uv sync --extra api                   # Python side
@@ -22,9 +22,11 @@ The bundle is a build artifact and is **not committed**. Without it the server l
 
 Four screens, all backed by real endpoints — full mapping in [`docs/WebUI.md`](docs/WebUI.md).
 
-**Chat.** Ask in natural language; the engine retrieves through Personalized PageRank and answers with `[n]` citations. The three cards on the empty screen are **generated from your corpus** (most connected entities, most frequent fact schemas, dominant types), so they name things that are actually in your data. Clicking a source opens the document in the library, scrolled to the cited passage.
+**Chat.** Ask in natural language; the engine retrieves through Personalized PageRank and answers with `[n]` citations. The suggestions on the empty screen are **generated from your corpus** (most connected entities, most frequent fact schemas, dominant types), so they name things that are actually in your data. Clicking a source opens the document in the library, scrolled to the cited passage; every answer can be copied (without its reasoning) or regenerated.
 
-**Provider + model picker** (top-left pill). Route a single message to Together AI, Ollama, vLLM, OpenAI, or the binding the server started with. The picker lists each provider's real catalogue, filtered to chat-capable models. **Embeddings are never switched** — the corpus is indexed with one model at one dimension, and the UI says so rather than offering a control that would quietly break retrieval.
+**Accounts** (optional, `AUTH_SIGNUP_ENABLED=true`). Sign-up with admin approval: the first account is the administrator, every later one waits as `pending` until approved from the *Administration* page. Tokens are re-checked against the account on every request, so deactivation is immediate. On an exposed port, provision the admin with `AUTH_BOOTSTRAP_ADMIN` before opening it — details in [`docs/WebUI.md`](docs/WebUI.md#accounts).
+
+**Provider + model picker** (the page title). Route a single message to Together AI, Ollama, vLLM, OpenAI, or the binding the server started with. The picker lists each provider's real catalogue, filtered to chat-capable models. **Embeddings are never switched** — the corpus is indexed with one model at one dimension, and the UI says so rather than offering a control that would quietly break retrieval.
 
 **Library** (*Bibliothèque*). Browse the folder set by `LIBRARY_ROOT`, recursively. Preview a PDF page by page, open or download the original, and read the graph passages extracted from it.
 
@@ -63,7 +65,7 @@ Compose image: `exeio-memgraphrag:0.1.0` (also `:latest`). Direct deps are exact
 | `APP_DATABASE_URL` | Chat persistence. Unset ⇒ `/chat/*` answers 503 and the UI keeps threads in the browser tab. |
 | `LIBRARY_ROOT` | Folder the library browses. Read-only. |
 
-Auth is optional: with neither `AUTH_ACCOUNTS` nor `MEMGRAPHRAG_API_KEY` set the server is open, which is fine on a laptop and wrong anywhere else. Set `REQUIRE_AUTH=true` to fail closed.
+Auth is optional: with neither `AUTH_ACCOUNTS`, `AUTH_SIGNUP_ENABLED` nor `MEMGRAPHRAG_API_KEY` set the server is open, which is fine on a laptop and wrong anywhere else. Set `REQUIRE_AUTH=true` to fail closed.
 
 Run a single worker. Startup refuses `WORKERS > 1` while a file-backed backend is selected, because two processes on one `WORKING_DIR` corrupt the JSON / GraphML files.
 

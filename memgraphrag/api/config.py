@@ -289,6 +289,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     # default: turning it on puts the web UI behind a login screen, and the
     # first person to sign up becomes the administrator.
     args.auth_signup_enabled = get_env_value("AUTH_SIGNUP_ENABLED", False, bool)
+    # `email:password` for the administrator, created at startup only while the
+    # application database has no account at all. Closes the window in which the
+    # first person to reach an exposed instance would become its admin.
+    args.auth_bootstrap_admin = get_env_value("AUTH_BOOTSTRAP_ADMIN", "")
     args.token_secret = get_env_value("TOKEN_SECRET", None)
     args.token_expire_hours = get_env_value("TOKEN_EXPIRE_HOURS", 48, float)
     args.guest_token_expire_hours = get_env_value("GUEST_TOKEN_EXPIRE_HOURS", 24, float)
