@@ -65,6 +65,30 @@ def test_thread_crud_round_trip() -> None:
         assert client.get(f"/chat/threads/{thread_id}").status_code == 404
 
 
+def test_delete_message_removes_only_that_message() -> None:
+    with _client() as client:
+        thread_id = client.post("/chat/threads", json={"title": "Regen"}).json()["id"]
+        client.post(
+            f"/chat/threads/{thread_id}/messages",
+            json={"role": "user", "content": "Question ?"},
+        )
+        answer = client.post(
+            f"/chat/threads/{thread_id}/messages",
+            json={"role": "assistant", "content": "First answer."},
+        ).json()
+
+        deleted = client.delete(f"/chat/threads/{thread_id}/messages/{answer['id']}")
+        assert deleted.status_code == 200
+        assert deleted.json()["message_id"] == answer["id"]
+
+        remaining = client.get(f"/chat/threads/{thread_id}").json()["messages"]
+        assert [m["role"] for m in remaining] == ["user"]
+
+        # Gone is gone: a second delete is a 404, as is an id from nowhere.
+        assert client.delete(f"/chat/threads/{thread_id}/messages/{answer['id']}").status_code == 404
+        assert client.delete(f"/chat/threads/{thread_id}/messages/nope").status_code == 404
+
+
 def test_patch_only_touches_the_fields_it_was_given() -> None:
     """PATCH {"title": ...} must not blank the thread's model."""
     with _client() as client:

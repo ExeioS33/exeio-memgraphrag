@@ -107,6 +107,14 @@ class BaseChatStore:
     async def list_messages(self, thread_id: str, owner: str) -> list[ChatMessage] | None:
         raise NotImplementedError
 
+    async def delete_message(self, thread_id: str, owner: str, message_id: str) -> bool:
+        """Drop one message; False when the thread or the message is not the owner's.
+
+        Exists for "regenerate": the UI replaces the last answer, and without this the
+        replaced one would come back on the next reload.
+        """
+        raise NotImplementedError
+
     async def reassign_owner(self, old_owner: str, new_owner: str) -> int:
         """Move every thread of ``old_owner`` to ``new_owner``; return how many.
 
@@ -223,6 +231,17 @@ class InMemoryChatStore(BaseChatStore):
         if thread is None:
             return None
         return list(self._messages.get(thread_id, ()))
+
+    async def delete_message(self, thread_id: str, owner: str, message_id: str) -> bool:
+        thread = await self.get_thread(thread_id, owner)
+        if thread is None:
+            return False
+        messages = self._messages.get(thread_id, [])
+        kept = [m for m in messages if m.id != message_id]
+        if len(kept) == len(messages):
+            return False
+        self._messages[thread_id] = kept
+        return True
 
     async def reassign_owner(self, old_owner: str, new_owner: str) -> int:
         moved = 0
@@ -483,6 +502,24 @@ class PostgresChatStore(BaseChatStore):
                 thread_id,
             )
         return [self._message_from_row(r) for r in rows]
+
+    async def delete_message(self, thread_id: str, owner: str, message_id: str) -> bool:
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            # Ownership is checked through the thread: a message id alone must not
+            # let one owner delete inside another owner's conversation.
+            result = await conn.execute(
+                """
+                DELETE FROM chat_message m
+                USING chat_thread t
+                WHERE m.id = $1 AND m.thread_id = $2
+                  AND t.id = m.thread_id AND t.owner = $3
+                """,
+                message_id,
+                thread_id,
+                owner,
+            )
+        return str(result).rsplit(" ", 1)[-1] != "0"
 
     async def reassign_owner(self, old_owner: str, new_owner: str) -> int:
         pool = self._require_pool()

@@ -1,7 +1,10 @@
-import { useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef, type RefObject } from 'react'
 
 import type { ChatMessage, Reference, ToolCall } from '../api/types'
+import { answerOnly, splitThought } from '../lib/split-thought'
 import { FileIcon } from './icons'
+import MessageActions from './MessageActions'
+import ThinkingBlock from './ThinkingBlock'
 
 function basename(path: string): string {
   const parts = path.split(/[\\/]/)
@@ -43,8 +46,6 @@ function Citations({
       <ul className="flex flex-wrap gap-1.5">
         {groups.map((group) => (
           <li key={group.key}>
-            {/* A button, not a span: the pill is now an action, and a button keeps
-                keyboard focus and Enter/Space for free. */}
             <button
               type="button"
               onClick={() => onOpen?.(group.refs[0])}
@@ -68,11 +69,8 @@ function Citations({
   )
 }
 
-/** Agent-mode step list, shown while the loop runs.
- *
- *  A forty-second turn with no visible progress is indistinguishable from a hang,
- *  and the loop is the one mode where that duration is normal.
- */
+/** Agent-mode step list, shown while the loop runs. A forty-second turn with no
+ *  visible progress is indistinguishable from a hang. */
 function AgentSteps({ steps }: { steps: ToolCall[] }) {
   if (steps.length === 0) return null
   return (
@@ -90,7 +88,6 @@ function AgentSteps({ steps }: { steps: ToolCall[] }) {
   )
 }
 
-/** Show the reformulated search, not the raw JSON the model emitted. */
 function readableArguments(raw: string): string {
   try {
     const parsed = JSON.parse(raw) as Record<string, unknown>
@@ -102,9 +99,8 @@ function readableArguments(raw: string): string {
   return raw.slice(0, 120)
 }
 
-/** Minimal block renderer: paragraphs, bullet lists and fenced code.
- *  The answers are prose with `[n]` citations, not rich documents — a full Markdown
- *  dependency would cost more than it returns here. */
+/** Minimal block renderer: paragraphs, bullet lists and fenced code. The answers are
+ *  prose with `[n]` citations, not rich documents. */
 function Answer({ text }: { text: string }) {
   const blocks = text.split(/\n{2,}/)
   return (
@@ -140,13 +136,76 @@ function Answer({ text }: { text: string }) {
   )
 }
 
+/** Open WebUI's in-progress mark: a blinking caret glued to the last character, not
+ *  a spinner. Rendered only once there is content to glue it to. */
+function Caret() {
+  return (
+    <span
+      aria-hidden
+      className="ml-0.5 inline-block h-3.5 w-[0.125rem] animate-pulse rounded-sm bg-ink-faint
+        align-text-bottom"
+    />
+  )
+}
+
+/** One reply: reasoning folded above, answer, sources, actions. */
+function Assistant({
+  text,
+  references,
+  live,
+  thinkingSeconds,
+  onCitationClick,
+  onRegenerate,
+  regenerateDisabled,
+}: {
+  text: string
+  references: Reference[]
+  live: boolean
+  thinkingSeconds?: number | null
+  onCitationClick?: (ref: Reference) => void
+  onRegenerate?: () => void
+  regenerateDisabled?: boolean
+}) {
+  const split = splitThought(text)
+  return (
+    <div
+      className="group max-w-[86%] rounded-card rounded-bl-md border border-edge bg-surface-raised
+        px-4 py-3 text-[14.5px] leading-relaxed"
+    >
+      {split.thought !== null && (
+        <ThinkingBlock text={split.thought} live={live && !split.answered} seconds={thinkingSeconds} />
+      )}
+      {(split.answer || !live) && (
+        <div>
+          <Answer text={split.answer} />
+          {live && <Caret />}
+        </div>
+      )}
+      <Citations references={references} onOpen={onCitationClick} />
+      {!live && (
+        <MessageActions
+          copyText={answerOnly(text)}
+          onRegenerate={onRegenerate}
+          disabled={regenerateDisabled}
+        />
+      )}
+    </div>
+  )
+}
+
 interface Props {
   messages: ChatMessage[]
   streaming: boolean
   pendingAnswer: string
   pendingRefs: Reference[]
   pendingSteps?: ToolCall[]
+  /** Seconds the in-flight reply spent reasoning before its answer began. */
+  pendingThinkingSeconds?: number | null
+  thinkingSecondsById?: ReadonlyMap<string, number>
+  /** The scrolling element. Owned by the parent because the empty state shares it. */
+  scrollRef: RefObject<HTMLDivElement>
   onCitationClick?: (ref: Reference) => void
+  onRegenerate?: () => void
 }
 
 export default function MessageList({
@@ -155,63 +214,109 @@ export default function MessageList({
   pendingAnswer,
   pendingRefs,
   pendingSteps = [],
+  pendingThinkingSeconds,
+  thinkingSecondsById,
+  scrollRef,
   onCitationClick,
+  onRegenerate,
 }: Props) {
-  const bottom = useRef<HTMLDivElement>(null)
+  // Imperative, as in Open WebUI. `scrollIntoView` in an effect measured the DOM
+  // before it had grown and lost the bottom on a fast stream; and CSS scroll
+  // anchoring cannot know that the user scrolled up to read. `autoScroll` is that
+  // knowledge: released when they scroll away, re-armed when they return.
+  const autoScroll = useRef(true)
+
+  const scrollToBottom = useCallback(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const go = () => el.scrollTo({ top: el.scrollHeight })
+    go()
+    // Two frames: layout after the first token, then again after fonts and any
+    // late block (a fenced code, a citation list) have settled.
+    requestAnimationFrame(() => requestAnimationFrame(go))
+  }, [scrollRef])
 
   useEffect(() => {
-    bottom.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
-  }, [messages.length, pendingAnswer, streaming])
+    const el = scrollRef.current
+    if (!el) return
+    const onScroll = () => {
+      const distance = el.scrollHeight - el.scrollTop - el.clientHeight
+      autoScroll.current = distance < 48
+    }
+    el.addEventListener('scroll', onScroll, { passive: true })
+    return () => el.removeEventListener('scroll', onScroll)
+  }, [scrollRef])
+
+  useEffect(() => {
+    if (autoScroll.current) scrollToBottom()
+  }, [messages.length, pendingAnswer, pendingSteps.length, streaming, scrollToBottom])
+
+  // A new question always brings the bottom back into view, whatever the reader
+  // had been doing — they asked it.
+  useEffect(() => {
+    autoScroll.current = true
+    scrollToBottom()
+  }, [messages.length, scrollToBottom])
+
+  const lastAssistantIndex = messages.map((m) => m.role).lastIndexOf('assistant')
 
   return (
     <div className="flex flex-col gap-5">
-      {messages.map((message) =>
+      {messages.map((message, index) =>
         message.role === 'user' ? (
           <div key={message.id} className="flex justify-end">
             <div
               className="max-w-[78%] rounded-card rounded-br-md bg-ink px-4 py-2.5
-                text-[14.5px] leading-relaxed text-white"
+                text-[14.5px] leading-relaxed text-ink-inverse"
             >
               <p className="whitespace-pre-wrap">{message.content}</p>
             </div>
           </div>
         ) : (
           <div key={message.id} className="flex justify-start">
-            <div
-              className="max-w-[86%] rounded-card rounded-bl-md border border-edge bg-white
-                px-4 py-3 text-[14.5px] leading-relaxed"
-            >
-              <Answer text={message.content} />
-              <Citations references={message.references} onOpen={onCitationClick} />
-            </div>
+            <Assistant
+              text={message.content}
+              references={message.references}
+              live={false}
+              thinkingSeconds={thinkingSecondsById?.get(message.id) ?? null}
+              onCitationClick={onCitationClick}
+              onRegenerate={index === lastAssistantIndex && !streaming ? onRegenerate : undefined}
+            />
           </div>
         ),
       )}
 
       {streaming && (
         <div className="flex justify-start">
-          <div
-            className="max-w-[86%] rounded-card rounded-bl-md border border-edge bg-white
-              px-4 py-3 text-[14.5px] leading-relaxed"
-          >
-            <AgentSteps steps={pendingSteps} />
-            {pendingAnswer ? (
-              <Answer text={pendingAnswer} />
-            ) : (
-              // Retrieval runs before the first token, so this covers a real wait
-              // rather than being decorative.
+          {pendingAnswer ? (
+            <Assistant
+              text={pendingAnswer}
+              references={pendingRefs}
+              live
+              thinkingSeconds={pendingThinkingSeconds}
+              onCitationClick={onCitationClick}
+            />
+          ) : (
+            <div
+              className="max-w-[86%] rounded-card rounded-bl-md border border-edge bg-surface-raised
+                px-4 py-3 text-[14.5px] leading-relaxed"
+            >
+              <AgentSteps steps={pendingSteps} />
+              {/* Status, not caret: there is nothing to glue a caret to yet. Retrieval
+                  runs before the first token, so this covers a real wait. */}
               <span className="dot-pulse inline-flex items-center gap-1 text-ink-faint">
                 <span className="h-1.5 w-1.5 rounded-full bg-violet-600" />
                 <span className="h-1.5 w-1.5 rounded-full bg-violet-600" />
                 <span className="h-1.5 w-1.5 rounded-full bg-violet-600" />
-                <span className="ml-2 text-[12.5px]">Récupération en cours…</span>
+                <span className="ml-2 text-[12.5px]">
+                  {pendingSteps.length ? 'Recherche…' : 'Récupération en cours…'}
+                </span>
               </span>
-            )}
-            <Citations references={pendingRefs} onOpen={onCitationClick} />
-          </div>
+              <Citations references={pendingRefs} onOpen={onCitationClick} />
+            </div>
+          )}
         </div>
       )}
-      <div ref={bottom} />
     </div>
   )
 }

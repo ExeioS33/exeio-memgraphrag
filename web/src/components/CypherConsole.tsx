@@ -37,18 +37,10 @@ const MAX_NODE_CAPTIONS = 70
 const DEFAULT_LIMIT = 200
 const MAX_LIMIT = 5000
 
-const NODE_COLORS = [
-  '#8B5CF6',
-  '#10B981',
-  '#F59E0B',
-  '#3B82F6',
-  '#EF4444',
-  '#14B8A6',
-  '#EC4899',
-  '#6366F1',
-  '#84CC16',
-  '#0EA5E9',
-]
+// Ten variables rather than ten hex values: index.css defines each for both
+// themes, so a node keeps its colour across a theme flip without this file
+// knowing a theme exists. Valid in `style.fill` and in `backgroundColor`.
+const NODE_COLORS = Array.from({ length: 10 }, (_, i) => `rgb(var(--c-node-${i}))`)
 
 const INITIAL_QUERY = 'MATCH p=()-[:ENTITY_TO_TYPE]->()\nRETURN p\nLIMIT 25'
 
@@ -238,7 +230,7 @@ function CountPill({
       ) : null}
       <span className="truncate">{name}</span>
       {count === undefined ? null : (
-        <span className="shrink-0 rounded-full bg-white px-1.5 text-[10px] text-ink-muted">
+        <span className="shrink-0 rounded-full bg-surface-raised px-1.5 text-[10px] text-ink-muted">
           {formatCount(count)}
         </span>
       )}
@@ -464,13 +456,13 @@ export default function CypherConsole() {
         ) : null}
 
         <div className="grid grid-cols-2 gap-2 px-4 pb-3">
-          <div className="rounded-card border border-edge bg-white px-3 py-2">
+          <div className="rounded-card border border-edge bg-surface-raised px-3 py-2">
             <p className="text-lg font-semibold leading-tight text-ink">
               {schema ? formatCount(schema.node_count) : '—'}
             </p>
             <p className="text-[11px] text-ink-muted">Nœuds</p>
           </div>
-          <div className="rounded-card border border-edge bg-white px-3 py-2">
+          <div className="rounded-card border border-edge bg-surface-raised px-3 py-2">
             <p className="text-lg font-semibold leading-tight text-ink">
               {schema ? formatCount(schema.relationship_count) : '—'}
             </p>
@@ -551,7 +543,7 @@ export default function CypherConsole() {
       {/* --------------------------------------------------- editor + result --- */}
       <div className="flex min-w-0 flex-1 flex-col">
         <section className="border-b border-edge px-5 py-4">
-          <div className="flex items-start gap-2 rounded-panel border border-edge bg-white px-3 py-2 focus-within:border-violet-300">
+          <div className="flex items-start gap-2 rounded-panel border border-edge bg-surface-raised px-3 py-2 focus-within:border-violet-300">
             <span className="select-none pt-2 font-mono text-xs text-violet-600">neo4j$</span>
             <textarea
               ref={editorRef}
@@ -597,7 +589,7 @@ export default function CypherConsole() {
                         : DEFAULT_LIMIT,
                     )
                   }}
-                  className="w-20 rounded-full border border-edge-strong bg-white px-2 py-1
+                  className="w-20 rounded-full border border-edge-strong bg-surface-raised px-2 py-1
                     text-right text-xs text-ink outline-none focus:border-violet-300"
                 />
               </label>
@@ -611,7 +603,7 @@ export default function CypherConsole() {
                 type="button"
                 onClick={() => insert(preset.query)}
                 title={preset.query}
-                className="rounded-full border border-edge bg-white px-3 py-1 text-[11px] text-ink-muted
+                className="rounded-full border border-edge bg-surface-raised px-3 py-1 text-[11px] text-ink-muted
                   transition hover:border-violet-300 hover:bg-violet-50 hover:text-ink"
               >
                 {preset.label}
@@ -671,7 +663,7 @@ export default function CypherConsole() {
                   onClick={() => setTab(item.id)}
                   className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs transition ${
                     tab === item.id
-                      ? 'bg-ink text-white'
+                      ? 'bg-ink text-ink-inverse'
                       : 'text-ink-muted hover:bg-surface-sunken hover:text-ink'
                   }`}
                 >
@@ -701,7 +693,7 @@ export default function CypherConsole() {
                     </p>
                   ) : null}
 
-                  <div className="relative min-h-0 flex-1 overflow-hidden rounded-panel border border-edge bg-white">
+                  <div className="relative min-h-0 flex-1 overflow-hidden rounded-panel border border-edge bg-surface-raised">
                     {placed.length === 0 ? (
                       <p className="flex h-full items-center justify-center px-6 text-center text-sm text-ink-faint">
                         Cette requête ne renvoie aucun nœud — regardez l&apos;onglet Table.
@@ -725,7 +717,7 @@ export default function CypherConsole() {
                     )}
 
                     {selected ? (
-                      <div className="absolute right-3 top-3 flex max-h-[80%] w-72 flex-col rounded-card border border-edge bg-white/95 shadow-[0_12px_32px_-18px_rgba(0,0,0,0.35)] backdrop-blur-sm">
+                      <div className="absolute right-3 top-3 flex max-h-[80%] w-72 flex-col rounded-card border border-edge bg-surface-raised/95 shadow-[0_12px_32px_-18px_rgba(0,0,0,0.35)] backdrop-blur-sm">
                         <div className="flex items-center gap-2 border-b border-edge px-3 py-2">
                           <span
                             className="h-2.5 w-2.5 shrink-0 rounded-full"
@@ -794,7 +786,7 @@ export default function CypherConsole() {
                   </div>
                 </div>
               ) : tab === 'table' ? (
-                <div className="h-full overflow-auto rounded-panel border border-edge bg-white">
+                <div className="h-full overflow-auto rounded-panel border border-edge bg-surface-raised">
                   {result.rows.length === 0 ? (
                     <p className="flex h-full items-center justify-center text-sm text-ink-faint">
                       Aucun enregistrement.
@@ -817,7 +809,7 @@ export default function CypherConsole() {
                       <tbody>
                         {result.rows.map((row, index) => (
                           // Rows have no stable id — the server returns plain records.
-                          <tr key={index} className="odd:bg-white even:bg-surface-sunken/50">
+                          <tr key={index} className="odd:bg-surface-raised even:bg-surface-sunken/50">
                             {result.columns.map((column) => {
                               const full = cellText(row[column])
                               return (
@@ -838,7 +830,7 @@ export default function CypherConsole() {
                   )}
                 </div>
               ) : (
-                <pre className="h-full overflow-auto rounded-panel border border-edge bg-white p-4
+                <pre className="h-full overflow-auto rounded-panel border border-edge bg-surface-raised p-4
                   font-mono text-[11px] leading-relaxed text-ink">
                   {JSON.stringify(result, null, 2)}
                 </pre>

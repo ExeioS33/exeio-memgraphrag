@@ -5,6 +5,21 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>MemGraphRAG</title>
     <meta name="description" content="Interface de chat sur le moteur MemGraphRAG." />
+    <script>
+      // Stamped before anything paints. Doing this from React means the light
+      // tokens render first and the page flashes white on every load in dark mode.
+      // The default is dark, as in the reference UI; an explicit choice wins.
+      (function () {
+        var theme = 'dark';
+        try {
+          var stored = localStorage.getItem('memgraphrag.theme');
+          if (stored === 'light' || stored === 'dark') theme = stored;
+        } catch (e) {
+          /* storage disabled: fall through to the default */
+        }
+        document.documentElement.dataset.theme = theme;
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

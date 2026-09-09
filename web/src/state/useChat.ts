@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import * as api from '../api/client'
 import { ApiError } from '../api/client'
 import type { ChatMessage, ChatThread, QuerySettings, Reference, ToolCall } from '../api/types'
+import { splitThought } from '../lib/split-thought'
 
 /** Turns kept in `conversation_history`. The server neither validates nor caps it,
  *  and an unbounded history walks straight into the model's context limit. */
@@ -64,6 +65,12 @@ export function useChat(settings: QuerySettings) {
   const [pendingAnswer, setPendingAnswer] = useState('')
   const [pendingRefs, setPendingRefs] = useState<Reference[]>([])
   const [pendingSteps, setPendingSteps] = useState<ToolCall[]>([])
+  // How long the in-flight reply reasoned before its answer began. Session-only:
+  // it is a property of the wait, not of the message, and is not stored.
+  const [pendingThinkingSeconds, setPendingThinkingSeconds] = useState<number | null>(null)
+  const [thinkingSecondsById, setThinkingSecondsById] = useState<ReadonlyMap<string, number>>(
+    () => new Map(),
+  )
   const [error, setError] = useState<string | null>(null)
   const [persistent, setPersistent] = useState(true)
   const abortRef = useRef<AbortController | null>(null)
@@ -106,12 +113,17 @@ export function useChat(settings: QuerySettings) {
     void refreshThreads()
   }, [refreshThreads])
 
+  const resetPending = useCallback(() => {
+    setPendingAnswer('')
+    setPendingRefs([])
+    setPendingSteps([])
+    setPendingThinkingSeconds(null)
+  }, [])
+
   const openThread = useCallback(
     async (id: string) => {
       setActiveId(id)
-      setPendingAnswer('')
-      setPendingRefs([])
-      setPendingSteps([])
+      resetPending()
       const known = threads.find((t) => t.id === id)
       if (!persistent) {
         setMessages(known?.messages ?? [])
@@ -128,17 +140,15 @@ export function useChat(settings: QuerySettings) {
         setError(describe(exc))
       }
     },
-    [describe, handleChatError, persistent, threads],
+    [describe, handleChatError, persistent, resetPending, threads],
   )
 
   const newThread = useCallback(() => {
     setActiveId(null)
     setMessages([])
-    setPendingAnswer('')
-    setPendingRefs([])
-    setPendingSteps([])
+    resetPending()
     setError(null)
-  }, [])
+  }, [resetPending])
 
   const removeThread = useCallback(
     async (id: string) => {
@@ -158,11 +168,117 @@ export function useChat(settings: QuerySettings) {
     [activeId, describe, handleChatError, newThread, persistent],
   )
 
+  const renameThread = useCallback(
+    async (id: string, title: string) => {
+      // Optimistic: the sidebar reflects the new name at once, and the server's
+      // answer only matters if it disagrees.
+      setThreads((prev) => prev.map((t) => (t.id === id ? { ...t, title } : t)))
+      if (!persistent) return
+      try {
+        const updated = await api.renameThread(id, title)
+        setThreads((prev) => prev.map((t) => (t.id === id ? { ...t, title: updated.title } : t)))
+      } catch (exc) {
+        if (!handleChatError(exc)) setError(describe(exc))
+      }
+    },
+    [describe, handleChatError, persistent],
+  )
+
   const stop = useCallback(() => {
     abortRef.current?.abort()
     abortRef.current = null
     setStreaming(false)
   }, [])
+
+  /**
+   * Run one turn: stream the answer to `question` on top of `history` (which
+   * already ends with the user's message), then persist the reply.
+   *
+   * Shared by `send` and `regenerate`; the only difference between them is whether
+   * the user message is new and needs storing.
+   */
+  const runTurn = useCallback(
+    async (threadId: string, question: string, history: ChatMessage[]) => {
+      resetPending()
+      setStreaming(true)
+
+      const controller = new AbortController()
+      abortRef.current = controller
+      const startedAt = performance.now()
+      let thinkingSeconds: number | null = null
+      let answer = ''
+      let refs: Reference[] = []
+      try {
+        const conversation = history
+          .slice(-HISTORY_TURNS - 1, -1)
+          .map((m) => ({ role: m.role, content: m.content }))
+        const stream = api.streamQuery(
+          question,
+          { ...settingsRef.current, conversation_history: conversation },
+          controller.signal,
+        )
+        for await (const frame of stream) {
+          if (frame.kind === 'token') {
+            answer += frame.text
+            setPendingAnswer(answer)
+            if (thinkingSeconds === null && splitThought(answer).answered) {
+              thinkingSeconds = (performance.now() - startedAt) / 1000
+              setPendingThinkingSeconds(thinkingSeconds)
+            }
+          } else if (frame.kind === 'references') {
+            // Merged, not replaced. Agent mode can retrieve more than once in a
+            // turn, and each frame carries only that hop's passages — overwriting
+            // dropped every source but the last one's, while the answer went on
+            // citing all of them.
+            refs = mergeReferences(refs, frame.references)
+            setPendingRefs(refs)
+          } else if (frame.kind === 'tool_call') {
+            setPendingSteps((prev) => [...prev, frame.call])
+          } else if (frame.kind === 'error') {
+            throw new Error(frame.message)
+          }
+        }
+      } catch (exc) {
+        if (!(exc instanceof DOMException && exc.name === 'AbortError')) {
+          setError(describe(exc))
+        }
+      } finally {
+        abortRef.current = null
+        setStreaming(false)
+      }
+
+      if (answer) {
+        let assistant: ChatMessage = { ...draftMessage(threadId, 'assistant', answer), references: refs }
+        if (persistent) {
+          try {
+            // The stored id replaces the local one, so a later regenerate can
+            // delete exactly this row.
+            assistant = await api.appendMessage(threadId, {
+              role: 'assistant',
+              content: answer,
+              references: refs,
+            })
+          } catch (exc) {
+            handleChatError(exc)
+          }
+        }
+        setMessages((prev) => [...prev, assistant])
+        if (thinkingSeconds !== null) {
+          const seconds = thinkingSeconds
+          setThinkingSecondsById((prev) => new Map(prev).set(assistant.id, seconds))
+        }
+        setThreads((prev) =>
+          prev.map((t) =>
+            t.id === threadId
+              ? { ...t, updated_at: Math.floor(Date.now() / 1000), title: t.title || titleFrom(question) }
+              : t,
+          ),
+        )
+      }
+      resetPending()
+    },
+    [describe, handleChatError, persistent, resetPending],
+  )
 
   const send = useCallback(
     async (text: string) => {
@@ -204,89 +320,47 @@ export function useChat(settings: QuerySettings) {
         setActiveId(threadId)
       }
 
-      const userMessage = draftMessage(threadId, 'user', question)
-      const history = [...messages, userMessage]
-      setMessages(history)
-      setPendingAnswer('')
-      setPendingRefs([])
-      setPendingSteps([])
-      setStreaming(true)
-
+      let userMessage = draftMessage(threadId, 'user', question)
       if (persistent) {
         try {
-          await api.appendMessage(threadId, { role: 'user', content: question })
+          userMessage = await api.appendMessage(threadId, { role: 'user', content: question })
         } catch (exc) {
           handleChatError(exc)
         }
       }
-
-      const controller = new AbortController()
-      abortRef.current = controller
-      let answer = ''
-      let refs: Reference[] = []
-      try {
-        const conversation = history
-          .slice(-HISTORY_TURNS - 1, -1)
-          .map((m) => ({ role: m.role, content: m.content }))
-        const stream = api.streamQuery(
-          question,
-          { ...settingsRef.current, conversation_history: conversation },
-          controller.signal,
-        )
-        for await (const frame of stream) {
-          if (frame.kind === 'token') {
-            answer += frame.text
-            setPendingAnswer(answer)
-          } else if (frame.kind === 'references') {
-            // Merged, not replaced. Agent mode can retrieve more than once in a
-            // turn, and each frame carries only that hop's passages — overwriting
-            // dropped every source but the last one's, while the answer went on
-            // citing all of them.
-            refs = mergeReferences(refs, frame.references)
-            setPendingRefs(refs)
-          } else if (frame.kind === 'tool_call') {
-            setPendingSteps((prev) => [...prev, frame.call])
-          } else if (frame.kind === 'error') {
-            throw new Error(frame.message)
-          }
-        }
-      } catch (exc) {
-        if (!(exc instanceof DOMException && exc.name === 'AbortError')) {
-          setError(describe(exc))
-        }
-      } finally {
-        abortRef.current = null
-        setStreaming(false)
-      }
-
-      if (answer) {
-        const assistant: ChatMessage = { ...draftMessage(threadId, 'assistant', answer), references: refs }
-        setMessages((prev) => [...prev, assistant])
-        if (persistent) {
-          try {
-            await api.appendMessage(threadId, {
-              role: 'assistant',
-              content: answer,
-              references: refs,
-            })
-          } catch (exc) {
-            handleChatError(exc)
-          }
-        }
-        setThreads((prev) =>
-          prev.map((t) =>
-            t.id === threadId
-              ? { ...t, updated_at: Math.floor(Date.now() / 1000), title: t.title || titleFrom(question) }
-              : t,
-          ),
-        )
-      }
-      setPendingAnswer('')
-      setPendingRefs([])
-      setPendingSteps([])
+      const history = [...messages, userMessage]
+      setMessages(history)
+      await runTurn(threadId, question, history)
     },
-    [activeId, describe, handleChatError, messages, persistent, streaming],
+    [activeId, describe, handleChatError, messages, persistent, runTurn, streaming],
   )
+
+  /**
+   * Replace the last answer: same question, same history before it, a new
+   * stream. The old reply is deleted server-side first so a reload does not show
+   * both; if that delete fails the regenerate is refused rather than duplicated.
+   */
+  const regenerate = useCallback(async () => {
+    if (streaming || !activeId) return
+    const lastUser = messages.map((m) => m.role).lastIndexOf('user')
+    if (lastUser < 0) return
+    const question = messages[lastUser].content
+    const stale = messages.slice(lastUser + 1).filter((m) => m.role === 'assistant')
+    setError(null)
+    if (persistent) {
+      try {
+        await Promise.all(stale.map((m) => api.deleteMessage(activeId, m.id)))
+      } catch (exc) {
+        if (!handleChatError(exc)) {
+          setError(describe(exc))
+          return
+        }
+      }
+    }
+    const history = messages.slice(0, lastUser + 1)
+    setMessages(history)
+    await runTurn(activeId, question, history)
+  }, [activeId, describe, handleChatError, messages, persistent, runTurn, streaming])
 
   useEffect(() => () => abortRef.current?.abort(), [])
 
@@ -298,6 +372,8 @@ export function useChat(settings: QuerySettings) {
     pendingAnswer,
     pendingRefs,
     pendingSteps,
+    pendingThinkingSeconds,
+    thinkingSecondsById,
     error,
     persistent,
     setError,
@@ -305,7 +381,9 @@ export function useChat(settings: QuerySettings) {
     openThread,
     newThread,
     removeThread,
+    renameThread,
     send,
+    regenerate,
     stop,
   }
 }

@@ -194,7 +194,7 @@ function TreeNode({
           aria-expanded={open}
           style={indent}
           className="flex w-full items-center gap-1.5 rounded-lg py-1.5 pr-2 text-left text-sm
-            text-ink transition hover:bg-white"
+            text-ink transition hover:bg-surface-raised"
         >
           <ChevronDownIcon
             size={14}
@@ -231,7 +231,7 @@ function TreeNode({
         onClick={() => onSelectFile(entry)}
         style={indent}
         className={`flex w-full items-start gap-2 rounded-lg py-1.5 pr-2 text-left transition ${
-          active ? 'bg-violet-50 text-violet-700' : 'text-ink hover:bg-white'
+          active ? 'bg-violet-50 text-violet-700' : 'text-ink hover:bg-surface-raised'
         }`}
       >
         <FileIcon
@@ -479,7 +479,7 @@ export default function LibraryPanel({
                   value={filter}
                   onChange={(event) => setFilter(event.target.value)}
                   placeholder="Filtrer par nom…"
-                  className="w-full rounded-full border border-edge bg-white py-1.5 pl-9 pr-3
+                  className="w-full rounded-full border border-edge bg-surface-raised py-1.5 pl-9 pr-3
                     text-sm text-ink outline-none placeholder:text-ink-faint
                     focus:border-violet-300"
                 />
@@ -578,7 +578,7 @@ export default function LibraryPanel({
                     onClick={() => setShowText(false)}
                     className={`rounded-full border px-3 py-1 text-xs transition ${
                       showText
-                        ? 'border-edge bg-white text-ink-muted hover:text-ink'
+                        ? 'border-edge bg-surface-raised text-ink-muted hover:text-ink'
                         : 'border-violet-300 bg-violet-50 text-violet-600'
                     }`}
                   >
@@ -590,7 +590,7 @@ export default function LibraryPanel({
                     className={`rounded-full border px-3 py-1 text-xs transition ${
                       showText
                         ? 'border-violet-300 bg-violet-50 text-violet-600'
-                        : 'border-edge bg-white text-ink-muted hover:text-ink'
+                        : 'border-edge bg-surface-raised text-ink-muted hover:text-ink'
                     }`}
                   >
                     Texte extrait
@@ -637,7 +637,7 @@ export default function LibraryPanel({
                           Texte indisponible : {previewError}
                         </p>
                       ) : pageText.trim() ? (
-                        <article className="rounded-card border border-edge bg-white px-5 py-4">
+                        <article className="rounded-card border border-edge bg-surface-raised px-5 py-4">
                           <p
                             className="whitespace-pre-wrap font-mono text-[12.5px] leading-relaxed
                               text-ink"
@@ -731,7 +731,7 @@ export default function LibraryPanel({
                         motion-reduce:transition-none ${
                           passage.chunk_id === highlightChunkId
                             ? 'border-violet-400 bg-violet-50'
-                            : 'border-edge bg-white'
+                            : 'border-edge bg-surface-raised'
                         }`}
                     >
                       <p className="mb-1 truncate font-mono text-[11px] text-ink-faint">

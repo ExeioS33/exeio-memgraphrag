@@ -195,4 +195,18 @@ def create_chat_router(api_key: Optional[str] = None) -> Any:
             raise _not_found(thread_id)
         return message.to_dict()
 
+    @router.delete(
+        "/threads/{thread_id}/messages/{message_id}", dependencies=[Depends(combined_auth)]
+    )
+    async def delete_message(request: Request, thread_id: str, message_id: str):
+        store = _require_store(request)
+        owner = resolve_owner(request)
+        deleted = await store.delete_message(thread_id, owner, message_id)
+        if not deleted:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"No message {message_id} in thread {thread_id}",
+            )
+        return {"status": "deleted", "thread_id": thread_id, "message_id": message_id}
+
     return router
