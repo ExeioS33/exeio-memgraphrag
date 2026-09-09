@@ -99,36 +99,88 @@ function readableArguments(raw: string): string {
   return raw.slice(0, 120)
 }
 
-/** Minimal block renderer: paragraphs, bullet lists and fenced code. The answers are
- *  prose with `[n]` citations, not rich documents. */
+/** Inline markdown: **bold**, *italic*, `code`. The answers are prose with `[n]`
+ *  citations, so this is the whole inline vocabulary they use; a full markdown
+ *  engine would bring HTML rendering of model output along with it. */
+function Inline({ text }: { text: string }) {
+  const parts = text.split(/(\*\*[^*]+\*\*|`[^`]+`|(?<![\w*])\*[^*\n]+\*(?![\w*]))/g)
+  return (
+    <>
+      {parts.map((part, i) => {
+        if (part.startsWith('**') && part.endsWith('**') && part.length > 4) {
+          return <strong key={i}>{part.slice(2, -2)}</strong>
+        }
+        if (part.startsWith('`') && part.endsWith('`') && part.length > 2) {
+          return (
+            <code key={i} className="rounded bg-surface-sunken px-1 py-0.5 font-mono text-[12.5px]">
+              {part.slice(1, -1)}
+            </code>
+          )
+        }
+        if (part.startsWith('*') && part.endsWith('*') && part.length > 2) {
+          return <em key={i}>{part.slice(1, -1)}</em>
+        }
+        return part
+      })}
+    </>
+  )
+}
+
+const BULLET = /^\s*[-*•]\s+/
+const NUMBERED = /^\s*\d+[.)]\s+/
+const HEADING = /^(#{1,4})\s+(.+)$/
+
+/** Block renderer: paragraphs, headings, bullet and numbered lists, fenced code. */
 function Answer({ text }: { text: string }) {
   const blocks = text.split(/\n{2,}/)
   return (
     <div className="flex flex-col gap-2.5">
       {blocks.map((block, index) => {
-        const lines = block.split('\n')
-        if (block.startsWith('```')) {
+        const lines = block.split('\n').filter((l) => l.trim() !== '')
+        if (lines.length === 0) return null
+        if (block.trimStart().startsWith('```')) {
           return (
             <pre
               key={index}
               className="overflow-x-auto rounded-lg bg-surface-sunken p-3 text-[12.5px] leading-relaxed"
             >
-              <code>{lines.filter((l) => !l.startsWith('```')).join('\n')}</code>
+              <code>{lines.filter((l) => !l.trimStart().startsWith('```')).join('\n')}</code>
             </pre>
           )
         }
-        if (lines.every((l) => /^\s*[-*•]\s+/.test(l))) {
+        if (lines.every((l) => BULLET.test(l))) {
           return (
             <ul key={index} className="ml-4 list-disc space-y-1">
               {lines.map((line, i) => (
-                <li key={i}>{line.replace(/^\s*[-*•]\s+/, '')}</li>
+                <li key={i}>
+                  <Inline text={line.replace(BULLET, '')} />
+                </li>
               ))}
             </ul>
           )
         }
+        if (lines.every((l) => NUMBERED.test(l))) {
+          return (
+            <ol key={index} className="ml-5 list-decimal space-y-1">
+              {lines.map((line, i) => (
+                <li key={i}>
+                  <Inline text={line.replace(NUMBERED, '')} />
+                </li>
+              ))}
+            </ol>
+          )
+        }
+        const heading = lines.length === 1 ? HEADING.exec(lines[0]) : null
+        if (heading) {
+          return (
+            <p key={index} className="text-[15px] font-semibold">
+              <Inline text={heading[2]} />
+            </p>
+          )
+        }
         return (
           <p key={index} className="whitespace-pre-wrap">
-            {block}
+            <Inline text={lines.join('\n')} />
           </p>
         )
       })}

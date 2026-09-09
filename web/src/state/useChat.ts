@@ -57,7 +57,13 @@ function mergeReferences(current: Reference[], incoming: Reference[]): Reference
   )
 }
 
-export function useChat(settings: QuerySettings) {
+/**
+ * @param enabled False until the session is authenticated. Threads are loaded
+ *   only then — a request before login is a 403 that would sit in `error` and
+ *   greet the user on their first screen — and dropped when it turns false, so a
+ *   sign-out never leaves the previous account's conversations on screen.
+ */
+export function useChat(settings: QuerySettings, enabled = true) {
   const [threads, setThreads] = useState<ChatThread[]>([])
   const [activeId, setActiveId] = useState<string | null>(null)
   const [messages, setMessages] = useState<ChatMessage[]>([])
@@ -110,8 +116,15 @@ export function useChat(settings: QuerySettings) {
   }, [describe, handleChatError])
 
   useEffect(() => {
+    if (!enabled) {
+      setThreads([])
+      setActiveId(null)
+      setMessages([])
+      setError(null)
+      return
+    }
     void refreshThreads()
-  }, [refreshThreads])
+  }, [enabled, refreshThreads])
 
   const resetPending = useCallback(() => {
     setPendingAnswer('')

@@ -60,7 +60,7 @@ export default function App() {
   const [libraryTarget, setLibraryTarget] = useState<LibraryTarget | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
 
-  const chat = useChat(settings)
+  const chat = useChat(settings, authed === true)
 
   const bootstrap = useCallback(async () => {
     try {
