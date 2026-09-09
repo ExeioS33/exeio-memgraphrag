@@ -116,8 +116,31 @@ Nobody types this password; generate one.
 
 **Port 5433 already taken.** `postgres-app` publishes on `127.0.0.1:5433` because
 5432 is usually the RAG database. A second project — another checkout, a git
-worktree — takes it first and the second stack fails to bind. `docker ps --filter
-publish=5433` names the holder; removing that container keeps its named volume.
+worktree — takes it first, and compose reports:
+
+```
+Error response from daemon: driver failed programming external connectivity on
+endpoint memgraphrag-postgres-app-1: Bind for 127.0.0.1:5433 failed: port is
+already allocated
+```
+
+Two things make this harder to diagnose than it looks. The holder is invisible in
+`docker compose ps`, because it belongs to a *different* project — the project name
+comes from the directory, so a checkout and a worktree of the same repository run
+side by side under different names and never collide until they publish the same
+port. And compose **rolls the whole `up` back**: both containers are created, the
+bind fails, and both are destroyed. Afterwards nothing is left to inspect, and
+`docker ps -a` shows no trace of the attempt at all.
+
+`docker ps --filter publish=5433` names the real holder. Stopping it frees the port;
+removing the container keeps its named volume, so nothing is lost. To see the
+rollback for what it is rather than guess, replay the events — `create` and
+`destroy` seconds apart, with no `start` in between:
+
+```bash
+docker events --since 10m --until 0s --filter type=container \
+  --format '{{.Time}} {{.Actor.Attributes.name}} {{.Action}}' | grep memgraphrag
+```
 
 **A stale image.** `docker compose up -d` alone reuses whatever was built last. An
 image predating the web UI serves `Web UI not built; serving API only` and every API
