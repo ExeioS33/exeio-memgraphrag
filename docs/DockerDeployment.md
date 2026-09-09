@@ -44,6 +44,31 @@ LIBRARY_HOST_DIR=/path/to/your/corpus
 A database on the Docker host itself is reachable as `host.docker.internal`; a LAN
 address needs nothing special.
 
+## Turning accounts on
+
+Add to `.env`:
+
+```bash
+AUTH_SIGNUP_ENABLED=true
+TOKEN_SECRET=…                                   # openssl rand -hex 32
+AUTH_BOOTSTRAP_ADMIN=you@example.com:a-real-password   # optional, see below
+```
+
+and restart with `--build`. The login screen now appears for everyone, including
+the moment nobody has an account yet. Two ways to get the first administrator:
+
+- **On a laptop**: sign up. The first account is the administrator and inherits
+  every conversation held before accounts existed (they belonged to `guest`).
+- **On a port anyone can reach**: set `AUTH_BOOTSTRAP_ADMIN` *before* the port
+  opens. Between a restart and the first sign-up, whoever reaches the instance
+  first would otherwise become its admin. The variable is read only while the
+  account table is empty, so leaving it in `.env` afterwards re-creates nothing;
+  pair it with `REQUIRE_AUTH=true` so a missing `.env` fails closed.
+
+Every later sign-up waits as `pending` until an admin approves it from the
+*Administration* page. Deactivating an account takes effect on its next request,
+not at its token's expiry. `docs/WebUI.md` → *Accounts* has the details.
+
 ## The self-contained stack
 
 ```bash
@@ -186,6 +211,7 @@ against a database that is merely still opening its store files.
 ```bash
 docker compose -f docker-compose.app.yml ps          # every service Up
 curl -s localhost:9621/health | jq .retrieval_status # "ready"
+curl -s localhost:9621/health | jq '.auth_mode, .signup_enabled'
 curl -s localhost:9621/ -o /dev/null -w '%{http_code}\n'   # 200 = bundle served
 ```
 

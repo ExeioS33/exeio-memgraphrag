@@ -141,7 +141,7 @@ export default function SettingsPanel({ settings, onChange, onClose }: Props) {
                         key={name}
                         type="button"
                         onClick={() => merge(values)}
-                        className="rounded-full border border-edge bg-white px-3 py-1.5 text-xs text-ink-muted
+                        className="rounded-full border border-edge bg-surface-raised px-3 py-1.5 text-xs text-ink-muted
                           transition hover:border-violet-300 hover:bg-violet-50 hover:text-violet-600"
                       >
                         {name}
@@ -207,7 +207,7 @@ function Field({
       <select
         value={typeof value === 'string' ? value : ''}
         onChange={(event) => onChange(spec.name, event.target.value)}
-        className="w-full rounded-full border border-edge-strong bg-white px-3 py-2 text-sm text-ink outline-none focus:border-violet-300"
+        className="w-full rounded-full border border-edge-strong bg-surface-raised px-3 py-2 text-sm text-ink outline-none focus:border-violet-300"
       >
         {choices.map((choice) => (
           <option key={choice} value={choice}>
@@ -265,7 +265,7 @@ function Field({
       value={typeof value === 'string' ? value : ''}
       onChange={(event) => onChange(spec.name, event.target.value)}
       placeholder="Laisser vide pour la valeur par défaut"
-      className="w-full resize-y rounded-card border border-edge-strong bg-white px-3 py-2 text-sm text-ink
+      className="w-full resize-y rounded-card border border-edge-strong bg-surface-raised px-3 py-2 text-sm text-ink
         outline-none placeholder:text-ink-faint focus:border-violet-300"
     />
   )

@@ -33,6 +33,37 @@ except ImportError:  # pragma: no cover
     _bcrypt = None
 
 
+class AccountPending(Exception):
+    """Correct password, but the account has not been approved by an admin yet.
+
+    Distinct from a bad credential on purpose: the caller has just proved they own
+    the account, so telling them why they cannot get in leaks nothing.
+    """
+
+
+class AccountInactive(Exception):
+    """Correct password, but an admin has deactivated the account."""
+
+
+def hash_password(plain: str) -> str:
+    """bcrypt hash for a database account. Raises if bcrypt is unavailable rather
+    than falling back to anything weaker."""
+    if _bcrypt is None:
+        raise RuntimeError("bcrypt is required for account passwords; install memgraphrag[api]")
+    return _bcrypt.hashpw(plain.encode("utf-8"), _bcrypt.gensalt()).decode("utf-8")
+
+
+def check_password(plain: str, hashed: str) -> bool:
+    """Verify a database account's password. Never raises."""
+    if _bcrypt is None or not hashed:
+        return False
+    try:
+        return bool(_bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8")))
+    except Exception as exc:  # noqa: BLE001 - a malformed hash is a "no", not a crash
+        logger.warning("bcrypt verification failed: %s", exc)
+        return False
+
+
 def _verify_password(plain: str, stored: str) -> bool:
     """Verify plaintext against stored password (bcrypt prefix or plain)."""
     if stored.startswith(BCRYPT_PASSWORD_PREFIX):
@@ -59,6 +90,10 @@ class AuthHandler:
         api_key = os.getenv("MEMGRAPHRAG_API_KEY") or getattr(cfg, "key", None) or ""
         require_auth = bool(getattr(cfg, "require_auth", False))
         self.secret = getattr(cfg, "token_secret", None) or ""
+        self.uses_default_secret = not self.secret
+        # A database-backed account store, attached by create_app when
+        # AUTH_SIGNUP_ENABLED is on. None means env accounts (or no auth) only.
+        self.user_store: Any | None = None
         if not self.secret:
             # DEFAULT_TOKEN_SECRET is published in this repository, so tokens signed
             # with it can be forged by anyone.
@@ -169,6 +204,7 @@ class AuthHandler:
             if datetime.now(timezone.utc) > expire_time:
                 _unauthorized("Token expired")
             return {
+                "sub": username,
                 "username": username,
                 "role": payload.get("role", "user"),
                 "metadata": payload.get("metadata", {}),
@@ -177,6 +213,73 @@ class AuthHandler:
         except JWTError:
             _unauthorized("Invalid token")
             raise  # pragma: no cover — unreachable
+
+    @property
+    def auth_enabled(self) -> bool:
+        """Whether requests must carry a credential.
+
+        True with env accounts *or* a database store — including a store with no
+        accounts yet, which is exactly when the login screen has to appear so that
+        the first person can sign up and become admin.
+        """
+        return bool(self.accounts) or self.user_store is not None
+
+    async def authenticate(self, identifier: str, password: str) -> dict[str, Any] | None:
+        """Check a login against the database first, then env accounts.
+
+        Returns ``{"sub", "role", "name", "auth_source"}`` or ``None`` for any bad
+        credential — unknown account and wrong password are indistinguishable, so a
+        caller cannot enumerate users. The two exceptions are raised only *after* the
+        password has matched, when the caller has proved ownership.
+        """
+        store = self.user_store
+        if store is not None:
+            record = await store.get_auth(identifier)
+            if record is not None and check_password(password, record.password_hash):
+                if not record.active:
+                    raise AccountInactive(record.user_id)
+                if record.role == "pending":
+                    raise AccountPending(record.user_id)
+                user = await store.get(record.user_id)
+                return {
+                    "sub": record.user_id,
+                    "role": record.role,
+                    "name": user.name if user else identifier,
+                    "email": user.email if user else identifier,
+                    "auth_source": "db",
+                }
+        if self.verify_password(identifier, password):
+            return {"sub": identifier, "role": "user", "name": identifier, "auth_source": "env"}
+        return None
+
+    async def validate_token_and_account(self, token: str) -> dict[str, Any]:
+        """Signature check, then the account's *current* state.
+
+        The second half is what makes deactivation mean something. It lives here,
+        not in the FastAPI dependency, so the MCP verifier gets it too: a check that
+        only one of the two surfaces performs is a back door through the other.
+        """
+        info = self.validate_token(token)
+        source = (info.get("metadata") or {}).get("auth_source")
+        if source != "db" or self.user_store is None:
+            return info
+        user = await self.user_store.get(str(info["sub"]))
+        record = await self.user_store.get_auth(user.email) if user else None
+        if user is None or record is None or not record.active or user.role == "pending":
+            try:
+                from fastapi import HTTPException, status
+            except ImportError:  # pragma: no cover
+                raise ValueError("Account is not active")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Account is not active. Please login again.",
+            )
+        # The role is re-read, never trusted from the token: a promotion or a
+        # demotion takes effect on the next request, not at the next login.
+        info["role"] = user.role
+        info["name"] = user.name
+        info["email"] = user.email
+        return info
 
 
 class _LazyAuthHandler:

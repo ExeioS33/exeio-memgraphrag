@@ -19,7 +19,9 @@ cd web && npm install && npm run build
 ```
 
 `npm run dev` serves on :5173 and proxies the API routes to :9621, so the client
-never needs a base URL in either mode.
+never needs a base URL in either mode. `npm test` runs the vitest suite — the
+reply split, the theme store and the thread filter, the three pieces of pure
+front-end logic that can regress silently.
 
 The Docker image builds the bundle in its own `node` stage; nothing extra is needed
 for `docker compose up`.
@@ -30,13 +32,16 @@ for `docker compose up`.
 |---|---|
 | Conversation | `POST /query/stream` (answer), `POST /chat/threads/{id}/messages` (persist) |
 | Citation → library | client-side: a citation carries `chunk_id` + `source_path`, the panel opens on that file and scrolls to the passage |
-| Sidebar thread list | `GET /chat/threads`, grouped client-side by age |
-| Provider + model picker | `GET /models`, sent back as `provider` / `model` on the query |
-| Suggestion cards | `GET /graph/highlights` — derived from the corpus, not hardcoded |
+| Sidebar thread list | `GET /chat/threads`, grouped client-side by age, filtered client-side by title; rename in place → `PATCH /chat/threads/{id}` |
+| Regenerate | `DELETE /chat/threads/{id}/messages/{message_id}` on the old answer, then `POST /query/stream` again |
+| Model as page title | `GET /models`, sent back as `provider` / `model` on the query |
+| Suggestion list | `GET /graph/highlights` — derived from the corpus, not hardcoded |
 | Settings panel | `GET /query/params` — the form is generated from the registry |
 | Library | `GET /library/tree`, `/library/file`, `/library/preview`, `/library/passages` |
 | Cypher console | `POST /graph/cypher`, `GET /graph/schema`, `GET /graph/neighborhood` |
 | Login | `POST /login` (form-encoded), Bearer token in `localStorage` |
+| Sign-up, account menu | `POST /auth/signup`, `GET /auth/me` |
+| Administration (admins only) | `GET /auth/users`, `POST /auth/users/{id}/approve` · `/deactivate` · `/reset-password` |
 
 ## Provider routing
 
@@ -90,7 +95,36 @@ only — it degrades, it does not break.
 
 **Model selection is allow-listed.** `LLM_MODELS` names what a caller may pick;
 `LLM_MODEL` is always included. Anything else is refused with 400 rather than
-forwarded, so a typo cannot bill a model nobody sanctioned.
+forwarded, so a typo cannot bill a model nobody sanctioned. A model the provider
+itself refuses — Together's *"Unable to access non-serverless model"* — is kept in
+the picker but marked *non activé*, so the same click does not fail twice.
+
+**The reply carries its reasoning, and the UI folds it.** The QA prompt asks the
+model to think after `Thought:` and conclude after `Answer:`
+(`memgraphrag/prompts/templates.py`). That text is kept — its effect on answer
+quality has never been measured here, so removing it would be a quality change
+dressed as a display fix — and split at render time (`web/src/lib/split-thought.ts`):
+what precedes the marker becomes a collapsible **Réflexion** block, open while it
+streams, folded the moment the answer starts, with the elapsed time on its summary
+line. The fallback direction matters: **no marker means everything is the answer**,
+never everything is reasoning. Agent mode answers through its own prompt and emits
+no marker at all; the other way round would hide its whole reply behind a closed
+block. *Copier* copies the answer alone. Which models show the block is a matter of
+observation, not configuration: Llama 3.3 follows the prompt and folds ~1 800
+characters of reasoning above a one-sentence answer; `gpt-oss` models put theirs in
+the Harmony `analysis` channel, which `HarmonyFilter` already drops, so their reply
+arrives marker-free and renders as a plain answer.
+
+**Two themes, dark by default.** Every colour is a CSS token (`--c-*`, RGB triplets
+so Tailwind's `/opacity` still works), redefined under `:root[data-theme="dark"]`
+and under `prefers-color-scheme: dark`. `index.html` stamps the stored choice on
+`<html>` before the first paint, so there is no flash; the toggle lives in the
+account menu and persists as `localStorage["memgraphrag.theme"]`. The dark palette
+was chosen for measured contrast, not inverted: `scripts/check_contrast.py` checks
+every token/surface pair the components actually use, in both themes, against WCAG
+AA for text and 3:1 for UI. The graph canvas reads its SVG colours from the same
+variables — attributes, not classes, so Tailwind alone would have left light-grey
+edges on a black background.
 
 ## Clickable citations
 
@@ -204,6 +238,40 @@ serves whichever half scores higher.
   secret and every call it makes is still authenticated, but do not put anything
   sensitive in the bundle.
 
+## Accounts
+
+Off by default. `AUTH_SIGNUP_ENABLED=true` puts the UI behind a login screen and
+adds a sign-up tab; `TOKEN_SECRET` must be set, or the first sign-up is refused
+with 503 rather than minting forgeable tokens. Accounts live in the application
+database (`APP_DATABASE_URL`), in two tables: `app_user` (profile, role) and
+`app_auth` (bcrypt hash, active flag), split so that no profile read or admin
+listing can return a password hash by accident.
+
+The approval model is Open WebUI's: **the first account is the administrator; every
+later one starts as `pending`** and cannot sign in until an admin approves it from
+the *Administration* page (sidebar, admins only). That page is where deactivation
+and password resets happen too — there is no self-service reset, because there is
+no e-mail sender to carry one.
+
+Three consequences that are enforced rather than described:
+
+- **A token does not outlive its account.** Every request that carries a JWT
+  reloads the account and refuses it if deactivated or still pending; the check
+  lives in `AuthHandler.validate_token_and_account`, shared by the HTTP dependency
+  and the MCP verifier, so neither surface can become the other's back door.
+- **Sign-up never says whether an address exists.** An existing e-mail gets the
+  same `202 pending` reply as a new one; the admin queue sorts it out. `/login`
+  answers the same 401 to an unknown user and to a wrong password.
+- **The first admin inherits the `guest` threads** — everything conversed before
+  accounts existed — in the same transaction that creates them. Nothing is lost
+  and the move is reversible.
+
+On an exposed port, do not let "first to sign up" decide who the admin is:
+`AUTH_BOOTSTRAP_ADMIN=email:password` creates the administrator at startup while the
+account table is empty, and is ignored (and logged) afterwards. `AUTH_ACCOUNTS`
+keeps working alongside — it is the only path that needs no application database —
+but its accounts have the `user` role and cannot approve anyone.
+
 ## Design provenance
 
 The layout follows a Figma draft that is a **flattened PNG** — one rectangle with an
@@ -213,3 +281,16 @@ read from Figma variables: surfaces and the violet steps 50–400 are measured, 
 steps 500–700 are extrapolated on the same hue (~258°) because the export contains no
 flat region of them. Spacing is eyeballed from a 912 px-wide render. Treat those
 numbers as a starting point, not as a spec.
+
+The **layout and interaction patterns** follow Open WebUI, the reference chat UI of
+this space, as read from its Figma capture and its source: sidebar with quiet
+section labels and the account pinned at the bottom, the model as page title,
+centred empty state with list-shaped suggestions, a rounded composer with its
+actions inside the field, a blinking caret instead of a spinner once the first
+token exists, imperative auto-scroll released when the reader scrolls up, and the
+folded reasoning block. Three things were deliberately **not** taken: their
+component architecture (a 4 700-line orchestrator), their socket.io transport (our
+SSE is tested and serves the CLI and the playground), and anything covered by
+their licence's branding clause — **no file, icon or asset from their repository is
+in this codebase**; the icons in `icons.tsx` are drawn here and the mark is the
+violet orb from the original mockup.

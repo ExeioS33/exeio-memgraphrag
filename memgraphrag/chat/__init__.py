@@ -12,9 +12,23 @@ from memgraphrag.chat.store import (
     PostgresChatStore,
     create_chat_store,
 )
+from memgraphrag.chat.users import (
+    AppUser,
+    BaseUserStore,
+    EmailTaken,
+    InMemoryUserStore,
+    PostgresUserStore,
+    create_user_store,
+)
 
 __all__ = [
+    "AppUser",
     "BaseChatStore",
+    "BaseUserStore",
+    "EmailTaken",
+    "InMemoryUserStore",
+    "PostgresUserStore",
+    "create_user_store",
     "ChatMessage",
     "ChatStoreUnavailable",
     "ChatThread",

@@ -1,4 +1,6 @@
 import type {
+  AdminUser,
+  AuthUser,
   ChatMessage,
   ChatThread,
   CypherResponse,
@@ -15,6 +17,7 @@ import type {
   QueryParamsResponse,
   QuerySettings,
   Reference,
+  SignupResponse,
   StreamFrame,
   ThreadListResponse,
   ToolCall,
@@ -127,6 +130,29 @@ export function logout(): void {
   storeToken(null)
 }
 
+/** Create an account. 202 whether the address was free or not — by design. */
+export const signup = (email: string, name: string, password: string) =>
+  request<SignupResponse>('/auth/signup', {
+    method: 'POST',
+    body: JSON.stringify({ email, name, password }),
+  })
+
+export const me = () => request<AuthUser>('/auth/me')
+
+export const listUsers = () => request<{ users: AdminUser[]; total: number }>('/auth/users')
+
+export const approveUser = (id: string) =>
+  request<AdminUser>(`/auth/users/${encodeURIComponent(id)}/approve`, { method: 'POST' })
+
+export const deactivateUser = (id: string) =>
+  request<AdminUser>(`/auth/users/${encodeURIComponent(id)}/deactivate`, { method: 'POST' })
+
+export const resetPassword = (id: string, password: string) =>
+  request<{ status: string }>(`/auth/users/${encodeURIComponent(id)}/reset-password`, {
+    method: 'POST',
+    body: JSON.stringify({ password }),
+  })
+
 export const health = () => request<HealthResponse>('/health')
 export const listModels = () => request<ModelsResponse>('/models')
 export const queryParams = () => request<QueryParamsResponse>('/query/params')
@@ -146,6 +172,11 @@ export const renameThread = (id: string, title: string) =>
 
 export const deleteThread = (id: string) =>
   request<{ status: string }>(`/chat/threads/${id}`, { method: 'DELETE' })
+
+export const deleteMessage = (threadId: string, messageId: string) =>
+  request<{ status: string }>(`/chat/threads/${threadId}/messages/${messageId}`, {
+    method: 'DELETE',
+  })
 
 export const appendMessage = (
   threadId: string,

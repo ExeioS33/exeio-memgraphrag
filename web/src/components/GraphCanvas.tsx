@@ -209,7 +209,7 @@ function GraphCanvas({
             markerHeight="5"
             orient="auto"
           >
-            <path d="M0 0 L10 5 L0 10 z" fill="#D4D4D4" />
+            <path d="M0 0 L10 5 L0 10 z" style={{ fill: 'rgb(var(--c-graph-arrow))' }} />
           </marker>
           {/* A second marker: markerEnd points at one shared id, so a hovered edge
               cannot recolour its own arrowhead without one. */}
@@ -222,14 +222,14 @@ function GraphCanvas({
             markerHeight="5"
             orient="auto"
           >
-            <path d="M0 0 L10 5 L0 10 z" fill="#7C3AED" />
+            <path d="M0 0 L10 5 L0 10 z" style={{ fill: 'rgb(var(--c-graph-edge-hot))' }} />
           </marker>
         </defs>
 
         <g fill="none">
           {edges.map((item) => {
             const hot = item.edge.id === hoveredEdge
-            const stroke = hot ? '#7C3AED' : '#DDDDDD'
+            const stroke = hot ? 'rgb(var(--c-graph-edge-hot))' : 'rgb(var(--c-graph-edge))'
             return (
               <g key={item.edge.id}>
                 {/* The visible line is 1px wide in viewBox units and sits in a group
@@ -285,11 +285,10 @@ function GraphCanvas({
           <g
             fontSize={8}
             textAnchor="middle"
-            fill="#9A9A9A"
-            stroke="#FFFFFF"
             strokeWidth={2.5}
             paintOrder="stroke"
             className="pointer-events-none"
+            style={{ fill: 'rgb(var(--c-graph-caption))', stroke: 'rgb(var(--c-graph-halo))' }}
           >
             {edges.map((item) => (
               <text
@@ -313,8 +312,14 @@ function GraphCanvas({
                   cx={item.x}
                   cy={item.y}
                   r={active ? radius + 3.5 : hot ? radius + 2 : radius}
-                  fill={colorForGroup(item.group)}
-                  stroke={active ? '#111111' : hot ? '#7C3AED' : '#FFFFFF'}
+                  style={{
+                    fill: colorForGroup(item.group),
+                    stroke: active
+                      ? 'rgb(var(--c-graph-ring-active))'
+                      : hot
+                        ? 'rgb(var(--c-graph-edge-hot))'
+                        : 'rgb(var(--c-graph-ring))',
+                  }}
                   strokeWidth={active ? 2.5 : hot ? 2 : 1.5}
                   // `r` and `stroke-width` are CSS-animatable on SVG in every
                   // browser this ships to; `motion-reduce` is honoured because
@@ -331,11 +336,10 @@ function GraphCanvas({
                     y={item.y + 20}
                     fontSize={9}
                     textAnchor="middle"
-                    fill="#6B6B6B"
-                    stroke="#FFFFFF"
                     strokeWidth={2.5}
                     paintOrder="stroke"
                     className="pointer-events-none"
+                    style={{ fill: 'rgb(var(--c-graph-label))', stroke: 'rgb(var(--c-graph-halo))' }}
                   >
                     {clip(captionOf(item.node), 22)}
                   </text>
@@ -350,7 +354,7 @@ function GraphCanvas({
       {hovered ? (
         <div
           className="pointer-events-none absolute bottom-14 left-3 max-w-[320px] rounded-card
-            border border-edge bg-white/95 px-3 py-2 shadow-[0_12px_32px_-18px_rgba(0,0,0,0.35)]
+            border border-edge bg-surface-raised/95 px-3 py-2 shadow-[0_12px_32px_-18px_rgba(0,0,0,0.35)]
             backdrop-blur-sm"
         >
           <p className="mb-0.5 flex items-center gap-1.5 text-[11px] font-medium text-ink">
@@ -367,7 +371,7 @@ function GraphCanvas({
       ) : hoveredEdgeItem ? (
         <div
           className="pointer-events-none absolute bottom-14 left-3 max-w-[320px] rounded-card
-            border border-edge bg-white/95 px-3 py-2 shadow-[0_12px_32px_-18px_rgba(0,0,0,0.35)]
+            border border-edge bg-surface-raised/95 px-3 py-2 shadow-[0_12px_32px_-18px_rgba(0,0,0,0.35)]
             backdrop-blur-sm"
         >
           <p className="mb-0.5 font-mono text-[11px] font-medium text-violet-700">
@@ -394,7 +398,7 @@ function GraphCanvas({
           second meaning for the same key would be a coin toss. */}
       <div
         className="absolute bottom-3 right-3 flex flex-col overflow-hidden rounded-card border
-          border-edge bg-white/95 shadow-[0_12px_32px_-18px_rgba(0,0,0,0.35)] backdrop-blur-sm"
+          border-edge bg-surface-raised/95 shadow-[0_12px_32px_-18px_rgba(0,0,0,0.35)] backdrop-blur-sm"
       >
         <ControlButton label="Zoom avant" onClick={() => zoomAt(1 / 1.3, centre.x, centre.y)}>
           +

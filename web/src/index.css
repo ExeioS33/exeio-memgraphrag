@@ -2,6 +2,156 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ------------------------------------------------------------------ tokens --
+   Values are RGB triplets so Tailwind's `<alpha-value>` slot can apply an opacity
+   modifier on top of them. Three blocks: light on the bare root, dark by explicit
+   choice, and dark by system preference unless the user chose light. index.html
+   stamps `data-theme` before the first paint, so the explicit blocks are what
+   normally apply; the media query only covers a page loaded with storage disabled.
+
+   The dark values are not the light ones inverted. `ink-faint` is #9A9A9A on white
+   in light — a 2.8:1 ratio, tolerated for section labels — and the same grey on
+   #1A1A1A would drop further. Each dark token was picked against its surface and
+   scripts/check_contrast.py asserts the pairs actually used in the components. */
+
+:root {
+  color-scheme: light;
+
+  --c-surface: 254 254 254; /* main card, sampled */
+  --c-surface-sunken: 243 243 243; /* sidebar, sampled */
+  --c-surface-raised: 255 255 255; /* inputs, bubbles, popovers */
+  --c-edge: 237 237 237;
+  --c-edge-strong: 226 226 226;
+  --c-ink: 17 17 17;
+  --c-ink-muted: 107 107 107;
+  --c-ink-faint: 154 154 154;
+  --c-ink-inverse: 255 255 255;
+
+  --c-violet-50: 250 247 254;
+  --c-violet-100: 242 238 255;
+  --c-violet-200: 232 223 252;
+  --c-violet-300: 208 186 252;
+  --c-violet-400: 204 179 252;
+  --c-violet-500: 167 139 250;
+  --c-violet-600: 139 92 246;
+  --c-violet-700: 124 58 237;
+
+  /* Graph canvas. SVG presentation attributes cannot take var(), so these are
+     applied through `style`; keeping them here is what lets the canvas follow the
+     theme without knowing it exists. */
+  --c-graph-edge: 221 221 221;
+  --c-graph-edge-hot: 124 58 237;
+  --c-graph-arrow: 212 212 212;
+  --c-graph-ring: 255 255 255;
+  --c-graph-ring-active: 17 17 17;
+  --c-graph-label: 107 107 107;
+  /* Darker than ink-faint on purpose: an 8px edge caption at 2.8:1 is not
+     readable, and scripts/check_contrast.py is what caught it. */
+  --c-graph-caption: 122 122 122;
+  --c-graph-halo: 255 255 255;
+
+  /* Node fills, hashed by label so a group keeps its colour between results. */
+  --c-node-0: 139 92 246;
+  --c-node-1: 16 185 129;
+  --c-node-2: 245 158 11;
+  --c-node-3: 59 130 246;
+  --c-node-4: 239 68 68;
+  --c-node-5: 20 184 166;
+  --c-node-6: 236 72 153;
+  --c-node-7: 99 102 241;
+  --c-node-8: 132 204 22;
+  --c-node-9: 14 165 233;
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  --c-surface: 26 26 26; /* #1A1A1A — Open WebUI's main pane */
+  --c-surface-sunken: 13 13 13; /* #0D0D0D — its sidebar */
+  --c-surface-raised: 42 42 42;
+  --c-edge: 46 46 46;
+  --c-edge-strong: 58 58 58;
+  --c-ink: 236 236 236;
+  --c-ink-muted: 163 163 163;
+  --c-ink-faint: 122 122 122;
+  --c-ink-inverse: 17 17 17;
+
+  --c-violet-50: 36 30 56;
+  --c-violet-100: 45 37 72;
+  --c-violet-200: 59 47 99;
+  --c-violet-300: 109 91 181;
+  --c-violet-400: 139 117 214;
+  --c-violet-500: 167 139 250;
+  --c-violet-600: 139 92 246;
+  --c-violet-700: 124 58 237;
+
+  --c-graph-edge: 58 58 58;
+  --c-graph-edge-hot: 167 139 250;
+  --c-graph-arrow: 74 74 74;
+  --c-graph-ring: 26 26 26;
+  --c-graph-ring-active: 236 236 236;
+  --c-graph-label: 163 163 163;
+  --c-graph-caption: 122 122 122;
+  --c-graph-halo: 26 26 26;
+
+  /* One shade lighter than the light set: the saturated 500s sink into black. */
+  --c-node-0: 167 139 250;
+  --c-node-1: 52 211 153;
+  --c-node-2: 251 191 36;
+  --c-node-3: 96 165 250;
+  --c-node-4: 248 113 113;
+  --c-node-5: 45 212 191;
+  --c-node-6: 244 114 182;
+  --c-node-7: 129 140 248;
+  --c-node-8: 163 230 53;
+  --c-node-9: 56 189 248;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    color-scheme: dark;
+
+    --c-surface: 26 26 26;
+    --c-surface-sunken: 13 13 13;
+    --c-surface-raised: 42 42 42;
+    --c-edge: 46 46 46;
+    --c-edge-strong: 58 58 58;
+    --c-ink: 236 236 236;
+    --c-ink-muted: 163 163 163;
+    --c-ink-faint: 122 122 122;
+    --c-ink-inverse: 17 17 17;
+
+    --c-violet-50: 36 30 56;
+    --c-violet-100: 45 37 72;
+    --c-violet-200: 59 47 99;
+    --c-violet-300: 109 91 181;
+    --c-violet-400: 139 117 214;
+    --c-violet-500: 167 139 250;
+    --c-violet-600: 139 92 246;
+    --c-violet-700: 124 58 237;
+
+    --c-graph-edge: 58 58 58;
+    --c-graph-edge-hot: 167 139 250;
+    --c-graph-arrow: 74 74 74;
+    --c-graph-ring: 26 26 26;
+    --c-graph-ring-active: 236 236 236;
+    --c-graph-label: 163 163 163;
+    --c-graph-caption: 122 122 122;
+    --c-graph-halo: 26 26 26;
+
+    --c-node-0: 167 139 250;
+    --c-node-1: 52 211 153;
+    --c-node-2: 251 191 36;
+    --c-node-3: 96 165 250;
+    --c-node-4: 248 113 113;
+    --c-node-5: 45 212 191;
+    --c-node-6: 244 114 182;
+    --c-node-7: 129 140 248;
+    --c-node-8: 163 230 53;
+    --c-node-9: 56 189 248;
+  }
+}
+
 @layer base {
   html,
   body,
@@ -15,10 +165,11 @@
   }
 
   /* The sidebar and message list scroll a lot; the default bars are heavy enough to
-     visually dominate a design this light. */
+     visually dominate a design this light — and a light bar on a dark pane is the
+     first thing a hard-coded colour gets wrong. */
   * {
     scrollbar-width: thin;
-    scrollbar-color: #d8d8d8 transparent;
+    scrollbar-color: rgb(var(--c-edge-strong)) transparent;
   }
 
   *::-webkit-scrollbar {
@@ -38,34 +189,39 @@
 @layer components {
   .btn-dark {
     @apply inline-flex items-center justify-center gap-2 rounded-full bg-ink px-4 py-2
-      text-sm font-medium text-white transition hover:bg-black
+      text-sm font-medium text-ink-inverse transition hover:opacity-90
       disabled:cursor-not-allowed disabled:opacity-40;
   }
 
   .btn-ghost {
     @apply inline-flex items-center justify-center gap-2 rounded-full border border-edge
-      bg-white px-3 py-1.5 text-sm text-ink transition hover:bg-surface-sunken
+      bg-surface-raised px-3 py-1.5 text-sm text-ink transition hover:bg-surface-sunken
       disabled:cursor-not-allowed disabled:opacity-40;
   }
 
   .icon-btn {
     @apply inline-flex h-8 w-8 items-center justify-center rounded-full text-ink-muted
-      transition hover:bg-surface-sunken hover:text-ink;
+      transition hover:bg-surface-raised hover:text-ink;
   }
 
   .nav-item {
     @apply flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm text-ink-muted
-      transition hover:bg-white hover:text-ink;
+      transition hover:bg-surface-raised hover:text-ink;
   }
 
   .nav-item-active {
-    @apply bg-white text-ink shadow-[0_1px_2px_rgba(0,0,0,0.04)];
+    @apply bg-surface-raised text-ink shadow-[0_1px_2px_rgba(0,0,0,0.04)];
   }
 }
 
 /* The greeting in the mockup is a violet gradient rather than a flat colour. */
 .text-gradient-violet {
-  background-image: linear-gradient(90deg, #cbb3fc 0%, #a78bfa 55%, #8b5cf6 100%);
+  background-image: linear-gradient(
+    90deg,
+    rgb(var(--c-violet-400)) 0%,
+    rgb(var(--c-violet-500)) 55%,
+    rgb(var(--c-violet-600)) 100%
+  );
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;

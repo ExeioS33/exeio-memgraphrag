@@ -1,17 +1,19 @@
 /**
- * Palette sampled from the Figma export (912x673 flattened PNG) rather than guessed.
+ * Every colour resolves through a CSS variable defined in src/index.css, where the
+ * light and dark token sets live. The `<alpha-value>` slot is what keeps utilities
+ * like `bg-surface-raised/95` and `ring-violet-400` working: a bare `var()` has no
+ * way to take an opacity modifier.
  *
- * The draft has no layers and therefore no variables, so every flat surface below was
- * read off the actual pixels. Two corrections that visual reading got wrong: the
- * sidebar is a neutral grey (#F3F3F3), not lavender, and the only lavender surfaces
- * are the composer's inner strip (#FAF7FE) and the orb.
- *
- * The violet hue is consistent at ~258 deg across every sample (orb #CCB3FC h261,
- * greeting text #9E93C3 h254, chip text #9786BF h258, logo mark #B1A3D4 h257).
- * Steps 50-400 are sampled. Steps 500-700 are DERIVED on that same hue: the export
- * has no flat region of them — its purple only ever appears as small antialiased
- * text — so they are extrapolated for contrast, not measured.
+ * The light palette was sampled from the original Figma export (912x673 flattened
+ * PNG): the sidebar is a neutral grey (#F3F3F3), not lavender; the only lavender
+ * surfaces are the composer's inner strip (#FAF7FE) and the orb; the violet hue is
+ * consistent at ~258 deg. Steps 500-700 are derived on that hue for contrast. The
+ * dark palette was not inverted from it — each token was chosen against its surface
+ * for a measured contrast ratio; scripts/check_contrast.py holds the thresholds.
  */
+
+const token = (name) => `rgb(var(--c-${name}) / <alpha-value>)`
+
 /** @type {import('tailwindcss').Config} */
 export default {
   content: ['./index.html', './src/**/*.{ts,tsx}'],
@@ -19,28 +21,31 @@ export default {
     extend: {
       colors: {
         violet: {
-          50: '#FAF7FE', // sampled - composer inner strip
-          100: '#F2EEFF', // sampled - light lavender surface
-          200: '#E8DFFC', // sampled - orb mid
-          300: '#D0BAFC', // sampled - orb
-          400: '#CCB3FC', // sampled - orb core, most saturated flat violet
-          500: '#A78BFA', // derived
-          600: '#8B5CF6', // derived - interactive fill / text on white
-          700: '#7C3AED', // derived - hover / pressed
+          50: token('violet-50'),
+          100: token('violet-100'),
+          200: token('violet-200'),
+          300: token('violet-300'),
+          400: token('violet-400'),
+          500: token('violet-500'),
+          600: token('violet-600'),
+          700: token('violet-700'),
         },
         surface: {
-          DEFAULT: '#FEFEFE', // sampled - main card, 62% of the canvas
-          sunken: '#F3F3F3', // sampled - sidebar
-          raised: '#FFFFFF',
+          DEFAULT: token('surface'),
+          sunken: token('surface-sunken'),
+          raised: token('surface-raised'),
         },
         edge: {
-          DEFAULT: '#EDEDED', // sampled - hairline borders
-          strong: '#E2E2E2',
+          DEFAULT: token('edge'),
+          strong: token('edge-strong'),
         },
         ink: {
-          DEFAULT: '#111111', // sampled - buttons and headings
-          muted: '#6B6B6B', // derived - secondary text
-          faint: '#9A9A9A', // derived - section labels
+          DEFAULT: token('ink'),
+          muted: token('ink-muted'),
+          faint: token('ink-faint'),
+          // Text on an `ink`-coloured fill: white in light, near-black in dark. Not
+          // the same thing as white on a violet fill, which stays white in both.
+          inverse: token('ink-inverse'),
         },
       },
       borderRadius: {

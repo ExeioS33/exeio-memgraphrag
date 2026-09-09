@@ -120,6 +120,34 @@ export interface ModelsResponse {
   embedding: { model: string | null; dim: number | null; locked: boolean; reason: string }
 }
 
+/* -------------------------------------------------------------- auth --- */
+
+/** Who is signed in, from /auth/me. The guest token yields role `guest`. */
+export interface AuthUser {
+  id: string | null
+  name: string
+  email: string | null
+  role: 'admin' | 'user' | 'pending' | 'guest' | string
+  auth_source: 'db' | 'env' | string
+}
+
+/** An account row as the administration page lists it. */
+export interface AdminUser {
+  id: string
+  email: string
+  name: string
+  role: 'admin' | 'user' | 'pending' | string
+  active: boolean
+  created_at: number
+  updated_at: number
+}
+
+export interface SignupResponse {
+  status: 'admin' | 'pending'
+  message: string
+  threads_adopted?: number
+}
+
 /* ------------------------------------------------------------ cypher --- */
 
 /** A node as returned by the Cypher console — Neo4j shape, not the engine's. */
@@ -234,6 +262,8 @@ export interface HealthResponse {
   core_version: string
   api_version: string
   auth_mode: 'enabled' | 'disabled'
+  /** True when accounts can be created through /auth/signup. */
+  signup_enabled?: boolean
   pipeline_busy: boolean
   ready: boolean
   retrieval_status: 'ready' | 'not_ready' | 'error'
@@ -268,7 +298,7 @@ export interface GraphResponse {
 }
 
 export interface QuerySettings {
-  mode: 'ppr' | 'naive' | 'context' | 'bypass'
+  mode: 'ppr' | 'naive' | 'context' | 'bypass' | 'agent'
   /** Provider id from /models. Completions only — embeddings are locked. */
   provider?: string | null
   model?: string | null

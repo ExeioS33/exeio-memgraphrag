@@ -33,3 +33,25 @@ CREATE TABLE IF NOT EXISTS chat_message (
 -- Messages are always read as a whole thread in chronological order.
 CREATE INDEX IF NOT EXISTS chat_message_thread_idx
     ON chat_message (thread_id, created_at);
+
+-- Accounts. Two tables in a 1:1, deliberately: app_user carries everything a
+-- profile read, an admin listing or a join on chat_thread.owner could want and no
+-- credential at all, so none of those code paths can return a password hash by
+-- accident. app_auth holds the hash and nothing a normal query needs. The role
+-- CHECK is enforced here rather than only in code: an unexpected role is exactly
+-- the kind of value that should fail at write time, not at an authorization check.
+CREATE TABLE IF NOT EXISTS app_user (
+    id         TEXT   PRIMARY KEY,
+    email      TEXT   NOT NULL UNIQUE,
+    name       TEXT   NOT NULL,
+    role       TEXT   NOT NULL DEFAULT 'pending'
+               CHECK (role IN ('admin', 'user', 'pending')),
+    created_at BIGINT NOT NULL,
+    updated_at BIGINT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS app_auth (
+    user_id       TEXT    PRIMARY KEY REFERENCES app_user (id) ON DELETE CASCADE,
+    password_hash TEXT    NOT NULL,
+    active        BOOLEAN NOT NULL DEFAULT TRUE
+);
