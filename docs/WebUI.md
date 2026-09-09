@@ -109,7 +109,11 @@ streams, folded the moment the answer starts, with the elapsed time on its summa
 line. The fallback direction matters: **no marker means everything is the answer**,
 never everything is reasoning. Agent mode answers through its own prompt and emits
 no marker at all; the other way round would hide its whole reply behind a closed
-block. *Copier* copies the answer alone.
+block. *Copier* copies the answer alone. Which models show the block is a matter of
+observation, not configuration: Llama 3.3 follows the prompt and folds ~1 800
+characters of reasoning above a one-sentence answer; `gpt-oss` models put theirs in
+the Harmony `analysis` channel, which `HarmonyFilter` already drops, so their reply
+arrives marker-free and renders as a plain answer.
 
 **Two themes, dark by default.** Every colour is a CSS token (`--c-*`, RGB triplets
 so Tailwind's `/opacity` still works), redefined under `:root[data-theme="dark"]`
