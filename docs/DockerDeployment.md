@@ -124,6 +124,45 @@ image predating the web UI serves `Web UI not built; serving API only` and every
 route still works, which reads as a UI bug rather than a stale build. Use `--build`
 after pulling.
 
+## When the build fails behind a TLS-intercepting proxy
+
+`npm ci` dies in the `frontend` stage with a message that names nothing useful:
+
+```
+npm error Exit handler never called!
+npm error This is an error with npm itself.
+```
+
+It is not npm, and it is not memory. npm's debug log — discarded with the failing
+layer, which is why the message is all you normally see — shows the real cause on
+every single package:
+
+```
+http fetch GET https://registry.npmjs.org/vite/-/vite-5.4.10.tgz
+    attempt 3 failed with UNABLE_TO_VERIFY_LEAF_SIGNATURE
+```
+
+A corporate proxy reissues certificates, and the build container does not trust the
+CA that signs them. The runtime stage always handled this — compose mounts the CA
+and the entrypoint merges it — but the build stages did not.
+
+To confirm it in half a minute, run the failing layer by hand so the log survives:
+
+```bash
+docker run --rm -v "$PWD/web/package.json":/ui/package.json:ro   -v "$PWD/web/package-lock.json":/ui/package-lock.json:ro -w /ui   node:22-bookworm-slim   sh -c 'npm ci --no-audit --no-fund; tail -20 /root/.npm/_logs/*-debug-0.log'
+```
+
+Then prove the diagnosis by re-running it with the CA trusted — same command plus
+`-v "$PWD/certs/corporate-ca.crt":/ca.crt:ro -e NODE_EXTRA_CA_CERTS=/ca.crt`. It
+should install cleanly.
+
+Both build stages now pick up `certs/corporate-ca.crt` when it exists:
+`NODE_EXTRA_CA_CERTS` for the frontend, `SSL_CERT_FILE` for the Python builder. The
+asymmetry is deliberate — Node ignores the variable when the file is missing, while
+Python raises `FileNotFoundError`, so the Python one is exported only after a test
+that the file is really there. On a network without interception, `certs/` is absent
+and both are no-ops.
+
 ## Why the app used to crash-loop on startup
 
 Seen in the wild, and fixed rather than documented away. `docker-compose.yml` waits

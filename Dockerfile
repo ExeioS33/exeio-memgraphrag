@@ -9,6 +9,16 @@ ARG NODE_VERSION=22
 FROM node:${NODE_VERSION}-bookworm-slim AS frontend
 
 WORKDIR /ui
+
+# Corporate TLS interception, if any. Without the CA every registry fetch fails
+# with UNABLE_TO_VERIFY_LEAF_SIGNATURE and npm dies reporting "Exit handler never
+# called!" — a message that names neither TLS nor the proxy. `web/package.json`
+# rides along only to guarantee the glob matches: COPY fails on a pattern that
+# matches nothing, and certs/ does not exist on an unintercepted network. Node
+# ignores NODE_EXTRA_CA_CERTS when the path is absent, so this is a no-op there.
+COPY web/package.json certs* /tmp/ca/
+ENV NODE_EXTRA_CA_CERTS=/tmp/ca/corporate-ca.crt
+
 COPY web/package.json web/package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY web/ ./
@@ -33,7 +43,16 @@ COPY pyproject.toml uv.lock ./
 COPY memgraphrag/ ./memgraphrag/
 COPY README.md LICENSE NOTICE THIRD_PARTY_LICENSES.md ./
 
+# Same interception, same fix, different mechanism. SSL_CERT_FILE is exported only
+# when the file is really there: unlike Node, Python raises FileNotFoundError when
+# it points at a missing path, so setting it unconditionally would break exactly
+# the machines that need no CA at all.
+COPY pyproject.toml certs* /tmp/ca/
 RUN --mount=type=cache,target=/root/.cache/uv \
+    if [ -f /tmp/ca/corporate-ca.crt ]; then \
+        export SSL_CERT_FILE=/tmp/ca/corporate-ca.crt; \
+        export REQUESTS_CA_BUNDLE=/tmp/ca/corporate-ca.crt; \
+    fi; \
     uv sync --frozen --no-dev --extra api --no-editable
 
 ARG PYTHON_VERSION=3.12
