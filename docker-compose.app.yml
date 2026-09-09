@@ -1,0 +1,114 @@
+# App-only stack: the API server and its web UI, against databases you already run.
+#
+# `docker-compose.yml` is the self-contained stack — it brings up its own Postgres
+# and Neo4j and forces the app to talk to them. This file is the other shape: the
+# RAG databases live elsewhere (a LAN host, a managed instance), and the only thing
+# started here is the application plus the small database that holds conversations.
+#
+#     docker compose -f docker-compose.app.yml up -d --build
+#
+# The split matters because the two files disagree on purpose. The self-contained
+# stack *must* override POSTGRES_HOST and NEO4J_URI, or the app would dial whatever
+# the host .env names instead of the compose network. Here the opposite is true:
+# those values are exactly what you want, so they are left alone and come straight
+# from .env. Everything still overridden below is container-local — a bind address,
+# a path inside /app, a certificate location — and would be wrong if it leaked in
+# from the host.
+
+services:
+  memgraphrag:
+    image: exeio-memgraphrag:${MEMGRAPHRAG_VERSION:-0.1.0}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        MEMGRAPHRAG_VERSION: ${MEMGRAPHRAG_VERSION:-0.1.0}
+        PYTHON_VERSION: ${PYTHON_VERSION:-3.12}
+      tags:
+        - exeio-memgraphrag:${MEMGRAPHRAG_VERSION:-0.1.0}
+        - exeio-memgraphrag:latest
+    ports:
+      - "${HOST:-0.0.0.0}:${PORT:-9621}:9621"
+    volumes:
+      - ./data/rag_storage:/app/data/rag_storage
+      - ./data/inputs:/app/data/inputs
+      - ./.env:/app/.env:ro
+      # Documents the web UI browses. Read-only: the library serves and previews
+      # what is already there, it never writes.
+      - ${LIBRARY_HOST_DIR:-./data/library}:/app/data/library:ro
+      # Corporate TLS interception CA. Point MEMGRAPHRAG_HOST_CA_FILE elsewhere, or
+      # leave the default when no interception is in play.
+      - ${MEMGRAPHRAG_HOST_CA_FILE:-./certs/corporate-ca.crt}:/app/certs/corporate-ca.crt:ro
+    depends_on:
+      postgres-app:
+        condition: service_healthy
+    restart: unless-stopped
+    extra_hosts:
+      # Lets DATABASE hosts written as `host.docker.internal` reach the machine
+      # running Docker. A LAN address (192.168.x.x) needs nothing special.
+      - "host.docker.internal:host-gateway"
+
+    # Every setting the app reads comes from .env — including POSTGRES_HOST,
+    # POSTGRES_DATABASE, NEO4J_URI, WORKSPACE and the storage backends, which is
+    # the entire point of this file.
+    env_file:
+      - .env
+
+    environment:
+      # --- Bind address and paths inside the container ----------------------
+      # .env holds host-relative paths (./data/…, ./certs/…) that mean nothing in
+      # /app, so these must win over env_file.
+      HOST: "0.0.0.0"
+      PORT: "9621"
+      WORKING_DIR: "/app/data/rag_storage"
+      INPUT_DIR: "/app/data/inputs"
+      LIBRARY_ROOT: "/app/data/library"
+
+      # --- Chat persistence --------------------------------------------------
+      # Conversations are product data, not knowledge: they live in their own
+      # database, reached over this file's compose network rather than at the host
+      # publish port. The `:?` guard fails the stack early, with a readable message,
+      # instead of starting an app whose /chat/* answers 503.
+      APP_DATABASE_URL: "postgresql://${APP_POSTGRES_USER:-app}:${APP_POSTGRES_PASSWORD:?set APP_POSTGRES_PASSWORD in .env}@postgres-app:5432/${APP_POSTGRES_DATABASE:-memgraphrag_app}"
+
+      # --- Corporate TLS interception ---------------------------------------
+      # The entrypoint merges /app/certs/corporate-ca.crt into the trust store. All
+      # four names are overridden because .env sets host-relative paths for them.
+      MEMGRAPHRAG_CORP_CA_FILE: "/app/certs/corporate-ca.crt"
+      MEMGRAPHRAG_SSL_CERT_FILE: "/app/certs/corporate-ca.crt"
+      SSL_CERT_FILE: "/app/certs/corporate-ca.crt"
+      REQUESTS_CA_BUNDLE: "/app/certs/corporate-ca.crt"
+      CURL_CA_BUNDLE: "/app/certs/corporate-ca.crt"
+
+      # NOT overridden here, on purpose — these come from .env and point at the
+      # databases you already run:
+      #   POSTGRES_HOST / POSTGRES_PORT / POSTGRES_USER / POSTGRES_PASSWORD /
+      #   POSTGRES_DATABASE, NEO4J_URI / NEO4J_USERNAME / NEO4J_PASSWORD, WORKSPACE,
+      #   MEMGRAPHRAG_{KV,VECTOR,GRAPH,DOC_STATUS}_STORAGE.
+      # A file-backed backend (Json*/Nano*/Igraph*) also caps the process at
+      # WORKERS=1 — startup refuses more, see memgraphrag/api/config.py.
+
+  postgres-app:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: "${APP_POSTGRES_USER:-app}"
+      POSTGRES_PASSWORD: "${APP_POSTGRES_PASSWORD:?set APP_POSTGRES_PASSWORD in .env}"
+      POSTGRES_DB: "${APP_POSTGRES_DATABASE:-memgraphrag_app}"
+    volumes:
+      - postgres_app_data:/var/lib/postgresql/data
+    ports:
+      # 5433 on the host: 5432 is normally already taken.
+      - "${APP_POSTGRES_PUBLISH_ADDR:-127.0.0.1}:${APP_POSTGRES_PUBLISH_PORT:-5433}:5432"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${APP_POSTGRES_USER:-app} -d ${APP_POSTGRES_DATABASE:-memgraphrag_app}",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  postgres_app_data:
